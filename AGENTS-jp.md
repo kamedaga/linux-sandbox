@@ -17,5 +17,7 @@
   host固有adapterはhost OSリポジトリが所有します。
 - Apache-2.0のkobox2 controller codeをGPL-2.0-only processへlinkしません。
   共有protocol fileには独立したMIT licenseを使います。
+- kobox host contractと共有protocolを`dev` interfaceとして扱います。明示的にfreezeするまで
+  ABI番号と互換性を割り当てません。
 
 実際にagentへ適用される正本は[`AGENTS.md`](./AGENTS.md)です。

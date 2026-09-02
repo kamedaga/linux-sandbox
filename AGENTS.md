@@ -21,3 +21,6 @@
   numbers here. Host-specific adapters belong to the host OS repository.
 - Do not link Apache-2.0 kobox2 controller code into this GPL-2.0-only process.
   Shared protocol files must use their independent MIT license.
+- Treat the kobox host contract and shared protocols as `dev` interfaces. Do not
+  assign ABI version numbers or compatibility guarantees before an explicit
+  freeze.

@@ -21,6 +21,11 @@ struct kobox_fixture_spin {
 	atomic_flag locked;
 };
 
+#define KOBOX_FIXTURE_LIFECYCLE_CAPACITY 32u
+
+static atomic_uint fixture_lifecycle_count;
+static atomic_uint fixture_lifecycle[KOBOX_FIXTURE_LIFECYCLE_CAPACITY];
+
 static int fixture_mutex_create(void **mutex_out)
 {
 	return kobox_host_mutex_create((struct kobox_host_mutex **)mutex_out);
@@ -252,8 +257,25 @@ static int fixture_rcu_synchronize(void *opaque_rcu)
 	return rcu ? kobox_host_event_wait(rcu->quiescent) : -1;
 }
 
-static const struct kobox_fixture_core_ops fixture_core_ops = {
-	.size = sizeof(fixture_core_ops),
+static int fixture_lifecycle_record(uint32_t node_id, uint32_t phase)
+{
+	unsigned int index;
+
+	if (!node_id || phase < KOBOX_FIXTURE_LIFECYCLE_INIT ||
+	    phase > KOBOX_FIXTURE_LIFECYCLE_CLEANUP)
+		return -1;
+	index = atomic_fetch_add_explicit(&fixture_lifecycle_count, 1,
+					  memory_order_acq_rel);
+	if (index >= KOBOX_FIXTURE_LIFECYCLE_CAPACITY)
+		return -1;
+	atomic_store_explicit(&fixture_lifecycle[index],
+			      (node_id << 8) | phase, memory_order_release);
+	return 0;
+}
+
+__attribute__((visibility("default")))
+const struct kobox_fixture_core_ops kobox_fixture_core_operations = {
+	.size = sizeof(kobox_fixture_core_operations),
 	.identity = {
 		KOBOX_FIXTURE_CORE_IDENTITY_0,
 		KOBOX_FIXTURE_CORE_IDENTITY_1,
@@ -288,44 +310,81 @@ static const struct kobox_fixture_core_ops fixture_core_ops = {
 	.rcu_read_unlock = fixture_rcu_read_unlock,
 	.rcu_synchronize = fixture_rcu_synchronize,
 	.monotonic_time_ns = kobox_host_monotonic_time_ns,
+	.lifecycle_record = fixture_lifecycle_record,
 };
 
 static atomic_uint fixture_core_active;
+static const struct kobox_module_context *fixture_core_context;
 
 __attribute__((visibility("default")))
-int kobox_fixture_core_init(void)
+int kobox_fixture_core_init(const struct kobox_module_context *context)
 {
 	unsigned int expected = 0;
 
-	return atomic_compare_exchange_strong_explicit(
+	if (!context || fixture_core_context ||
+	    context->node_id != KOBOX_FIXTURE_CORE_NODE_ID ||
+	    context->core_operations != &kobox_fixture_core_operations ||
+	    fixture_lifecycle_record(KOBOX_FIXTURE_CORE_NODE_ID,
+				     KOBOX_FIXTURE_LIFECYCLE_INIT))
+		return -1;
+	if (!atomic_compare_exchange_strong_explicit(
 		       &fixture_core_active, &expected, 1, memory_order_acq_rel,
-		       memory_order_acquire)
-		       ? 0
-		       : -1;
+		       memory_order_acquire))
+		return -1;
+	fixture_core_context = context;
+	return 0;
 }
 
 __attribute__((visibility("default")))
-int kobox_fixture_core_quiesce(void)
+int kobox_fixture_core_quiesce(const struct kobox_module_context *context)
 {
-	return atomic_load_explicit(&fixture_core_active, memory_order_acquire) == 1
+	return context && context == fixture_core_context &&
+		       context->node_id == KOBOX_FIXTURE_CORE_NODE_ID &&
+		       context->core_operations == &kobox_fixture_core_operations &&
+		       !fixture_lifecycle_record(KOBOX_FIXTURE_CORE_NODE_ID,
+					 KOBOX_FIXTURE_LIFECYCLE_QUIESCE) &&
+		       atomic_load_explicit(&fixture_core_active,
+					    memory_order_acquire) == 1
 		       ? 0
 		       : -1;
 }
 
 __attribute__((visibility("default")))
-int kobox_fixture_core_cleanup(void)
+int kobox_fixture_core_cleanup(const struct kobox_module_context *context)
 {
 	unsigned int expected = 1;
 
-	return atomic_compare_exchange_strong_explicit(
+	if (!context || context != fixture_core_context ||
+	    context->node_id != KOBOX_FIXTURE_CORE_NODE_ID ||
+	    context->core_operations != &kobox_fixture_core_operations ||
+	    fixture_lifecycle_record(KOBOX_FIXTURE_CORE_NODE_ID,
+				     KOBOX_FIXTURE_LIFECYCLE_CLEANUP))
+		return -1;
+	if (!atomic_compare_exchange_strong_explicit(
 		       &fixture_core_active, &expected, 0, memory_order_acq_rel,
-		       memory_order_acquire)
-		       ? 0
-		       : -1;
+		       memory_order_acquire))
+		return -1;
+	fixture_core_context = NULL;
+	return 0;
 }
 
 __attribute__((visibility("default")))
-const struct kobox_fixture_core_ops *kobox_fixture_core_get_ops(void)
+int kobox_fixture_lifecycle_snapshot(uint32_t *records, size_t capacity,
+				     size_t *count_out)
 {
-	return &fixture_core_ops;
+	unsigned int count;
+	unsigned int index;
+
+	if (!count_out)
+		return -1;
+	count = atomic_load_explicit(&fixture_lifecycle_count,
+				     memory_order_acquire);
+	if (count > KOBOX_FIXTURE_LIFECYCLE_CAPACITY ||
+	    (count && (!records || capacity < count)))
+		return -1;
+	for (index = 0; index < count; index++)
+		records[index] = atomic_load_explicit(&fixture_lifecycle[index],
+						      memory_order_acquire);
+	*count_out = count;
+	return 0;
 }

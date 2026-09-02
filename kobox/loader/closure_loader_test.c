@@ -8,8 +8,8 @@
 
 #include <kobox2/sha256.h>
 
-#include <errno.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +40,18 @@ struct manifest_object {
 	kb2_closure_manifest_t manifest;
 };
 
+struct grant_object {
+	uint8_t *bytes;
+	size_t size;
+	kb2_resource_grant_t grant;
+};
+
+struct import_tracker {
+	size_t imports;
+	size_t releases;
+	int fail;
+};
+
 static int write_all(int descriptor, const void *data, size_t size)
 {
 	const uint8_t *bytes = data;
@@ -53,17 +65,9 @@ static int write_all(int descriptor, const void *data, size_t size)
 		if (written <= 0)
 			return -1;
 		bytes += written;
-		size -= written;
+		size -= (size_t)written;
 	}
 	return 0;
-}
-
-static void store_u32(uint8_t destination[4], uint32_t value)
-{
-	destination[0] = (uint8_t)value;
-	destination[1] = (uint8_t)(value >> 8);
-	destination[2] = (uint8_t)(value >> 16);
-	destination[3] = (uint8_t)(value >> 24);
 }
 
 static int make_artifact(const char *path, const char *name,
@@ -92,7 +96,7 @@ static int make_artifact(const char *path, const char *name,
 	    fcntl(artifact->descriptor, F_ADD_SEALS,
 		  F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE))
 		goto out;
-	artifact->size = status.st_size;
+	artifact->size = (uint64_t)status.st_size;
 	kb2_sha256(bytes, (size_t)status.st_size, artifact->digest);
 	result = 0;
 
@@ -118,107 +122,172 @@ static int validate_shared(void *context, int descriptor,
 		       : -1;
 }
 
-static int bind_resource(void *context,
-			 const kb2_closure_manifest_resource_t *resource,
-			 uint32_t node_id)
+static int import_resource(
+	void *context, const kb2_resource_grant_slot_t *slot,
+	const kb2_resource_grant_object_t *object,
+	const struct kobox_resource_native_handle *handles, size_t handle_count,
+	void **native_object_out)
 {
-	size_t *count = context;
+	struct import_tracker *tracker = context;
+	int *native_object;
 
-	if (resource->slot_id != 1 ||
-	    resource->type != KB2_CLOSURE_RESOURCE_CHANNEL ||
-	    (node_id != 2 && node_id != 3))
+	if (!tracker || !slot || !object || !handles || !native_object_out ||
+	    tracker->fail || slot->slot_id != KOBOX_FIXTURE_RESOURCE_SLOT_ID ||
+	    slot->resource_type != KB2_CLOSURE_RESOURCE_CHANNEL ||
+	    object->slot_id != slot->slot_id || handle_count != 1 ||
+	    handles[0].handle < 0)
 		return -1;
-	(*count)++;
+	native_object = malloc(sizeof(*native_object));
+	if (!native_object)
+		return -1;
+	*native_object = fcntl(handles[0].handle, F_DUPFD_CLOEXEC, 0);
+	if (*native_object < 0) {
+		free(native_object);
+		return -1;
+	}
+	tracker->imports++;
+	*native_object_out = native_object;
 	return 0;
 }
 
+static void release_resource(void *context, void *opaque_object)
+{
+	struct import_tracker *tracker = context;
+	int *native_object = opaque_object;
+
+	if (!tracker || !native_object)
+		return;
+	close(*native_object);
+	free(native_object);
+	tracker->releases++;
+}
+
 static int make_manifest(const struct artifact_object artifacts[3],
-			 const kb2_closure_manifest_dependency_t *dependencies,
-			 size_t dependency_count,
+			 int include_complete_export_set,
 			 struct manifest_object *object)
 {
 	kb2_closure_manifest_artifact_t artifact_records[] = {
 		{
-			.node_id = 1,
+			.node_id = KOBOX_FIXTURE_CORE_NODE_ID,
 			.kind = KB2_CLOSURE_ARTIFACT_SHARED_PROVIDER,
 			.namespace_name = TEST_STRING("fixture_core"),
 			.init_symbol = TEST_STRING("kobox_fixture_core_init"),
-			.quiesce_symbol = TEST_STRING("kobox_fixture_core_quiesce"),
-			.cleanup_symbol = TEST_STRING("kobox_fixture_core_cleanup"),
+			.quiesce_symbol =
+				TEST_STRING("kobox_fixture_core_quiesce"),
+			.cleanup_symbol =
+				TEST_STRING("kobox_fixture_core_cleanup"),
 		},
 		{
-			.node_id = 2,
+			.node_id = KOBOX_FIXTURE_PROVIDER_NODE_ID,
 			.kind = KB2_CLOSURE_ARTIFACT_RELOCATABLE_MODULE,
-			.flags = KB2_CLOSURE_ARTIFACT_FLAG_ROOT,
-			.namespace_name = TEST_STRING("fixture_module_a"),
-			.init_symbol = TEST_STRING("kobox_fixture_module_init"),
-			.quiesce_symbol = TEST_STRING("kobox_fixture_module_quiesce"),
-			.cleanup_symbol = TEST_STRING("kobox_fixture_module_cleanup"),
+			.namespace_name = TEST_STRING("fixture_provider"),
+			.init_symbol = TEST_STRING("kobox_fixture_provider_init"),
+			.quiesce_symbol =
+				TEST_STRING("kobox_fixture_provider_quiesce"),
+			.cleanup_symbol =
+				TEST_STRING("kobox_fixture_provider_cleanup"),
 		},
 		{
-			.node_id = 3,
+			.node_id = KOBOX_FIXTURE_CONSUMER_NODE_ID,
 			.kind = KB2_CLOSURE_ARTIFACT_RELOCATABLE_MODULE,
 			.flags = KB2_CLOSURE_ARTIFACT_FLAG_ROOT,
-			.namespace_name = TEST_STRING("fixture_module_b"),
-			.init_symbol = TEST_STRING("kobox_fixture_module_init"),
-			.quiesce_symbol = TEST_STRING("kobox_fixture_module_quiesce"),
-			.cleanup_symbol = TEST_STRING("kobox_fixture_module_cleanup"),
+			.namespace_name = TEST_STRING("fixture_consumer"),
+			.init_symbol = TEST_STRING("kobox_fixture_consumer_init"),
+			.quiesce_symbol =
+				TEST_STRING("kobox_fixture_consumer_quiesce"),
+			.cleanup_symbol =
+				TEST_STRING("kobox_fixture_consumer_cleanup"),
 		},
 	};
-	const kb2_closure_manifest_symbol_t exports[] = {
-		{ 1, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_core_cleanup") },
-		{ 1, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_core_get_ops") },
-		{ 1, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_core_init") },
-		{ 1, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_core_quiesce") },
-		{ 2, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_cleanup") },
-		{ 2, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_init") },
-		{ 2, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_quiesce") },
-		{ 2, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_run") },
-		{ 3, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_cleanup") },
-		{ 3, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_init") },
-		{ 3, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_quiesce") },
-		{ 3, KB2_CLOSURE_SYMBOL_FUNCTION,
-		  TEST_STRING("kobox_fixture_module_run") },
+	const kb2_closure_manifest_dependency_t dependencies[] = {
+		{ KOBOX_FIXTURE_PROVIDER_NODE_ID, KOBOX_FIXTURE_CORE_NODE_ID },
+		{ KOBOX_FIXTURE_CONSUMER_NODE_ID,
+		  KOBOX_FIXTURE_PROVIDER_NODE_ID },
 	};
+	kb2_closure_manifest_symbol_t exports[14];
+	size_t export_count = 0;
 	const kb2_closure_manifest_import_t imports[] = {
-		{ 2, 1, KB2_CLOSURE_SYMBOL_FUNCTION, 0,
-		  TEST_STRING("kobox_fixture_core_get_ops"),
-		  TEST_STRING("kobox_fixture_core_get_ops") },
-		{ 3, 1, KB2_CLOSURE_SYMBOL_FUNCTION, 0,
-		  TEST_STRING("kobox_fixture_core_get_ops"),
-		  TEST_STRING("kobox_fixture_core_get_ops") },
+		{
+			KOBOX_FIXTURE_CONSUMER_NODE_ID,
+			KOBOX_FIXTURE_PROVIDER_NODE_ID,
+			KB2_CLOSURE_SYMBOL_FUNCTION,
+			0,
+			TEST_STRING("kobox_fixture_provider_add"),
+			TEST_STRING("kobox_fixture_provider_add"),
+		},
 	};
-	const kb2_closure_manifest_resource_t resources[] = {
-		{ 1, KB2_CLOSURE_RESOURCE_CHANNEL, 1, 1,
-		  KB2_CLOSURE_CHANNEL_RIGHT_SEND |
-			  KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE,
-		  KB2_CLOSURE_CHANNEL_RIGHT_SEND |
-			  KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE,
-		  KB2_CLOSURE_RESOURCE_FLAG_REQUIRED |
-			  KB2_CLOSURE_RESOURCE_FLAG_SHARED },
+	kb2_closure_manifest_resource_t resources[] = {
+		{
+			.slot_id = KOBOX_FIXTURE_RESOURCE_SLOT_ID,
+			.type = KB2_CLOSURE_RESOURCE_CHANNEL,
+			.minimum_count = 1,
+			.maximum_count = 1,
+			.required_rights = KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+					   KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE,
+			.maximum_rights = KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+					  KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE,
+			.flags = KB2_CLOSURE_RESOURCE_FLAG_REQUIRED,
+		},
 	};
 	const kb2_closure_manifest_binding_t bindings[] = {
-		{ 1, 2 },
-		{ 1, 3 },
+		{ KOBOX_FIXTURE_RESOURCE_SLOT_ID,
+		  KOBOX_FIXTURE_CONSUMER_NODE_ID },
 	};
-	kb2_closure_manifest_source_t source = {
+	kb2_closure_manifest_source_t source;
+	size_t index;
+
+#define ADD_EXPORT(node, symbol_kind, value)                                    \
+	exports[export_count++] = (kb2_closure_manifest_symbol_t){                \
+		(node), (symbol_kind), TEST_STRING(value)                           \
+	}
+	ADD_EXPORT(KOBOX_FIXTURE_CORE_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_core_cleanup");
+	ADD_EXPORT(KOBOX_FIXTURE_CORE_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_core_init");
+	ADD_EXPORT(KOBOX_FIXTURE_CORE_NODE_ID, KB2_CLOSURE_SYMBOL_OBJECT,
+		   "kobox_fixture_core_operations");
+	ADD_EXPORT(KOBOX_FIXTURE_CORE_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_core_quiesce");
+	if (include_complete_export_set)
+		ADD_EXPORT(KOBOX_FIXTURE_CORE_NODE_ID,
+			   KB2_CLOSURE_SYMBOL_FUNCTION,
+			   "kobox_fixture_lifecycle_snapshot");
+	ADD_EXPORT(KOBOX_FIXTURE_PROVIDER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_provider_add");
+	ADD_EXPORT(KOBOX_FIXTURE_PROVIDER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_provider_cleanup");
+	ADD_EXPORT(KOBOX_FIXTURE_PROVIDER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_provider_init");
+	ADD_EXPORT(KOBOX_FIXTURE_PROVIDER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_provider_quiesce");
+	ADD_EXPORT(KOBOX_FIXTURE_CONSUMER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_consumer_cleanup");
+	ADD_EXPORT(KOBOX_FIXTURE_CONSUMER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_consumer_init");
+	ADD_EXPORT(KOBOX_FIXTURE_CONSUMER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_consumer_quiesce");
+	ADD_EXPORT(KOBOX_FIXTURE_CONSUMER_NODE_ID, KB2_CLOSURE_SYMBOL_FUNCTION,
+		   "kobox_fixture_consumer_run");
+#undef ADD_EXPORT
+
+	memset(object, 0, sizeof(*object));
+	for (index = 0; index < ARRAY_SIZE(artifact_records); index++) {
+		artifact_records[index].content_size = artifacts[index].size;
+		memcpy(artifact_records[index].content_digest,
+		       artifacts[index].digest,
+		       sizeof(artifact_records[index].content_digest));
+	}
+	if (kb2_protocol_copy_schema_digest(
+		    resources[0].interface_schema_digest,
+		    sizeof(resources[0].interface_schema_digest)) != KB2_PROTOCOL_OK)
+		return -1;
+	source = (kb2_closure_manifest_source_t){
 		.artifacts = artifact_records,
-		.artifact_count = 3,
+		.artifact_count = ARRAY_SIZE(artifact_records),
 		.dependencies = dependencies,
-		.dependency_count = dependency_count,
+		.dependency_count = ARRAY_SIZE(dependencies),
 		.exports = exports,
-		.export_count = ARRAY_SIZE(exports),
+		.export_count = export_count,
 		.imports = imports,
 		.import_count = ARRAY_SIZE(imports),
 		.resources = resources,
@@ -226,17 +295,8 @@ static int make_manifest(const struct artifact_object artifacts[3],
 		.bindings = bindings,
 		.binding_count = ARRAY_SIZE(bindings),
 	};
-	size_t index;
-
-	memset(object, 0, sizeof(*object));
-	for (index = 0; index < 3; index++) {
-		artifact_records[index].content_size = artifacts[index].size;
-		memcpy(artifact_records[index].content_digest,
-		       artifacts[index].digest,
-		       sizeof(artifact_records[index].content_digest));
-	}
 	if (kb2_closure_manifest_encoded_size(&source, &object->size) !=
-		    KB2_PROTOCOL_OK)
+	    KB2_PROTOCOL_OK)
 		return -1;
 	object->bytes = malloc(object->size);
 	if (!object->bytes ||
@@ -251,8 +311,83 @@ static int make_manifest(const struct artifact_object artifacts[3],
 	return 0;
 }
 
-KOBOX_MANUAL_ELF_CALL static int call_module(uintptr_t address,
-					     uint64_t *result_out)
+static int make_grant(const struct manifest_object *manifest,
+		      uint64_t generation, struct grant_object *object)
+{
+	kb2_resource_grant_slot_source_t slot = {
+		.slot_id = KOBOX_FIXTURE_RESOURCE_SLOT_ID,
+		.resource_type = KB2_CLOSURE_RESOURCE_CHANNEL,
+		.state = KB2_RESOURCE_GRANT_SLOT_PRESENT,
+	};
+	kb2_resource_grant_object_source_t resource = {
+		.slot_id = KOBOX_FIXTURE_RESOURCE_SLOT_ID,
+		.object_id = (generation << 32) | 1,
+		.granted_rights = KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+				  KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE,
+	};
+	kb2_resource_grant_handle_binding_t binding = {
+		.object_id = resource.object_id,
+		.role = 1,
+		.transfer_handle_index = 0,
+	};
+	kb2_resource_grant_source_t source = {
+		.generation = generation,
+		.slots = &slot,
+		.slot_count = 1,
+		.objects = &resource,
+		.object_count = 1,
+		.handle_bindings = &binding,
+		.handle_binding_count = 1,
+	};
+
+	memset(object, 0, sizeof(*object));
+	kb2_sha256(manifest->bytes, manifest->size,
+		   source.closure_manifest_digest);
+	if (kb2_protocol_copy_schema_digest(slot.interface_schema_digest,
+					    sizeof(slot.interface_schema_digest)) !=
+		    KB2_PROTOCOL_OK ||
+	    kb2_resource_grant_encoded_size(&source, &object->size) !=
+		    KB2_PROTOCOL_OK)
+		return -1;
+	object->bytes = malloc(object->size);
+	if (!object->bytes ||
+	    kb2_resource_grant_encode(object->bytes, object->size,
+				      &object->size, &source) != KB2_PROTOCOL_OK ||
+	    kb2_resource_grant_decode(object->bytes, object->size,
+				      &object->grant) != KB2_PROTOCOL_OK) {
+		free(object->bytes);
+		memset(object, 0, sizeof(*object));
+		return -1;
+	}
+	return 0;
+}
+
+static void configure_loader(struct kobox_closure_loader_config *config,
+			     const struct manifest_object *manifest,
+			     const struct grant_object *grant,
+			     const int descriptors[3],
+			     const int *resource_descriptor,
+			     struct import_tracker *tracker)
+{
+	memset(config, 0, sizeof(*config));
+	config->manifest = &manifest->manifest;
+	config->artifact_descriptors = descriptors;
+	config->artifact_count = 3;
+	config->grant = &grant->grant;
+	config->resource_handles = resource_descriptor;
+	config->resource_handle_count = 1;
+	config->import_resource = import_resource;
+	config->release_resource = release_resource;
+	config->resource_context = tracker;
+	config->validate_shared = validate_shared;
+	config->core_operations_node_id = KOBOX_FIXTURE_CORE_NODE_ID;
+	config->core_operations_symbol = "kobox_fixture_core_operations";
+	config->core_operations_symbol_length =
+		sizeof("kobox_fixture_core_operations") - 1;
+}
+
+KOBOX_MANUAL_ELF_CALL static int call_consumer(uintptr_t address,
+					       uint64_t *result_out)
 {
 	kobox_fixture_module_run_fn function;
 
@@ -262,281 +397,224 @@ KOBOX_MANUAL_ELF_CALL static int call_module(uintptr_t address,
 	return function(result_out);
 }
 
-static int run_valid_closure(const struct artifact_object artifacts[3],
-			     const int descriptors[3])
+static int lookup_lifecycle_snapshot(
+	void *core_handle, kobox_fixture_lifecycle_snapshot_fn *snapshot_out)
 {
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-		{ 3, 1 },
+	kobox_fixture_lifecycle_snapshot_fn snapshot;
+	void *symbol;
+
+	dlerror();
+	symbol = dlsym(core_handle, "kobox_fixture_lifecycle_snapshot");
+	if (!symbol || sizeof(symbol) != sizeof(snapshot))
+		return -1;
+	memcpy(&snapshot, &symbol, sizeof(snapshot));
+	*snapshot_out = snapshot;
+	return 0;
+}
+
+static int lifecycle_suffix_matches(void *core_handle, size_t baseline,
+				    const uint32_t *expected,
+				    size_t expected_count)
+{
+	kobox_fixture_lifecycle_snapshot_fn snapshot;
+	uint32_t records[32];
+	size_t count;
+
+	if (lookup_lifecycle_snapshot(core_handle, &snapshot) ||
+	    snapshot(records, ARRAY_SIZE(records), &count) ||
+	    count != baseline + expected_count ||
+	    memcmp(records + baseline, expected,
+		   expected_count * sizeof(expected[0])))
+		return 0;
+	return 1;
+}
+
+static int lifecycle_count(void *core_handle, size_t *count_out)
+{
+	kobox_fixture_lifecycle_snapshot_fn snapshot;
+	uint32_t records[32];
+
+	return !lookup_lifecycle_snapshot(core_handle, &snapshot) &&
+		       !snapshot(records, ARRAY_SIZE(records), count_out)
+		       ? 0
+		       : -1;
+}
+
+static int run_valid_closure(const struct artifact_object artifacts[3],
+			     const int descriptors[3], int resource_descriptor,
+			     void *core_handle)
+{
+	static const uint32_t expected_lifecycle[] = {
+		(KOBOX_FIXTURE_CORE_NODE_ID << 8) | KOBOX_FIXTURE_LIFECYCLE_INIT,
+		(KOBOX_FIXTURE_PROVIDER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_INIT,
+		(KOBOX_FIXTURE_CONSUMER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_INIT,
+		(KOBOX_FIXTURE_CONSUMER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_QUIESCE,
+		(KOBOX_FIXTURE_PROVIDER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_QUIESCE,
+		(KOBOX_FIXTURE_CORE_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_QUIESCE,
+		(KOBOX_FIXTURE_CONSUMER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_CLEANUP,
+		(KOBOX_FIXTURE_PROVIDER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_CLEANUP,
+		(KOBOX_FIXTURE_CORE_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_CLEANUP,
 	};
 	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
+	struct grant_object grant;
+	struct import_tracker tracker = { 0 };
 	struct kobox_closure_loader_config config;
-	uintptr_t first_run;
-	uintptr_t second_run;
-	uintptr_t ambiguous;
+	struct kobox_closure_loader *loader = NULL;
+	uintptr_t run_address;
+	uintptr_t provider_address;
 	uint64_t result;
-	uint32_t root;
-	size_t binding_count = 0;
+	uint32_t root_node;
+	size_t baseline;
 	int status = -1;
 
-	if (make_manifest(artifacts, dependencies,
-			  ARRAY_SIZE(dependencies),
-			  &manifest))
+	if (lifecycle_count(core_handle, &baseline) ||
+	    make_manifest(artifacts, 1, &manifest) ||
+	    make_grant(&manifest, 7, &grant))
 		return -1;
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
+	configure_loader(&config, &manifest, &grant, descriptors,
+			 &resource_descriptor, &tracker);
 	if (kobox_closure_loader_open(&config, &loader) != KOBOX_CLOSURE_OK ||
-	    binding_count != 2 ||
+	    tracker.imports != 1 || tracker.releases != 0 ||
 	    kobox_closure_loader_symbol(
-		    loader, 2, "kobox_fixture_module_run",
-		    sizeof("kobox_fixture_module_run") - 1,
-		    KB2_CLOSURE_SYMBOL_FUNCTION, &first_run) != KOBOX_CLOSURE_OK ||
-	    kobox_closure_loader_symbol(
-		    loader, 3, "kobox_fixture_module_run",
-		    sizeof("kobox_fixture_module_run") - 1,
-		    KB2_CLOSURE_SYMBOL_FUNCTION, &second_run) != KOBOX_CLOSURE_OK ||
+		    loader, KOBOX_FIXTURE_PROVIDER_NODE_ID,
+		    "kobox_fixture_provider_add",
+		    sizeof("kobox_fixture_provider_add") - 1,
+		    KB2_CLOSURE_SYMBOL_FUNCTION, &provider_address) !=
+		    KOBOX_CLOSURE_OK ||
+	    !provider_address ||
 	    kobox_closure_loader_root_symbol(
-		    loader, "kobox_fixture_module_run",
-		    sizeof("kobox_fixture_module_run") - 1,
-		    KB2_CLOSURE_SYMBOL_FUNCTION, &root, &ambiguous) !=
-		    KOBOX_CLOSURE_SYMBOL_FAILURE ||
-	    call_module(first_run, &result) || result != KOBOX_FIXTURE_RESULT ||
-	    call_module(second_run, &result) || result != KOBOX_FIXTURE_RESULT ||
+		    loader, "kobox_fixture_consumer_run",
+		    sizeof("kobox_fixture_consumer_run") - 1,
+		    KB2_CLOSURE_SYMBOL_FUNCTION, &root_node,
+		    &run_address) != KOBOX_CLOSURE_OK ||
+	    root_node != KOBOX_FIXTURE_CONSUMER_NODE_ID ||
+	    call_consumer(run_address, &result) ||
+	    result != KOBOX_FIXTURE_RESULT ||
 	    kobox_closure_loader_quiesce(loader) != KOBOX_CLOSURE_OK ||
-	    kobox_closure_loader_close(&loader) != KOBOX_CLOSURE_OK)
+	    kobox_closure_loader_close(&loader) != KOBOX_CLOSURE_OK ||
+	    tracker.releases != 1 ||
+	    !lifecycle_suffix_matches(core_handle, baseline, expected_lifecycle,
+				      ARRAY_SIZE(expected_lifecycle)))
 		goto out;
 	status = 0;
 
 out:
+	if (loader &&
+	    kobox_closure_loader_quiesce(loader) == KOBOX_CLOSURE_OK)
+		kobox_closure_loader_close(&loader);
+	free(grant.bytes);
 	free(manifest.bytes);
 	return status;
 }
 
-static int reject_cycle(const struct artifact_object artifacts[3],
-			const int descriptors[3])
+static int verify_init_rollback(const struct artifact_object artifacts[3],
+				const struct artifact_object *failing_consumer,
+				int resource_descriptor, void *core_handle)
 {
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 3 },
-		{ 3, 2 },
+	static const uint32_t expected_lifecycle[] = {
+		(KOBOX_FIXTURE_CORE_NODE_ID << 8) | KOBOX_FIXTURE_LIFECYCLE_INIT,
+		(KOBOX_FIXTURE_PROVIDER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_INIT,
+		(KOBOX_FIXTURE_PROVIDER_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_CLEANUP,
+		(KOBOX_FIXTURE_CORE_NODE_ID << 8) |
+			KOBOX_FIXTURE_LIFECYCLE_CLEANUP,
 	};
-	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
-	struct kobox_closure_loader_config config;
-	int result = -1;
-
-	if (make_manifest(artifacts, dependencies,
-			  ARRAY_SIZE(dependencies),
-			  &manifest))
-		return -1;
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) ==
-		    KOBOX_CLOSURE_MALFORMED &&
-	    !loader)
-		result = 0;
-	free(manifest.bytes);
-	return result;
-}
-
-static int reject_missing_dependency(
-	const struct artifact_object artifacts[3], const int descriptors[3])
-{
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-	};
-	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
-	struct kobox_closure_loader_config config;
-	size_t binding_count = 0;
-	int result = -1;
-
-	if (make_manifest(artifacts, dependencies, ARRAY_SIZE(dependencies),
-			  &manifest))
-		return -1;
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) ==
-		    KOBOX_CLOSURE_MALFORMED &&
-	    !loader && !binding_count)
-		result = 0;
-	free(manifest.bytes);
-	return result;
-}
-
-static int reject_digest_mismatch(
-	const struct artifact_object artifacts[3], const int descriptors[3])
-{
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-		{ 3, 1 },
-	};
-	struct artifact_object altered[3];
-	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
-	struct kobox_closure_loader_config config;
-	size_t binding_count = 0;
-	int result = -1;
-
-	memcpy(altered, artifacts, sizeof(altered));
-	altered[0].digest[0] ^= 1;
-	if (make_manifest(altered, dependencies, ARRAY_SIZE(dependencies),
-			  &manifest))
-		return -1;
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) ==
-		    KOBOX_CLOSURE_ARTIFACT_FAILURE &&
-	    !loader && !binding_count)
-		result = 0;
-	free(manifest.bytes);
-	return result;
-}
-
-static int reject_unknown_binding_node(
-	const struct artifact_object artifacts[3], const int descriptors[3])
-{
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-		{ 3, 1 },
-	};
-	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
-	struct kobox_closure_loader_config config;
-	uint8_t *binding;
-	size_t binding_count = 0;
-	int result = -1;
-
-	if (make_manifest(artifacts, dependencies, ARRAY_SIZE(dependencies),
-			  &manifest))
-		return -1;
-	binding = manifest.bytes + manifest.manifest.offsets[5];
-	store_u32(binding + KB2_CLOSURE_RESOURCE_BINDING_NODE_ID_OFFSET, 99);
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) ==
-		    KOBOX_CLOSURE_MALFORMED &&
-	    !loader && !binding_count)
-		result = 0;
-	free(manifest.bytes);
-	return result;
-}
-
-static int reject_noncanonical_artifact_order(
-	const struct artifact_object artifacts[3], const int descriptors[3])
-{
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-		{ 3, 1 },
-	};
-	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
-	struct kobox_closure_loader_config config;
-	uint8_t *artifact;
-	size_t binding_count = 0;
-	int result = -1;
-
-	if (make_manifest(artifacts, dependencies, ARRAY_SIZE(dependencies),
-			  &manifest))
-		return -1;
-	artifact = manifest.bytes + manifest.manifest.offsets[0];
-	store_u32(artifact + KB2_CLOSURE_ARTIFACT_DESCRIPTOR_NODE_ID_OFFSET, 4);
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) ==
-		    KOBOX_CLOSURE_MALFORMED &&
-	    !loader && !binding_count)
-		result = 0;
-	free(manifest.bytes);
-	return result;
-}
-
-static int verify_lifecycle_rollback(
-	const struct artifact_object valid_artifacts[3],
-	const int valid_descriptors[3],
-	const struct artifact_object *failing_artifact)
-{
-	const kb2_closure_manifest_dependency_t dependencies[] = {
-		{ 2, 1 },
-		{ 3, 1 },
-	};
-	struct artifact_object artifacts[3] = {
-		valid_artifacts[0],
-		valid_artifacts[1],
-		*failing_artifact,
+	struct artifact_object failing_artifacts[3] = {
+		artifacts[0], artifacts[1], *failing_consumer
 	};
 	int descriptors[3] = {
 		artifacts[0].descriptor,
 		artifacts[1].descriptor,
-		artifacts[2].descriptor,
+		failing_consumer->descriptor,
 	};
 	struct manifest_object manifest;
-	struct kobox_closure_loader *loader = NULL;
+	struct grant_object grant;
+	struct import_tracker tracker = { 0 };
 	struct kobox_closure_loader_config config;
-	char core_path[64];
-	void *pinned_core = NULL;
-	size_t binding_count = 0;
-	int length;
+	struct kobox_closure_loader *loader = NULL;
+	size_t baseline;
+	enum kobox_closure_loader_status open_status;
 	int result = -1;
 
-	length = snprintf(core_path, sizeof(core_path), "/proc/self/fd/%d",
-			  descriptors[0]);
-	if (length <= 0 || (size_t)length >= sizeof(core_path))
+	if (lifecycle_count(core_handle, &baseline) ||
+	    make_manifest(failing_artifacts, 1, &manifest) ||
+	    make_grant(&manifest, 8, &grant))
 		return -1;
-	pinned_core = dlopen(core_path, RTLD_NOW | RTLD_LOCAL);
-	if (!pinned_core ||
-	    make_manifest(artifacts, dependencies, ARRAY_SIZE(dependencies),
-			  &manifest))
-		goto out;
-	memset(&config, 0, sizeof(config));
-	config.manifest = &manifest.manifest;
-	config.artifact_descriptors = descriptors;
-	config.artifact_count = 3;
-	config.bind_resource = bind_resource;
-	config.bind_resource_context = &binding_count;
-	config.validate_shared = validate_shared;
-	if (kobox_closure_loader_open(&config, &loader) !=
-		    KOBOX_CLOSURE_LIFECYCLE_FAILURE ||
-	    loader || binding_count != 2)
-		goto free_manifest;
-	if (run_valid_closure(valid_artifacts, valid_descriptors))
-		goto free_manifest;
-	result = 0;
-
-free_manifest:
+	configure_loader(&config, &manifest, &grant, descriptors,
+			 &resource_descriptor, &tracker);
+	open_status = kobox_closure_loader_open(&config, &loader);
+	if (open_status ==
+		    KOBOX_CLOSURE_LIFECYCLE_FAILURE &&
+	    !loader && tracker.imports == 1 && tracker.releases == 1 &&
+	    lifecycle_suffix_matches(core_handle, baseline, expected_lifecycle,
+				     ARRAY_SIZE(expected_lifecycle)))
+		result = 0;
+	if (result)
+		fprintf(stderr,
+			"rollback status=%u loader=%p imports=%zu releases=%zu baseline=%zu\n",
+			(unsigned int)open_status, (void *)loader, tracker.imports,
+			tracker.releases, baseline);
+	free(grant.bytes);
 	free(manifest.bytes);
-out:
-	if (pinned_core)
-		dlclose(pinned_core);
+	return result;
+}
+
+static int reject_incomplete_export_set(
+	const struct artifact_object artifacts[3], const int descriptors[3],
+	int resource_descriptor)
+{
+	struct manifest_object manifest;
+	struct grant_object grant;
+	struct import_tracker tracker = { 0 };
+	struct kobox_closure_loader_config config;
+	struct kobox_closure_loader *loader = NULL;
+	int result = -1;
+
+	if (make_manifest(artifacts, 0, &manifest) ||
+	    make_grant(&manifest, 9, &grant))
+		return -1;
+	configure_loader(&config, &manifest, &grant, descriptors,
+			 &resource_descriptor, &tracker);
+	if (kobox_closure_loader_open(&config, &loader) ==
+		    KOBOX_CLOSURE_SYMBOL_FAILURE &&
+	    !loader && !tracker.imports && !tracker.releases)
+		result = 0;
+	free(grant.bytes);
+	free(manifest.bytes);
+	return result;
+}
+
+static int reject_resource_import(
+	const struct artifact_object artifacts[3], const int descriptors[3],
+	int resource_descriptor)
+{
+	struct manifest_object manifest;
+	struct grant_object grant;
+	struct import_tracker tracker = { .fail = 1 };
+	struct kobox_closure_loader_config config;
+	struct kobox_closure_loader *loader = NULL;
+	int result = -1;
+
+	if (make_manifest(artifacts, 1, &manifest) ||
+	    make_grant(&manifest, 10, &grant))
+		return -1;
+	configure_loader(&config, &manifest, &grant, descriptors,
+			 &resource_descriptor, &tracker);
+	if (kobox_closure_loader_open(&config, &loader) ==
+		    KOBOX_CLOSURE_RESOURCE_FAILURE &&
+	    !loader && !tracker.imports && !tracker.releases)
+		result = 0;
+	free(grant.bytes);
+	free(manifest.bytes);
 	return result;
 }
 
@@ -544,34 +622,62 @@ int main(int argument_count, char **arguments)
 {
 	struct artifact_object artifacts[4];
 	int descriptors[3];
+	char core_path[64];
+	void *core_handle = NULL;
+	int resource_descriptor = -1;
 	int result = 1;
 	size_t index;
 
-	if (argument_count != 4)
+	if (argument_count != 5)
 		return 2;
 	for (index = 0; index < ARRAY_SIZE(artifacts); index++)
 		artifacts[index].descriptor = -1;
 	if (make_artifact(arguments[1], "closure-loader-core", &artifacts[0]) ||
-	    make_artifact(arguments[2], "closure-loader-module-a",
+	    make_artifact(arguments[2], "closure-loader-provider",
 			  &artifacts[1]) ||
-	    make_artifact(arguments[2], "closure-loader-module-b",
+	    make_artifact(arguments[3], "closure-loader-consumer",
 			  &artifacts[2]) ||
-	    make_artifact(arguments[3], "closure-loader-module-fail",
+	    make_artifact(arguments[4], "closure-loader-consumer-fail",
 			  &artifacts[3]))
 		goto out;
-	for (index = 0; index < 3; index++)
+	for (index = 0; index < ARRAY_SIZE(descriptors); index++)
 		descriptors[index] = artifacts[index].descriptor;
-	if (run_valid_closure(artifacts, descriptors) ||
-	    reject_cycle(artifacts, descriptors) ||
-	    reject_missing_dependency(artifacts, descriptors) ||
-	    reject_digest_mismatch(artifacts, descriptors) ||
-	    reject_unknown_binding_node(artifacts, descriptors) ||
-	    reject_noncanonical_artifact_order(artifacts, descriptors) ||
-	    verify_lifecycle_rollback(artifacts, descriptors, &artifacts[3]))
+	resource_descriptor = memfd_create("closure-loader-resource", MFD_CLOEXEC);
+	if (resource_descriptor < 0 ||
+	    snprintf(core_path, sizeof(core_path), "/proc/self/fd/%d",
+		     artifacts[0].descriptor) <= 0)
 		goto out;
+	core_handle = dlopen(core_path, RTLD_NOW | RTLD_LOCAL);
+	if (!core_handle) {
+		fprintf(stderr, "failed to pin fixture core: %s\n", dlerror());
+		goto out;
+	}
+	if (run_valid_closure(artifacts, descriptors, resource_descriptor,
+			      core_handle)) {
+		fprintf(stderr, "valid closure scenario failed\n");
+		goto out;
+	}
+	if (verify_init_rollback(artifacts, &artifacts[3], resource_descriptor,
+				 core_handle)) {
+		fprintf(stderr, "init rollback scenario failed\n");
+		goto out;
+	}
+	if (reject_incomplete_export_set(artifacts, descriptors,
+					 resource_descriptor)) {
+		fprintf(stderr, "export closure scenario failed\n");
+		goto out;
+	}
+	if (reject_resource_import(artifacts, descriptors, resource_descriptor)) {
+		fprintf(stderr, "resource import scenario failed\n");
+		goto out;
+	}
 	result = 0;
 
 out:
+	if (core_handle)
+		dlclose(core_handle);
+	if (resource_descriptor >= 0)
+		close(resource_descriptor);
 	for (index = 0; index < ARRAY_SIZE(artifacts); index++) {
 		if (artifacts[index].descriptor >= 0)
 			close(artifacts[index].descriptor);

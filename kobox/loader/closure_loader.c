@@ -25,8 +25,6 @@
 #define KOBOX_MANUAL_ELF_CALL
 #endif
 
-typedef int (*kobox_lifecycle_fn)(void);
-
 struct closure_export {
 	char name[128];
 	uint32_t kind;
@@ -61,6 +59,7 @@ struct closure_node {
 	uintptr_t init_address;
 	uintptr_t quiesce_address;
 	uintptr_t cleanup_address;
+	struct kobox_module_context context;
 	int loaded;
 	int initialized;
 };
@@ -85,6 +84,7 @@ struct kobox_closure_loader {
 	size_t *topological_order;
 	kobox_closure_runtime_resolve_fn resolve_runtime;
 	void *resolve_runtime_context;
+	struct kobox_resource_runtime *resource_runtime;
 	enum closure_loader_state state;
 };
 
@@ -175,6 +175,7 @@ static void free_loader(struct kobox_closure_loader *loader)
 	free(loader->topological_order);
 	free(loader->dependencies);
 	free(loader->nodes);
+	kobox_resource_runtime_close(&loader->resource_runtime);
 	free(loader);
 }
 
@@ -520,147 +521,6 @@ static enum kobox_closure_loader_status copy_imports(
 	return KOBOX_CLOSURE_OK;
 }
 
-static uint64_t known_rights(uint32_t type)
-{
-	switch (type) {
-	case KB2_CLOSURE_RESOURCE_MEMORY:
-		return KB2_CLOSURE_MEMORY_RIGHT_READ |
-		       KB2_CLOSURE_MEMORY_RIGHT_WRITE |
-		       KB2_CLOSURE_MEMORY_RIGHT_MAP |
-		       KB2_CLOSURE_MEMORY_RIGHT_DMA;
-	case KB2_CLOSURE_RESOURCE_DEVICE:
-		return KB2_CLOSURE_DEVICE_RIGHT_COMMAND |
-		       KB2_CLOSURE_DEVICE_RIGHT_MAP |
-		       KB2_CLOSURE_DEVICE_RIGHT_DMA;
-	case KB2_CLOSURE_RESOURCE_STORAGE:
-		return KB2_CLOSURE_STORAGE_RIGHT_READ_BLOCKS |
-		       KB2_CLOSURE_STORAGE_RIGHT_WRITE_BLOCKS |
-		       KB2_CLOSURE_STORAGE_RIGHT_FLUSH |
-		       KB2_CLOSURE_STORAGE_RIGHT_DISCARD;
-	case KB2_CLOSURE_RESOURCE_NOTIFICATION:
-		return KB2_CLOSURE_NOTIFICATION_RIGHT_WAIT |
-		       KB2_CLOSURE_NOTIFICATION_RIGHT_SIGNAL;
-	case KB2_CLOSURE_RESOURCE_CHANNEL:
-		return KB2_CLOSURE_CHANNEL_RIGHT_SEND |
-		       KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE;
-	default:
-		return 0;
-	}
-}
-
-static enum kobox_closure_loader_status validate_and_bind_resources(
-	const struct kobox_closure_loader_config *config,
-	const struct kobox_closure_loader *loader)
-{
-	const kb2_closure_manifest_t *manifest = config->manifest;
-	size_t resource_count = kb2_closure_manifest_resource_count(manifest);
-	size_t binding_count = kb2_closure_manifest_binding_count(manifest);
-	uint32_t prior_slot = 0;
-	uint32_t prior_binding_slot = 0;
-	uint32_t prior_binding_node = 0;
-	size_t resource_index;
-	size_t binding_index;
-
-	if ((resource_count || binding_count) && !config->bind_resource)
-		return KOBOX_CLOSURE_RESOURCE_FAILURE;
-	for (resource_index = 0; resource_index < resource_count;
-	     resource_index++) {
-		kb2_closure_manifest_resource_t resource;
-		uint64_t rights;
-		size_t matches = 0;
-
-		if (kb2_closure_manifest_resource(manifest, resource_index,
-						  &resource) !=
-			    KB2_PROTOCOL_OK ||
-		    resource.slot_id <= prior_slot ||
-		    resource.type > KB2_CLOSURE_RESOURCE_CHANNEL ||
-		    resource.maximum_count == 0 ||
-		    resource.minimum_count > resource.maximum_count ||
-		    resource.maximum_rights == 0 ||
-		    (resource.flags &
-		     ~(KB2_CLOSURE_RESOURCE_FLAG_REQUIRED |
-		       KB2_CLOSURE_RESOURCE_FLAG_SHARED |
-		       KB2_CLOSURE_RESOURCE_FLAG_RESET_REQUIRED)) ||
-		    ((resource.flags & KB2_CLOSURE_RESOURCE_FLAG_REQUIRED) &&
-		     !resource.minimum_count))
-			return KOBOX_CLOSURE_MALFORMED;
-		rights = known_rights(resource.type);
-		if (!rights || (resource.maximum_rights & ~rights) ||
-		    (resource.required_rights & ~resource.maximum_rights))
-			return KOBOX_CLOSURE_MALFORMED;
-		for (binding_index = 0; binding_index < binding_count;
-		     binding_index++) {
-			kb2_closure_manifest_binding_t binding;
-
-			if (kb2_closure_manifest_binding(manifest, binding_index,
-						 &binding) != KB2_PROTOCOL_OK)
-				return KOBOX_CLOSURE_MALFORMED;
-			if (binding.slot_id != resource.slot_id)
-				continue;
-			matches++;
-		}
-		if (!matches ||
-		    (!(resource.flags & KB2_CLOSURE_RESOURCE_FLAG_SHARED) &&
-		     matches != 1))
-			return KOBOX_CLOSURE_MALFORMED;
-		prior_slot = resource.slot_id;
-	}
-	for (binding_index = 0; binding_index < binding_count;
-	     binding_index++) {
-		kb2_closure_manifest_binding_t binding;
-		int found = 0;
-
-		if (kb2_closure_manifest_binding(manifest, binding_index,
-						 &binding) != KB2_PROTOCOL_OK ||
-		    (binding_index &&
-		     (binding.slot_id < prior_binding_slot ||
-		      (binding.slot_id == prior_binding_slot &&
-		       binding.node_id <= prior_binding_node))))
-			return KOBOX_CLOSURE_MALFORMED;
-		for (resource_index = 0; resource_index < resource_count;
-		     resource_index++) {
-			kb2_closure_manifest_resource_t resource;
-
-			if (kb2_closure_manifest_resource(manifest, resource_index,
-							  &resource) !=
-			    KB2_PROTOCOL_OK)
-				return KOBOX_CLOSURE_MALFORMED;
-			if (resource.slot_id == binding.slot_id) {
-				found = 1;
-				break;
-			}
-		}
-		if (!found)
-			return KOBOX_CLOSURE_MALFORMED;
-		if (find_node_index(loader, binding.node_id) == SIZE_MAX)
-			return KOBOX_CLOSURE_MALFORMED;
-		prior_binding_slot = binding.slot_id;
-		prior_binding_node = binding.node_id;
-	}
-	for (binding_index = 0; binding_index < binding_count;
-	     binding_index++) {
-		kb2_closure_manifest_binding_t binding;
-		kb2_closure_manifest_resource_t resource;
-
-		if (kb2_closure_manifest_binding(manifest, binding_index,
-						 &binding) != KB2_PROTOCOL_OK)
-			return KOBOX_CLOSURE_MALFORMED;
-		for (resource_index = 0; resource_index < resource_count;
-		     resource_index++) {
-			if (kb2_closure_manifest_resource(manifest, resource_index,
-							  &resource) !=
-			    KB2_PROTOCOL_OK)
-				return KOBOX_CLOSURE_MALFORMED;
-			if (resource.slot_id == binding.slot_id)
-				break;
-		}
-		if (config->bind_resource(config->bind_resource_context, &resource,
-					  binding.node_id))
-			return KOBOX_CLOSURE_RESOURCE_FAILURE;
-	}
-	return KOBOX_CLOSURE_OK;
-}
-
 static enum kobox_closure_loader_status verify_artifacts(
 	const struct kobox_closure_loader_config *config,
 	const struct kobox_closure_loader *loader)
@@ -672,6 +532,7 @@ static enum kobox_closure_loader_status verify_artifacts(
 		return KOBOX_CLOSURE_MALFORMED;
 	for (index = 0; index < loader->node_count; index++) {
 		const struct closure_node *node = &loader->nodes[index];
+		struct kobox_elf64_symbol *expected_exports;
 		struct stat status;
 		void *bytes;
 		int descriptor = config->artifact_descriptors[index];
@@ -697,6 +558,27 @@ static enum kobox_closure_loader_status verify_artifacts(
 		munmap(bytes, (size_t)node->content_size);
 		if (memcmp(digest, node->content_digest, sizeof(digest)))
 			return KOBOX_CLOSURE_ARTIFACT_FAILURE;
+		expected_exports = calloc(node->export_count,
+					  sizeof(expected_exports[0]));
+		if (!expected_exports)
+			return KOBOX_CLOSURE_NO_MEMORY;
+		{
+			size_t export_index;
+
+			for (export_index = 0; export_index < node->export_count;
+			     export_index++) {
+				expected_exports[export_index].name =
+					node->exports[export_index].name;
+				expected_exports[export_index].kind =
+					node->exports[export_index].kind;
+			}
+		}
+		if (kobox_elf64_validate_export_set_fd(
+			    descriptor, expected_exports, node->export_count)) {
+			free(expected_exports);
+			return KOBOX_CLOSURE_SYMBOL_FAILURE;
+		}
+		free(expected_exports);
 		if (node->kind == KB2_CLOSURE_ARTIFACT_SHARED_PROVIDER) {
 			kb2_closure_manifest_artifact_t artifact = {
 				.node_id = node->node_id,
@@ -910,14 +792,63 @@ static enum kobox_closure_loader_status map_artifacts(
 	return KOBOX_CLOSURE_OK;
 }
 
-KOBOX_MANUAL_ELF_CALL static int call_entry(uintptr_t address)
+KOBOX_MANUAL_ELF_CALL static int call_entry(
+	uintptr_t address, const struct kobox_module_context *context)
 {
-	kobox_lifecycle_fn function;
+	kobox_module_lifecycle_fn function;
 
 	if (sizeof(address) != sizeof(function))
 		return -1;
 	memcpy(&function, &address, sizeof(function));
-	return function();
+	return function(context);
+}
+
+static enum kobox_closure_loader_status build_module_contexts(
+	const struct kobox_closure_loader_config *config,
+	struct kobox_closure_loader *loader)
+{
+	static const uint8_t identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE] =
+		KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER;
+	struct closure_export *core_export;
+	struct closure_node *core_node;
+	char core_name[128];
+	size_t core_index;
+	size_t index;
+
+	if (!config->core_operations_node_id || !config->core_operations_symbol ||
+	    !config->core_operations_symbol_length ||
+	    config->core_operations_symbol_length >= sizeof(core_name))
+		return KOBOX_CLOSURE_INVALID_ARGUMENT;
+	memcpy(core_name, config->core_operations_symbol,
+	       config->core_operations_symbol_length);
+	core_name[config->core_operations_symbol_length] = '\0';
+	core_index = find_node_index(loader, config->core_operations_node_id);
+	if (core_index == SIZE_MAX)
+		return KOBOX_CLOSURE_SYMBOL_FAILURE;
+	core_node = &loader->nodes[core_index];
+	core_export = find_export(core_node, core_name,
+				  KB2_CLOSURE_SYMBOL_OBJECT);
+	if (!core_export || !core_export->address)
+		return KOBOX_CLOSURE_SYMBOL_FAILURE;
+	for (index = 0; index < loader->node_count; index++) {
+		struct closure_node *node = &loader->nodes[index];
+		const void *view = kobox_resource_runtime_view(
+			loader->resource_runtime, node->node_id);
+
+		if (!view)
+			return KOBOX_CLOSURE_RESOURCE_FAILURE;
+		node->context.size = sizeof(node->context);
+		memcpy(node->context.identity, identity, sizeof(identity));
+		node->context.generation = kobox_resource_runtime_generation(
+			loader->resource_runtime);
+		node->context.node_id = node->node_id;
+		node->context.resource_view = view;
+		node->context.runtime_operations =
+			kobox_resource_runtime_operations();
+		node->context.core_operations =
+			(const void *)(uintptr_t)core_export->address;
+	}
+	return KOBOX_CLOSURE_OK;
 }
 
 static void unload_artifacts(struct kobox_closure_loader *loader)
@@ -957,12 +888,13 @@ static enum kobox_closure_loader_status initialize_nodes(
 		struct closure_node *node =
 			&loader->nodes[loader->topological_order[order]];
 
-		if (call_entry(node->init_address)) {
+		if (call_entry(node->init_address, &node->context)) {
 			while (order > 0) {
 				node = &loader->nodes[
 					loader->topological_order[--order]];
 				if (node->initialized)
-					call_entry(node->cleanup_address);
+					call_entry(node->cleanup_address,
+						   &node->context);
 				node->initialized = 0;
 			}
 			return KOBOX_CLOSURE_LIFECYCLE_FAILURE;
@@ -999,10 +931,31 @@ enum kobox_closure_loader_status kobox_closure_loader_open(
 		status = copy_imports(loader, config->manifest);
 	if (status == KOBOX_CLOSURE_OK)
 		status = verify_artifacts(config, loader);
-	if (status == KOBOX_CLOSURE_OK)
-		status = validate_and_bind_resources(config, loader);
+	if (status == KOBOX_CLOSURE_OK) {
+		struct kobox_resource_runtime_config resource_config = {
+			.manifest = config->manifest,
+			.grant = config->grant,
+			.native_handles = config->resource_handles,
+			.native_handle_count = config->resource_handle_count,
+			.import_object = config->import_resource,
+			.release_object = config->release_resource,
+			.object_context = config->resource_context,
+		};
+		enum kobox_resource_runtime_status resource_status =
+			kobox_resource_runtime_open(&resource_config,
+						    &loader->resource_runtime);
+
+		if (resource_status == KOBOX_RESOURCE_RUNTIME_NO_MEMORY)
+			status = KOBOX_CLOSURE_NO_MEMORY;
+		else if (resource_status == KOBOX_RESOURCE_RUNTIME_IMPORT_FAILURE)
+			status = KOBOX_CLOSURE_RESOURCE_FAILURE;
+		else if (resource_status != KOBOX_RESOURCE_RUNTIME_OK)
+			status = KOBOX_CLOSURE_MALFORMED;
+	}
 	if (status == KOBOX_CLOSURE_OK)
 		status = map_artifacts(config, loader);
+	if (status == KOBOX_CLOSURE_OK)
+		status = build_module_contexts(config, loader);
 	if (status == KOBOX_CLOSURE_OK)
 		status = initialize_nodes(loader);
 	if (status != KOBOX_CLOSURE_OK) {
@@ -1089,7 +1042,7 @@ kobox_closure_loader_quiesce(struct kobox_closure_loader *loader)
 		struct closure_node *node =
 			&loader->nodes[loader->topological_order[order - 1]];
 
-		if (call_entry(node->quiesce_address)) {
+		if (call_entry(node->quiesce_address, &node->context)) {
 			loader->state = CLOSURE_FAULTED;
 			return KOBOX_CLOSURE_LIFECYCLE_FAILURE;
 		}
@@ -1114,7 +1067,8 @@ kobox_closure_loader_close(struct kobox_closure_loader **loader_pointer)
 		struct closure_node *node =
 			&loader->nodes[loader->topological_order[order - 1]];
 
-		if (node->initialized && call_entry(node->cleanup_address))
+		if (node->initialized &&
+		    call_entry(node->cleanup_address, &node->context))
 			status = KOBOX_CLOSURE_LIFECYCLE_FAILURE;
 		node->initialized = 0;
 	}

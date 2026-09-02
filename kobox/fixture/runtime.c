@@ -22,8 +22,8 @@ KOBOX_MANUAL_ELF_CALL int kobox_fixture_runtime_open(
 	if (kobox_closure_loader_open(config, &runtime->closure) !=
 		    KOBOX_CLOSURE_OK ||
 	    kobox_closure_loader_root_symbol(
-		    runtime->closure, "kobox_fixture_module_run",
-		    sizeof("kobox_fixture_module_run") - 1,
+		    runtime->closure, "kobox_fixture_consumer_run",
+		    sizeof("kobox_fixture_consumer_run") - 1,
 		    KB2_CLOSURE_SYMBOL_FUNCTION, &runtime->root_node_id,
 		    &run_address) != KOBOX_CLOSURE_OK ||
 	    sizeof(run_address) != sizeof(runtime->run))

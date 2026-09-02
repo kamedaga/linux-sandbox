@@ -499,3 +499,112 @@ void kobox_elf64_module_unload(struct kobox_elf64_module *module)
 		munmap(module->mapping, module->mapping_size);
 	memset(module, 0, sizeof(*module));
 }
+
+int kobox_elf64_validate_export_set_fd(
+	int file_descriptor, const struct kobox_elf64_symbol *expected,
+	size_t expected_count)
+{
+	const Elf64_Ehdr *header;
+	const Elf64_Shdr *sections;
+	struct stat status;
+	uint8_t *file = MAP_FAILED;
+	uint8_t *matched = NULL;
+	size_t file_size = 0;
+	size_t actual_count = 0;
+	size_t section_index;
+	uint32_t table_type;
+	int result = -1;
+
+	if (file_descriptor < 0 || !expected || !expected_count)
+		return -1;
+	for (section_index = 0; section_index < expected_count; section_index++) {
+		if (!expected[section_index].name || !expected[section_index].name[0] ||
+		    expected[section_index].kind > KOBOX_ELF64_SYMBOL_OBJECT)
+			return -1;
+	}
+	if (fstat(file_descriptor, &status) ||
+	    status.st_size < (off_t)sizeof(Elf64_Ehdr) ||
+	    (uint64_t)status.st_size > SIZE_MAX)
+		return -1;
+	file_size = (size_t)status.st_size;
+	file = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, file_descriptor, 0);
+	if (file == MAP_FAILED)
+		goto out;
+	header = (const Elf64_Ehdr *)file;
+	if (memcmp(header->e_ident, ELFMAG, SELFMAG) ||
+	    header->e_ident[EI_CLASS] != ELFCLASS64 ||
+	    header->e_ident[EI_DATA] != ELFDATA2LSB ||
+	    header->e_machine != EM_X86_64 ||
+	    (header->e_type != ET_REL && header->e_type != ET_DYN) ||
+	    header->e_shentsize != sizeof(Elf64_Shdr) || !header->e_shnum ||
+	    !file_range_valid(file_size, header->e_shoff,
+			      (uint64_t)header->e_shnum * sizeof(Elf64_Shdr)))
+		goto out;
+	sections = (const Elf64_Shdr *)(file + header->e_shoff);
+	table_type = header->e_type == ET_REL ? SHT_SYMTAB : SHT_DYNSYM;
+	matched = calloc(expected_count, sizeof(*matched));
+	if (!matched)
+		goto out;
+	for (section_index = 0; section_index < header->e_shnum;
+	     section_index++) {
+		const Elf64_Shdr *table = &sections[section_index];
+		const Elf64_Sym *symbols;
+		size_t symbol_count;
+		size_t symbol_index;
+
+		if (table->sh_type != table_type)
+			continue;
+		if (table->sh_entsize != sizeof(Elf64_Sym) ||
+		    table->sh_size % sizeof(Elf64_Sym) ||
+		    !file_range_valid(file_size, table->sh_offset, table->sh_size))
+			goto out;
+		symbols = (const Elf64_Sym *)(file + table->sh_offset);
+		symbol_count = table->sh_size / sizeof(*symbols);
+		for (symbol_index = 0; symbol_index < symbol_count;
+		     symbol_index++) {
+			const Elf64_Sym *symbol = &symbols[symbol_index];
+			unsigned int binding = ELF64_ST_BIND(symbol->st_info);
+			unsigned int type = ELF64_ST_TYPE(symbol->st_info);
+			unsigned int visibility = ELF64_ST_VISIBILITY(symbol->st_other);
+			uint32_t kind;
+			const char *name;
+			size_t expected_index;
+
+			if ((binding != STB_GLOBAL && binding != STB_WEAK) ||
+			    symbol->st_shndx == SHN_UNDEF ||
+			    (visibility != STV_DEFAULT &&
+			     visibility != STV_PROTECTED) ||
+			    (type != STT_FUNC && type != STT_OBJECT))
+				continue;
+			if (symbol_name(file, file_size, sections, header->e_shnum,
+					table, symbol, &name) || !name[0])
+				goto out;
+			kind = type == STT_FUNC ? KOBOX_ELF64_SYMBOL_FUNCTION :
+						 KOBOX_ELF64_SYMBOL_OBJECT;
+			for (expected_index = 0; expected_index < expected_count;
+			     expected_index++) {
+				if (expected[expected_index].kind == kind &&
+				    !strcmp(expected[expected_index].name, name))
+					break;
+			}
+			if (expected_index == expected_count ||
+			    matched[expected_index])
+				goto out;
+			matched[expected_index] = 1;
+			actual_count++;
+		}
+	}
+	if (actual_count != expected_count)
+		goto out;
+	for (section_index = 0; section_index < expected_count; section_index++) {
+		if (!matched[section_index])
+			goto out;
+	}
+	result = 0;
+
+out:
+	free(matched);
+	if (file != MAP_FAILED)
+		munmap(file, file_size);
+	return result;
+}

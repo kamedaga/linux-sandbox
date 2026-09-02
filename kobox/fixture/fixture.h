@@ -3,6 +3,8 @@
 #ifndef KOBOX_FIXTURE_H
 #define KOBOX_FIXTURE_H
 
+#include "../runtime/module_context.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,6 +15,15 @@
 #define KOBOX_FIXTURE_CORE_IDENTITY_3 '\0'
 #define KOBOX_FIXTURE_CPU_COUNT 2u
 #define KOBOX_FIXTURE_RESULT UINT64_C(0x0002000200020001)
+
+#define KOBOX_FIXTURE_CORE_NODE_ID 1u
+#define KOBOX_FIXTURE_PROVIDER_NODE_ID 2u
+#define KOBOX_FIXTURE_CONSUMER_NODE_ID 3u
+#define KOBOX_FIXTURE_RESOURCE_SLOT_ID 1u
+
+#define KOBOX_FIXTURE_LIFECYCLE_INIT 1u
+#define KOBOX_FIXTURE_LIFECYCLE_QUIESCE 2u
+#define KOBOX_FIXTURE_LIFECYCLE_CLEANUP 3u
 
 typedef int (*kobox_fixture_thread_fn)(void *argument);
 
@@ -55,15 +66,30 @@ struct kobox_fixture_core_ops {
 	int (*rcu_synchronize)(void *rcu);
 
 	int (*monotonic_time_ns)(uint64_t *time_out);
+
+	int (*lifecycle_record)(uint32_t node_id, uint32_t phase);
 };
 
-typedef const struct kobox_fixture_core_ops *(*kobox_fixture_get_core_ops_fn)(void);
-typedef int (*kobox_fixture_lifecycle_fn)(void);
 typedef int (*kobox_fixture_module_run_fn)(uint64_t *result_out);
+typedef int (*kobox_fixture_lifecycle_snapshot_fn)(uint32_t *records,
+						  size_t capacity,
+						  size_t *count_out);
 
-const struct kobox_fixture_core_ops *kobox_fixture_core_get_ops(void);
-int kobox_fixture_core_init(void);
-int kobox_fixture_core_quiesce(void);
-int kobox_fixture_core_cleanup(void);
+extern const struct kobox_fixture_core_ops kobox_fixture_core_operations;
+int kobox_fixture_core_init(const struct kobox_module_context *context);
+int kobox_fixture_core_quiesce(const struct kobox_module_context *context);
+int kobox_fixture_core_cleanup(const struct kobox_module_context *context);
+int kobox_fixture_lifecycle_snapshot(uint32_t *records, size_t capacity,
+				     size_t *count_out);
+
+int kobox_fixture_provider_add(uint64_t value, uint64_t *total_out);
+int kobox_fixture_provider_init(const struct kobox_module_context *context);
+int kobox_fixture_provider_quiesce(const struct kobox_module_context *context);
+int kobox_fixture_provider_cleanup(const struct kobox_module_context *context);
+
+int kobox_fixture_consumer_init(const struct kobox_module_context *context);
+int kobox_fixture_consumer_run(uint64_t *result_out);
+int kobox_fixture_consumer_quiesce(const struct kobox_module_context *context);
+int kobox_fixture_consumer_cleanup(const struct kobox_module_context *context);
 
 #endif

@@ -82,10 +82,10 @@ static int load_descriptor(int descriptor, void *core,
 			   struct kobox_elf64_module *module)
 {
 	struct kobox_elf64_export exports[] = {
-		{ "kobox_fixture_module_cleanup", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
-		{ "kobox_fixture_module_init", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
-		{ "kobox_fixture_module_quiesce", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
-		{ "kobox_fixture_module_run", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_provider_add", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_provider_cleanup", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_provider_init", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_provider_quiesce", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
 	};
 	size_t index;
 

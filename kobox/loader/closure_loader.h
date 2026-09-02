@@ -3,6 +3,8 @@
 #ifndef KOBOX_CLOSURE_LOADER_H
 #define KOBOX_CLOSURE_LOADER_H
 
+#include "../runtime/resource_runtime.h"
+
 #include <kobox2/closure_manifest.h>
 
 #include <stddef.h>
@@ -25,9 +27,6 @@ enum kobox_closure_loader_status {
 typedef int (*kobox_closure_runtime_resolve_fn)(
 	void *context, const char *name, size_t name_length, uint32_t kind,
 	uintptr_t *address_out);
-typedef int (*kobox_closure_resource_bind_fn)(
-	void *context, const kb2_closure_manifest_resource_t *resource,
-	uint32_t node_id);
 typedef int (*kobox_closure_shared_validate_fn)(
 	void *context, int artifact_descriptor,
 	const kb2_closure_manifest_artifact_t *artifact);
@@ -38,10 +37,17 @@ struct kobox_closure_loader_config {
 	size_t artifact_count;
 	kobox_closure_runtime_resolve_fn resolve_runtime;
 	void *resolve_runtime_context;
-	kobox_closure_resource_bind_fn bind_resource;
-	void *bind_resource_context;
+	const kb2_resource_grant_t *grant;
+	const int *resource_handles;
+	size_t resource_handle_count;
+	kobox_resource_import_fn import_resource;
+	kobox_resource_release_fn release_resource;
+	void *resource_context;
 	kobox_closure_shared_validate_fn validate_shared;
 	void *validate_shared_context;
+	uint32_t core_operations_node_id;
+	const char *core_operations_symbol;
+	size_t core_operations_symbol_length;
 };
 
 enum kobox_closure_loader_status kobox_closure_loader_open(

@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+
+{
+	global:
+		kobox_fixture_core_cleanup;
+		kobox_fixture_core_init;
+		kobox_fixture_core_operations;
+		kobox_fixture_core_quiesce;
+		kobox_fixture_lifecycle_snapshot;
+	local:
+		*;
+};

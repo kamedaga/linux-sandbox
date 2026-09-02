@@ -6,6 +6,7 @@
 
 #include <kobox2/closure_manifest.h>
 #include <kobox2/protocol.h>
+#include <kobox2/resource_grant.h>
 #include <kobox2/sha256.h>
 #include <kobox2_test/bootstrap.h>
 #include <kobox2_test/management.h>
@@ -16,6 +17,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -124,20 +126,60 @@ static void wait_for_termination(void)
 		pause();
 }
 
-static int bind_resource(void *context,
-			 const kb2_closure_manifest_resource_t *resource,
-			 uint32_t node_id)
+struct fixture_native_resource {
+	int descriptor;
+};
+
+static int import_resource(
+	void *context, const kb2_resource_grant_slot_t *slot,
+	const kb2_resource_grant_object_t *object,
+	const struct kobox_resource_native_handle *handles, size_t handle_count,
+	void **native_object_out)
 {
+	const int *transport_descriptor = context;
+	struct fixture_native_resource *resource;
+	struct stat resource_status;
+	struct stat transport_status;
+	uint8_t interface_digest[KB2_CLOSURE_SCHEMA_DIGEST_SIZE];
+
+	if (!transport_descriptor || !slot || !object || !handles ||
+	    !native_object_out || handle_count != 1 ||
+	    kb2_protocol_copy_schema_digest(interface_digest,
+					       sizeof(interface_digest)) !=
+		    KB2_PROTOCOL_OK ||
+	    slot->resource_type != KB2_CLOSURE_RESOURCE_CHANNEL ||
+	    memcmp(slot->interface_schema_digest, interface_digest,
+		   sizeof(interface_digest)) ||
+	    object->granted_rights !=
+		    (KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+		     KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE) ||
+	    handles[0].role != KB2_PROTOCOL_NATIVE_HANDLE_ROLE_MEMORY ||
+	    fstat(*transport_descriptor, &transport_status) ||
+	    fstat(handles[0].handle, &resource_status) ||
+	    transport_status.st_dev != resource_status.st_dev ||
+	    transport_status.st_ino != resource_status.st_ino)
+		return -1;
+	resource = calloc(1, sizeof(*resource));
+	if (!resource)
+		return -1;
+	resource->descriptor = fcntl(handles[0].handle, F_DUPFD_CLOEXEC, 0);
+	if (resource->descriptor < 0) {
+		free(resource);
+		return -1;
+	}
+	*native_object_out = resource;
+	return 0;
+}
+
+static void release_resource(void *context, void *native_object)
+{
+	struct fixture_native_resource *resource = native_object;
+
 	(void)context;
-	(void)node_id;
-	return resource->type == KB2_CLOSURE_RESOURCE_CHANNEL &&
-	       resource->minimum_count == 1 && resource->maximum_count == 1 &&
-	       resource->required_rights ==
-		       (KB2_CLOSURE_CHANNEL_RIGHT_SEND |
-			KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE) &&
-	       resource->maximum_rights == resource->required_rights
-		       ? 0
-		       : -1;
+	if (!resource)
+		return;
+	close(resource->descriptor);
+	free(resource);
 }
 
 static int validate_shared(void *context, int descriptor,
@@ -153,21 +195,36 @@ static int open_generic_closure(struct kobox_fixture_runtime *runtime,
 				const int *descriptors)
 {
 	kb2_closure_manifest_t manifest;
+	kb2_resource_grant_t grant;
+	kb2_resource_grant_slot_t slot;
+	kb2_resource_grant_object_t object;
+	kb2_resource_grant_handle_binding_t binding;
 	struct kobox_closure_loader_config config = {
 		.artifact_descriptors = descriptors +
 					KB2_TEST_BASE_TRANSFER_FD_COUNT,
 		.artifact_count = bootstrap->artifact_count,
-		.bind_resource = bind_resource,
 		.validate_shared = validate_shared,
+		.core_operations_node_id = KOBOX_FIXTURE_CORE_NODE_ID,
+		.core_operations_symbol = "kobox_fixture_core_operations",
+		.core_operations_symbol_length =
+			sizeof("kobox_fixture_core_operations") - 1,
 	};
 	struct stat status;
+	struct stat resource_status;
+	struct stat transport_status;
 	uint8_t digest[KB2_SHA256_DIGEST_SIZE];
+	uint8_t interface_digest[KB2_SHA256_DIGEST_SIZE];
 	void *manifest_bytes;
+	void *grant_bytes = MAP_FAILED;
+	size_t resource_base = KB2_TEST_BASE_TRANSFER_FD_COUNT +
+			       bootstrap->artifact_count;
+	int transport_descriptor = descriptors[0];
 	int seals;
 	int result = -1;
 
 	seals = fcntl(descriptors[1], F_GET_SEALS);
 	if (bootstrap->manifest_size > SIZE_MAX ||
+	    bootstrap->grant_size > SIZE_MAX ||
 	    fstat(descriptors[1], &status) || !S_ISREG(status.st_mode) ||
 	    status.st_size < 0 ||
 	    seals < 0 ||
@@ -188,10 +245,68 @@ static int open_generic_closure(struct kobox_fixture_runtime *runtime,
 	    kb2_closure_manifest_artifact_count(&manifest) !=
 		    bootstrap->artifact_count)
 		goto out;
+	seals = fcntl(descriptors[2], F_GET_SEALS);
+	if (fstat(descriptors[2], &status) || !S_ISREG(status.st_mode) ||
+	    status.st_size < 0 || seals < 0 ||
+	    (seals & (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
+		      F_SEAL_WRITE)) !=
+		    (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) ||
+	    (uint64_t)status.st_size != bootstrap->grant_size)
+		goto out;
+	grant_bytes = mmap(NULL, (size_t)bootstrap->grant_size, PROT_READ,
+			   MAP_PRIVATE, descriptors[2], 0);
+	if (grant_bytes == MAP_FAILED)
+		goto out;
+	kb2_sha256(grant_bytes, (size_t)bootstrap->grant_size, digest);
+	if (memcmp(digest, bootstrap->grant_digest, sizeof(digest)) ||
+	    kb2_resource_grant_decode(grant_bytes,
+				      (size_t)bootstrap->grant_size,
+				      &grant) != KB2_PROTOCOL_OK ||
+	    grant.generation != bootstrap->generation ||
+	    kb2_resource_grant_validate_manifest(&grant, &manifest) !=
+		    KB2_PROTOCOL_OK ||
+	    kb2_resource_grant_slot_count(&grant) != 1 ||
+	    kb2_resource_grant_object_count(&grant) != 1 ||
+	    kb2_resource_grant_handle_binding_count(&grant) !=
+		    bootstrap->resource_handle_count ||
+	    kb2_resource_grant_slot(&grant, 0, &slot) != KB2_PROTOCOL_OK ||
+	    kb2_resource_grant_object(&grant, 0, &object) != KB2_PROTOCOL_OK ||
+	    kb2_resource_grant_handle_binding(&grant, 0, &binding) !=
+		    KB2_PROTOCOL_OK ||
+	    kb2_protocol_copy_schema_digest(interface_digest,
+					    sizeof(interface_digest)) !=
+		    KB2_PROTOCOL_OK ||
+	    slot.slot_id != 1 ||
+	    slot.resource_type != KB2_CLOSURE_RESOURCE_CHANNEL ||
+	    slot.state != KB2_RESOURCE_GRANT_SLOT_PRESENT ||
+	    slot.object_count != 1 ||
+	    memcmp(slot.interface_schema_digest, interface_digest,
+		   sizeof(interface_digest)) ||
+	    object.slot_id != slot.slot_id || object.object_id != binding.object_id ||
+	    object.granted_rights !=
+		    (KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+		     KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE) ||
+	    object.handle_count != 1 ||
+	    binding.role != KB2_PROTOCOL_NATIVE_HANDLE_ROLE_MEMORY ||
+	    binding.transfer_handle_index != 0 ||
+	    fstat(descriptors[0], &transport_status) ||
+	    fstat(descriptors[resource_base + binding.transfer_handle_index],
+		  &resource_status) ||
+	    transport_status.st_dev != resource_status.st_dev ||
+	    transport_status.st_ino != resource_status.st_ino)
+		goto out;
 	config.manifest = &manifest;
+	config.grant = &grant;
+	config.resource_handles = descriptors + resource_base;
+	config.resource_handle_count = bootstrap->resource_handle_count;
+	config.import_resource = import_resource;
+	config.release_resource = release_resource;
+	config.resource_context = &transport_descriptor;
 	result = kobox_fixture_runtime_open(runtime, &config);
 
 out:
+	if (grant_bytes != MAP_FAILED)
+		munmap(grant_bytes, (size_t)bootstrap->grant_size);
 	munmap(manifest_bytes, (size_t)bootstrap->manifest_size);
 	return result;
 }
@@ -239,7 +354,8 @@ int main(void)
 			goto out;
 	}
 	notification_base = KB2_TEST_BASE_TRANSFER_FD_COUNT +
-			    bootstrap.artifact_count;
+			    bootstrap.artifact_count +
+			    bootstrap.resource_handle_count;
 	shared_memory = mmap(NULL, (size_t)bootstrap.shared_memory_size,
 			     PROT_READ | PROT_WRITE, MAP_SHARED,
 			     descriptors[0], 0);
@@ -316,6 +432,26 @@ int main(void)
 					goto out;
 				wait_for_termination();
 			}
+			if (opcode == KB2_TEST_REQUEST_PAUSE_AFTER_ACQUIRE) {
+				if (send_event(&event_queue,
+					       descriptors[notification_base +
+							   (size_t)event_used_index],
+					       bootstrap.generation,
+					       KB2_TEST_EVENT_ACQUIRED, correlation))
+					goto out;
+				wait_for_termination();
+			}
+			if (opcode == KB2_TEST_REQUEST_BAD_USED_ID) {
+				if (kb2_test_vq_inject_used_id(
+					    &request_queue,
+					    request_queue.queue.queue_size, 0,
+					    &notification_required) != KB2_TEST_VQ_OK ||
+				    (notification_required &&
+				     notify(descriptors[notification_base +
+						(size_t)request_used_index])))
+					goto out;
+				continue;
+			}
 			response_value = value;
 			if (opcode == KB2_TEST_REQUEST_RUN_FIXTURE) {
 				if (kobox_fixture_runtime_run(&runtime,
@@ -329,27 +465,34 @@ int main(void)
 						goto out;
 					wait_for_termination();
 				}
-			} else if (opcode != KB2_TEST_REQUEST_ECHO &&
-				   opcode != KB2_TEST_REQUEST_QUIESCE) {
-				if (send_event(&event_queue,
-					       descriptors[notification_base +
-							   (size_t)event_used_index],
-					       bootstrap.generation,
-					       KB2_TEST_EVENT_FAULT, 3))
-					goto out;
-				wait_for_termination();
 			}
 			if (!kb2_test_message_encode(
 				    segments[1].data, segments[1].length, opcode,
 				    KB2_TEST_MESSAGE_FLAG_RESPONSE,
-				    bootstrap.generation, correlation,
-				    response_value) ||
-			    kb2_test_vq_complete(&request_queue, head,
+				    opcode == KB2_TEST_REQUEST_BAD_GENERATION
+					    ? bootstrap.generation + 1
+					    : bootstrap.generation,
+				    correlation, response_value))
+				goto out;
+			if (opcode == KB2_TEST_REQUEST_BAD_ENVELOPE)
+				segments[1].data
+					[KB2_PROTOCOL_MESSAGE_ENVELOPE_RESERVED_OFFSET] = 1;
+			if (kb2_test_vq_complete(&request_queue, head,
 						 KB2_TEST_MESSAGE_SIZE,
 						 &notification_required) !=
-					    KB2_TEST_VQ_OK)
+				    KB2_TEST_VQ_OK)
 				goto out;
 			notify_used |= notification_required;
+			if (opcode == KB2_TEST_REQUEST_PAUSE_AFTER_USED) {
+				if (send_event(&event_queue,
+					       descriptors[notification_base +
+							   (size_t)event_used_index],
+					       bootstrap.generation,
+					       KB2_TEST_EVENT_USED_PUBLISHED,
+					       correlation))
+					goto out;
+				wait_for_termination();
+			}
 			if (opcode == KB2_TEST_REQUEST_QUIESCE) {
 				if (notify_used &&
 				    notify(descriptors[notification_base +

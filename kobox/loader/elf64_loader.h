@@ -20,6 +20,11 @@ struct kobox_elf64_export {
 	uintptr_t address;
 };
 
+struct kobox_elf64_symbol {
+	const char *name;
+	uint32_t kind;
+};
+
 typedef int (*kobox_elf64_resolve_fn)(void *context, const char *name,
 				     uintptr_t *address_out);
 
@@ -30,5 +35,8 @@ int kobox_elf64_module_load_fd(int file_descriptor,
 			       void *resolve_context,
 			       struct kobox_elf64_module *module_out);
 void kobox_elf64_module_unload(struct kobox_elf64_module *module);
+int kobox_elf64_validate_export_set_fd(
+	int file_descriptor, const struct kobox_elf64_symbol *expected,
+	size_t expected_count);
 
 #endif

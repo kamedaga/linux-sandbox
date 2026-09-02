@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+
 static int read_file(const char *path, uint8_t **data_out, size_t *size_out)
 {
 	struct stat status;
@@ -64,11 +66,54 @@ static int replace_file(int descriptor, const uint8_t *data, size_t size)
 	return fsync(descriptor) ? -1 : 0;
 }
 
-static int load_must_fail(const char *path)
+static int resolve_core(void *context, const char *name, uintptr_t *address_out)
+{
+	void *symbol;
+
+	dlerror();
+	symbol = dlsym(context, name);
+	if (!symbol)
+		return -1;
+	*address_out = (uintptr_t)symbol;
+	return 0;
+}
+
+static int load_descriptor(int descriptor, void *core,
+			   struct kobox_elf64_module *module)
+{
+	struct kobox_elf64_export exports[] = {
+		{ "kobox_fixture_module_cleanup", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_module_init", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_module_quiesce", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+		{ "kobox_fixture_module_run", KOBOX_ELF64_SYMBOL_FUNCTION, 0 },
+	};
+	size_t index;
+
+	if (kobox_elf64_module_load_fd(
+		    descriptor, exports, ARRAY_SIZE(exports),
+		    resolve_core, core, module))
+		return -1;
+	for (index = 0; index < ARRAY_SIZE(exports); index++) {
+		if (!exports[index].address) {
+			kobox_elf64_module_unload(module);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int load_must_fail(const char *path, void *core)
 {
 	struct kobox_elf64_module module;
+	int descriptor;
+	int status;
 
-	if (!kobox_elf64_module_load(path, &module)) {
+	descriptor = open(path, O_RDONLY | O_CLOEXEC);
+	if (descriptor < 0)
+		return -1;
+	status = load_descriptor(descriptor, core, &module);
+	close(descriptor);
+	if (!status) {
 		kobox_elf64_module_unload(&module);
 		return -1;
 	}
@@ -87,14 +132,19 @@ int main(int argument_count, char **arguments)
 	char temporary[] = "/tmp/kobox-elf-loader-XXXXXX";
 	void *core = NULL;
 	int descriptor = -1;
+	int module_descriptor = -1;
 	int stage = 0;
 	int result = 1;
 
 	if (argument_count != 3)
 		return 2;
-	core = dlopen(arguments[1], RTLD_NOW | RTLD_GLOBAL);
-	if (!core || kobox_elf64_module_load(arguments[2], &module))
+	core = dlopen(arguments[1], RTLD_NOW | RTLD_LOCAL);
+	module_descriptor = open(arguments[2], O_RDONLY | O_CLOEXEC);
+	if (!core || module_descriptor < 0 ||
+	    load_descriptor(module_descriptor, core, &module))
 		goto out;
+	close(module_descriptor);
+	module_descriptor = -1;
 	stage = 1;
 	kobox_elf64_module_unload(&module);
 	if (read_file(arguments[2], &original, &size))
@@ -111,7 +161,8 @@ int main(int argument_count, char **arguments)
 	memcpy(modified, original, size);
 	header = (Elf64_Ehdr *)modified;
 	header->e_machine = EM_NONE;
-	if (replace_file(descriptor, modified, size) || load_must_fail(temporary))
+	if (replace_file(descriptor, modified, size) ||
+	    load_must_fail(temporary, core))
 		goto out;
 	stage = 4;
 
@@ -134,7 +185,7 @@ int main(int argument_count, char **arguments)
 		stage = 42;
 		goto out;
 	}
-	if (load_must_fail(temporary)) {
+	if (load_must_fail(temporary, core)) {
 		stage = 43;
 		goto out;
 	}
@@ -143,12 +194,15 @@ int main(int argument_count, char **arguments)
 	memcpy(modified, original, size);
 	header = (Elf64_Ehdr *)modified;
 	header->e_shoff = UINT64_MAX;
-	if (replace_file(descriptor, modified, size) || load_must_fail(temporary))
+	if (replace_file(descriptor, modified, size) ||
+	    load_must_fail(temporary, core))
 		goto out;
 	stage = 6;
 	result = 0;
 
 out:
+	if (module_descriptor >= 0)
+		close(module_descriptor);
 	if (descriptor >= 0)
 		close(descriptor);
 	unlink(temporary);

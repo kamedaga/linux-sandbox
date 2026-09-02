@@ -58,9 +58,12 @@ struct kobox_fixture_core_ops {
 };
 
 typedef const struct kobox_fixture_core_ops *(*kobox_fixture_get_core_ops_fn)(void);
-typedef int (*kobox_fixture_module_init_fn)(uint64_t *result_out);
-typedef int (*kobox_fixture_module_exit_fn)(void);
+typedef int (*kobox_fixture_lifecycle_fn)(void);
+typedef int (*kobox_fixture_module_run_fn)(uint64_t *result_out);
 
 const struct kobox_fixture_core_ops *kobox_fixture_core_get_ops(void);
+int kobox_fixture_core_init(void);
+int kobox_fixture_core_quiesce(void);
+int kobox_fixture_core_cleanup(void);
 
 #endif

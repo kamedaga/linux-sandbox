@@ -9,12 +9,26 @@
 struct kobox_elf64_module {
 	void *mapping;
 	size_t mapping_size;
-	uintptr_t init_address;
-	uintptr_t exit_address;
 };
 
-int kobox_elf64_module_load(const char *path,
-			    struct kobox_elf64_module *module_out);
+#define KOBOX_ELF64_SYMBOL_FUNCTION 0u
+#define KOBOX_ELF64_SYMBOL_OBJECT 1u
+
+struct kobox_elf64_export {
+	const char *name;
+	uint32_t kind;
+	uintptr_t address;
+};
+
+typedef int (*kobox_elf64_resolve_fn)(void *context, const char *name,
+				     uintptr_t *address_out);
+
+int kobox_elf64_module_load_fd(int file_descriptor,
+			       struct kobox_elf64_export *exports,
+			       size_t export_count,
+			       kobox_elf64_resolve_fn resolve,
+			       void *resolve_context,
+			       struct kobox_elf64_module *module_out);
 void kobox_elf64_module_unload(struct kobox_elf64_module *module);
 
 #endif

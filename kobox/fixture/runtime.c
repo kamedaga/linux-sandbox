@@ -2,80 +2,68 @@
 
 #include "runtime.h"
 
-#include "../loader/elf64_loader.h"
-
-#include <dlfcn.h>
-#include <stdint.h>
 #include <string.h>
 
-static int core_identity_valid(const struct kobox_fixture_core_ops *ops)
-{
-	return ops && ops->size == sizeof(*ops) &&
-	       ops->identity[0] == KOBOX_FIXTURE_CORE_IDENTITY_0 &&
-	       ops->identity[1] == KOBOX_FIXTURE_CORE_IDENTITY_1 &&
-	       ops->identity[2] == KOBOX_FIXTURE_CORE_IDENTITY_2 &&
-	       ops->identity[3] == KOBOX_FIXTURE_CORE_IDENTITY_3;
-}
+#if defined(__clang__)
+#define KOBOX_MANUAL_ELF_CALL __attribute__((no_sanitize("function")))
+#else
+#define KOBOX_MANUAL_ELF_CALL
+#endif
 
-int kobox_fixture_runtime_open(struct kobox_fixture_runtime *runtime,
-			       const char *core_path)
+KOBOX_MANUAL_ELF_CALL int kobox_fixture_runtime_open(
+	struct kobox_fixture_runtime *runtime,
+	const struct kobox_closure_loader_config *config)
 {
-	kobox_fixture_get_core_ops_fn get_ops;
-	void *symbol;
+	uintptr_t run_address;
 
-	if (!runtime || !core_path)
+	if (!runtime || !config)
 		return -1;
 	memset(runtime, 0, sizeof(*runtime));
-	runtime->core_handle = dlopen(core_path, RTLD_NOW | RTLD_GLOBAL);
-	if (!runtime->core_handle)
-		return -1;
-	symbol = dlsym(runtime->core_handle, "kobox_fixture_core_get_ops");
-	if (!symbol || sizeof(symbol) != sizeof(get_ops))
+	if (kobox_closure_loader_open(config, &runtime->closure) !=
+		    KOBOX_CLOSURE_OK ||
+	    kobox_closure_loader_root_symbol(
+		    runtime->closure, "kobox_fixture_module_run",
+		    sizeof("kobox_fixture_module_run") - 1,
+		    KB2_CLOSURE_SYMBOL_FUNCTION, &runtime->root_node_id,
+		    &run_address) != KOBOX_CLOSURE_OK ||
+	    sizeof(run_address) != sizeof(runtime->run))
 		goto fail;
-	memcpy(&get_ops, &symbol, sizeof(get_ops));
-	runtime->ops = get_ops();
-	if (!core_identity_valid(runtime->ops))
-		goto fail;
+	memcpy(&runtime->run, &run_address, sizeof(runtime->run));
 	return 0;
 
 fail:
-	dlclose(runtime->core_handle);
+	if (runtime->closure &&
+	    kobox_closure_loader_quiesce(runtime->closure) == KOBOX_CLOSURE_OK)
+		kobox_closure_loader_close(&runtime->closure);
 	memset(runtime, 0, sizeof(*runtime));
 	return -1;
 }
 
-int kobox_fixture_runtime_run(struct kobox_fixture_runtime *runtime,
-			      const char *module_path, uint64_t *result_out)
+KOBOX_MANUAL_ELF_CALL int kobox_fixture_runtime_run(
+	struct kobox_fixture_runtime *runtime, uint64_t *result_out)
 {
-	struct kobox_elf64_module module;
-	kobox_fixture_module_init_fn module_init;
-	kobox_fixture_module_exit_fn module_exit;
-	uintptr_t init_address;
-	uintptr_t exit_address;
-	int result = -1;
-
-	if (!runtime || !runtime->core_handle || !runtime->ops || !module_path ||
-	    !result_out || sizeof(init_address) != sizeof(module_init) ||
-	    sizeof(exit_address) != sizeof(module_exit))
+	if (!runtime || !runtime->closure || !runtime->run || !result_out)
 		return -1;
-	*result_out = 0;
-	if (kobox_elf64_module_load(module_path, &module))
-		return -1;
-	init_address = module.init_address;
-	exit_address = module.exit_address;
-	memcpy(&module_init, &init_address, sizeof(module_init));
-	memcpy(&module_exit, &exit_address, sizeof(module_exit));
-	if (!module_init(result_out) && !module_exit())
-		result = 0;
-	kobox_elf64_module_unload(&module);
-	return result;
+	return runtime->run(result_out);
 }
 
-void kobox_fixture_runtime_close(struct kobox_fixture_runtime *runtime)
+int kobox_fixture_runtime_quiesce(struct kobox_fixture_runtime *runtime)
 {
-	if (!runtime)
-		return;
-	if (runtime->core_handle)
-		dlclose(runtime->core_handle);
+	return runtime && runtime->closure &&
+	       kobox_closure_loader_quiesce(runtime->closure) == KOBOX_CLOSURE_OK
+		       ? 0
+		       : -1;
+}
+
+int kobox_fixture_runtime_close(struct kobox_fixture_runtime *runtime)
+{
+	int result;
+
+	if (!runtime || !runtime->closure)
+		return -1;
+	result = kobox_closure_loader_close(&runtime->closure) == KOBOX_CLOSURE_OK
+			 ? 0
+			 : -1;
 	memset(runtime, 0, sizeof(*runtime));
+	return result;
 }

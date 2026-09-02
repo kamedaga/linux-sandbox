@@ -95,7 +95,21 @@ unlock_rcu:
 }
 
 __attribute__((visibility("default")))
-int kobox_fixture_module_init(uint64_t *result_out)
+int kobox_fixture_module_init(void)
+{
+	const struct kobox_fixture_core_ops *ops = kobox_fixture_core_get_ops();
+
+	if (fixture_module_active || !fixture_ops_valid(ops))
+		return -1;
+#ifdef KOBOX_FIXTURE_FAIL_INIT
+	return -1;
+#endif
+	fixture_module_active = 1;
+	return 0;
+}
+
+__attribute__((visibility("default")))
+int kobox_fixture_module_run(uint64_t *result_out)
 {
 	const struct kobox_fixture_core_ops *ops = kobox_fixture_core_get_ops();
 	struct fixture_state *state = NULL;
@@ -110,10 +124,9 @@ int kobox_fixture_module_init(uint64_t *result_out)
 	int thread_result;
 	int status = -1;
 
-	if (!result_out || fixture_module_active || !fixture_ops_valid(ops))
+	if (!result_out || !fixture_module_active || !fixture_ops_valid(ops))
 		return -1;
 	*result_out = 0;
-	fixture_module_active = 1;
 	state = ops->allocate(sizeof(*state));
 	allocation = ops->allocate(256);
 	if (!state || !allocation)
@@ -179,13 +192,17 @@ out:
 	}
 	if (allocation)
 		ops->deallocate(allocation, 256);
-	if (status)
-		fixture_module_active = 0;
 	return status;
 }
 
 __attribute__((visibility("default")))
-int kobox_fixture_module_exit(void)
+int kobox_fixture_module_quiesce(void)
+{
+	return fixture_module_active ? 0 : -1;
+}
+
+__attribute__((visibility("default")))
+int kobox_fixture_module_cleanup(void)
 {
 	if (!fixture_module_active)
 		return -1;

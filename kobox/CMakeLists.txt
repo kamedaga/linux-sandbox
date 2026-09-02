@@ -13,6 +13,10 @@ set(KOBOX_FIXTURE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/linux-sandbox-fixture")
 set(KOBOX_FIXTURE_MODULE
     "${KOBOX_FIXTURE_OUTPUT_DIRECTORY}/fixture_module.ko"
 )
+set(KOBOX_FIXTURE_FAIL_MODULE
+    "${KOBOX_FIXTURE_OUTPUT_DIRECTORY}/fixture_module_fail.ko"
+)
+set(KOBOX_FIXTURE_MODULE "${KOBOX_FIXTURE_MODULE}" PARENT_SCOPE)
 
 add_library(
     kobox_fixture_core SHARED
@@ -63,10 +67,44 @@ add_custom_command(
 )
 add_custom_target(kobox_fixture_module ALL DEPENDS "${KOBOX_FIXTURE_MODULE}")
 
+add_custom_command(
+    OUTPUT "${KOBOX_FIXTURE_FAIL_MODULE}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${KOBOX_FIXTURE_OUTPUT_DIRECTORY}"
+    COMMAND
+        "${CMAKE_C_COMPILER}"
+        -std=gnu11
+        -O2
+        -Wall
+        -Wextra
+        -Werror
+        -ffreestanding
+        -fno-builtin
+        -mcmodel=large
+        -fno-pic
+        -fno-pie
+        -fno-stack-protector
+        -fno-asynchronous-unwind-tables
+        -fno-unwind-tables
+        -DKOBOX_FIXTURE_FAIL_INIT=1
+        -I "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}/fixture"
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/fixture/module.c"
+        -o "${KOBOX_FIXTURE_FAIL_MODULE}"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixture/module.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixture/fixture.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include/linux/compiler_attributes.h"
+    VERBATIM
+)
+add_custom_target(
+    kobox_fixture_fail_module ALL DEPENDS "${KOBOX_FIXTURE_FAIL_MODULE}"
+)
+
 add_executable(
     kobox_fixture_sandbox
     fixture/runtime.c
     fixture/sandbox.c
+    loader/closure_loader.c
     loader/elf64_loader.c
 )
 target_include_directories(kobox_fixture_sandbox PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -76,12 +114,6 @@ target_link_libraries(
 )
 target_compile_features(kobox_fixture_sandbox PRIVATE c_std_11)
 target_compile_options(kobox_fixture_sandbox PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_definitions(
-    kobox_fixture_sandbox
-    PRIVATE
-        KOBOX_FIXTURE_CORE_PATH="$<TARGET_FILE:kobox_fixture_core>"
-        KOBOX_FIXTURE_MODULE_PATH="${KOBOX_FIXTURE_MODULE}"
-)
 add_dependencies(kobox_fixture_sandbox kobox_fixture_core kobox_fixture_module)
 
 add_executable(
@@ -103,6 +135,32 @@ add_test(
         "${KOBOX_FIXTURE_MODULE}"
 )
 
+add_executable(
+    kobox_closure_loader_test
+    loader/closure_loader.c
+    loader/closure_loader_test.c
+    loader/elf64_loader.c
+)
+target_compile_features(kobox_closure_loader_test PRIVATE c_std_11)
+target_compile_options(kobox_closure_loader_test PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(
+    kobox_closure_loader_test PRIVATE kobox2::protocol ${CMAKE_DL_LIBS}
+)
+add_dependencies(
+    kobox_closure_loader_test
+    kobox_fixture_core
+    kobox_fixture_module
+    kobox_fixture_fail_module
+)
+add_test(
+    NAME kobox2.closure_loader
+    COMMAND
+        kobox_closure_loader_test
+        $<TARGET_FILE:kobox_fixture_core>
+        "${KOBOX_FIXTURE_MODULE}"
+        "${KOBOX_FIXTURE_FAIL_MODULE}"
+)
+
 if(KB2_ENABLE_SANITIZERS)
     target_compile_options(
         kobox_fixture_core
@@ -119,6 +177,13 @@ if(KB2_ENABLE_SANITIZERS)
     )
     target_link_options(
         kobox_fixture_loader_test PRIVATE -fsanitize=address,undefined
+    )
+    target_compile_options(
+        kobox_closure_loader_test
+        PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
+    )
+    target_link_options(
+        kobox_closure_loader_test PRIVATE -fsanitize=address,undefined
     )
 else()
     target_link_options(kobox_fixture_core PRIVATE -Wl,-z,defs)

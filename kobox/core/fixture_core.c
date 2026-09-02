@@ -290,6 +290,40 @@ static const struct kobox_fixture_core_ops fixture_core_ops = {
 	.monotonic_time_ns = kobox_host_monotonic_time_ns,
 };
 
+static atomic_uint fixture_core_active;
+
+__attribute__((visibility("default")))
+int kobox_fixture_core_init(void)
+{
+	unsigned int expected = 0;
+
+	return atomic_compare_exchange_strong_explicit(
+		       &fixture_core_active, &expected, 1, memory_order_acq_rel,
+		       memory_order_acquire)
+		       ? 0
+		       : -1;
+}
+
+__attribute__((visibility("default")))
+int kobox_fixture_core_quiesce(void)
+{
+	return atomic_load_explicit(&fixture_core_active, memory_order_acquire) == 1
+		       ? 0
+		       : -1;
+}
+
+__attribute__((visibility("default")))
+int kobox_fixture_core_cleanup(void)
+{
+	unsigned int expected = 1;
+
+	return atomic_compare_exchange_strong_explicit(
+		       &fixture_core_active, &expected, 0, memory_order_acq_rel,
+		       memory_order_acquire)
+		       ? 0
+		       : -1;
+}
+
 __attribute__((visibility("default")))
 const struct kobox_fixture_core_ops *kobox_fixture_core_get_ops(void)
 {

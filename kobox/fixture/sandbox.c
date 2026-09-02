@@ -4,7 +4,9 @@
 
 #include "runtime.h"
 
+#include <kobox2/closure_manifest.h>
 #include <kobox2/protocol.h>
+#include <kobox2/sha256.h>
 #include <kobox2_test/bootstrap.h>
 #include <kobox2_test/management.h>
 #include <kobox2_test/split_virtqueue.h>
@@ -12,19 +14,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#ifndef KOBOX_FIXTURE_CORE_PATH
-#error KOBOX_FIXTURE_CORE_PATH is required
-#endif
-
-#ifndef KOBOX_FIXTURE_MODULE_PATH
-#error KOBOX_FIXTURE_MODULE_PATH is required
-#endif
 
 _Static_assert(KOBOX_FIXTURE_RESULT == KB2_TEST_FIXTURE_RESULT,
 	       "fixture result must match the test protocol");
@@ -129,6 +124,78 @@ static void wait_for_termination(void)
 		pause();
 }
 
+static int bind_resource(void *context,
+			 const kb2_closure_manifest_resource_t *resource,
+			 uint32_t node_id)
+{
+	(void)context;
+	(void)node_id;
+	return resource->type == KB2_CLOSURE_RESOURCE_CHANNEL &&
+	       resource->minimum_count == 1 && resource->maximum_count == 1 &&
+	       resource->required_rights ==
+		       (KB2_CLOSURE_CHANNEL_RIGHT_SEND |
+			KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE) &&
+	       resource->maximum_rights == resource->required_rights
+		       ? 0
+		       : -1;
+}
+
+static int validate_shared(void *context, int descriptor,
+			   const kb2_closure_manifest_artifact_t *artifact)
+{
+	(void)context;
+	(void)descriptor;
+	return artifact->kind == KB2_CLOSURE_ARTIFACT_SHARED_PROVIDER ? 0 : -1;
+}
+
+static int open_generic_closure(struct kobox_fixture_runtime *runtime,
+				const kb2_test_bootstrap_t *bootstrap,
+				const int *descriptors)
+{
+	kb2_closure_manifest_t manifest;
+	struct kobox_closure_loader_config config = {
+		.artifact_descriptors = descriptors +
+					KB2_TEST_BASE_TRANSFER_FD_COUNT,
+		.artifact_count = bootstrap->artifact_count,
+		.bind_resource = bind_resource,
+		.validate_shared = validate_shared,
+	};
+	struct stat status;
+	uint8_t digest[KB2_SHA256_DIGEST_SIZE];
+	void *manifest_bytes;
+	int seals;
+	int result = -1;
+
+	seals = fcntl(descriptors[1], F_GET_SEALS);
+	if (bootstrap->manifest_size > SIZE_MAX ||
+	    fstat(descriptors[1], &status) || !S_ISREG(status.st_mode) ||
+	    status.st_size < 0 ||
+	    seals < 0 ||
+	    (seals & (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW |
+		      F_SEAL_WRITE)) !=
+		    (F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) ||
+	    (uint64_t)status.st_size != bootstrap->manifest_size)
+		return -1;
+	manifest_bytes = mmap(NULL, (size_t)bootstrap->manifest_size, PROT_READ,
+			      MAP_PRIVATE, descriptors[1], 0);
+	if (manifest_bytes == MAP_FAILED)
+		return -1;
+	kb2_sha256(manifest_bytes, (size_t)bootstrap->manifest_size, digest);
+	if (memcmp(digest, bootstrap->manifest_digest, sizeof(digest)) ||
+	    kb2_closure_manifest_decode(manifest_bytes,
+					(size_t)bootstrap->manifest_size,
+					&manifest) != KB2_PROTOCOL_OK ||
+	    kb2_closure_manifest_artifact_count(&manifest) !=
+		    bootstrap->artifact_count)
+		goto out;
+	config.manifest = &manifest;
+	result = kobox_fixture_runtime_open(runtime, &config);
+
+out:
+	munmap(manifest_bytes, (size_t)bootstrap->manifest_size);
+	return result;
+}
+
 int main(void)
 {
 	kb2_test_bootstrap_t bootstrap = { 0 };
@@ -138,7 +205,7 @@ int main(void)
 	kb2_test_vq_t event_queue;
 	kb2_test_vq_t request_queue;
 	struct kobox_fixture_runtime runtime;
-	int descriptors[KB2_TEST_TRANSFER_FD_COUNT];
+	int descriptors[KB2_TEST_MAX_TRANSFER_FD_COUNT];
 	struct stat memory_status;
 	void *shared_memory = MAP_FAILED;
 	size_t descriptor_count;
@@ -148,26 +215,31 @@ int main(void)
 	int event_used_index;
 	int request_available_index;
 	int request_used_index;
+	size_t notification_base;
 	int runtime_open = 0;
 	int result = 1;
+	int stage = 1;
 
 	memset(descriptors, -1, sizeof(descriptors));
 	if (!kb2_test_receive_bootstrap(KB2_TEST_BOOTSTRAP_FD, &bootstrap,
 					descriptors,
-					KB2_TEST_TRANSFER_FD_COUNT,
+					KB2_TEST_MAX_TRANSFER_FD_COUNT,
 					&descriptor_count) ||
-	    descriptor_count != KB2_TEST_TRANSFER_FD_COUNT ||
+	    descriptor_count != kb2_test_bootstrap_descriptor_count(&bootstrap) ||
 	    bootstrap.shared_memory_size > SIZE_MAX ||
 	    fstat(descriptors[0], &memory_status) || memory_status.st_size < 0 ||
 	    (uint64_t)memory_status.st_size != bootstrap.shared_memory_size)
 		goto out;
 	close(KB2_TEST_BOOTSTRAP_FD);
+	stage = 2;
 	for (index = 0; index < descriptor_count; index++) {
 		int flags = fcntl(descriptors[index], F_GETFD);
 
 		if (flags < 0 || !(flags & FD_CLOEXEC))
 			goto out;
 	}
+	notification_base = KB2_TEST_BASE_TRANSFER_FD_COUNT +
+			    bootstrap.artifact_count;
 	shared_memory = mmap(NULL, (size_t)bootstrap.shared_memory_size,
 			     PROT_READ | PROT_WRITE, MAP_SHARED,
 			     descriptors[0], 0);
@@ -198,10 +270,12 @@ int main(void)
 						queues[1].used_notification_id);
 	if (event_used_index < 0 || request_available_index < 0 ||
 	    request_used_index < 0 ||
-	    kobox_fixture_runtime_open(&runtime, KOBOX_FIXTURE_CORE_PATH))
+	    open_generic_closure(&runtime, &bootstrap, descriptors))
 		goto out;
+	stage = 3;
 	runtime_open = 1;
-	if (send_event(&event_queue, descriptors[event_used_index + 1],
+	if (send_event(&event_queue,
+		       descriptors[notification_base + (size_t)event_used_index],
 		       bootstrap.generation, KB2_TEST_EVENT_READY,
 		       bootstrap.generation))
 		goto out;
@@ -209,7 +283,8 @@ int main(void)
 	for (;;) {
 		int notify_used = 0;
 
-		if (wait_notification(descriptors[request_available_index + 1]))
+		if (wait_notification(descriptors[notification_base +
+						 (size_t)request_available_index]))
 			goto out;
 		for (;;) {
 			kb2_test_vq_segment_t segments[2];
@@ -233,7 +308,8 @@ int main(void)
 						     &opcode, &correlation,
 						     &value)) {
 				if (send_event(&event_queue,
-					       descriptors[event_used_index + 1],
+					       descriptors[notification_base +
+							   (size_t)event_used_index],
 					       bootstrap.generation,
 					       KB2_TEST_EVENT_FAULT,
 					       KB2_TEST_PROTOCOL_FAULT_MALFORMED_DESCRIPTOR))
@@ -243,11 +319,11 @@ int main(void)
 			response_value = value;
 			if (opcode == KB2_TEST_REQUEST_RUN_FIXTURE) {
 				if (kobox_fixture_runtime_run(&runtime,
-							KOBOX_FIXTURE_MODULE_PATH,
 							&response_value) ||
 				    response_value != KOBOX_FIXTURE_RESULT) {
 					if (send_event(&event_queue,
-						       descriptors[event_used_index + 1],
+						       descriptors[notification_base +
+								   (size_t)event_used_index],
 						       bootstrap.generation,
 						       KB2_TEST_EVENT_FAULT, 2))
 						goto out;
@@ -256,7 +332,8 @@ int main(void)
 			} else if (opcode != KB2_TEST_REQUEST_ECHO &&
 				   opcode != KB2_TEST_REQUEST_QUIESCE) {
 				if (send_event(&event_queue,
-					       descriptors[event_used_index + 1],
+					       descriptors[notification_base +
+							   (size_t)event_used_index],
 					       bootstrap.generation,
 					       KB2_TEST_EVENT_FAULT, 3))
 					goto out;
@@ -275,12 +352,16 @@ int main(void)
 			notify_used |= notification_required;
 			if (opcode == KB2_TEST_REQUEST_QUIESCE) {
 				if (notify_used &&
-				    notify(descriptors[request_used_index + 1]))
+				    notify(descriptors[notification_base +
+						       (size_t)request_used_index]))
 					goto out;
-				kobox_fixture_runtime_close(&runtime);
+				if (kobox_fixture_runtime_quiesce(&runtime) ||
+				    kobox_fixture_runtime_close(&runtime))
+					goto out;
 				runtime_open = 0;
 				if (send_event(&event_queue,
-					       descriptors[event_used_index + 1],
+					       descriptors[notification_base +
+							   (size_t)event_used_index],
 					       bootstrap.generation,
 					       KB2_TEST_EVENT_STOPPED, 0))
 					goto out;
@@ -288,16 +369,20 @@ int main(void)
 				goto out;
 			}
 		}
-		if (notify_used && notify(descriptors[request_used_index + 1]))
+		if (notify_used &&
+		    notify(descriptors[notification_base +
+				       (size_t)request_used_index]))
 			goto out;
 	}
 
 out:
+	if (result)
+		fprintf(stderr, "fixture sandbox failed at stage %d\n", stage);
 	if (runtime_open)
 		kobox_fixture_runtime_close(&runtime);
 	if (shared_memory != MAP_FAILED)
 		munmap(shared_memory, (size_t)bootstrap.shared_memory_size);
-	close_descriptors(descriptors, KB2_TEST_TRANSFER_FD_COUNT);
+	close_descriptors(descriptors, KB2_TEST_MAX_TRANSFER_FD_COUNT);
 	close(KB2_TEST_BOOTSTRAP_FD);
 	return result;
 }

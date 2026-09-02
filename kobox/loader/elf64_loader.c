@@ -4,9 +4,7 @@
 
 #include "elf64_loader.h"
 
-#include <dlfcn.h>
 #include <elf.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -85,10 +83,12 @@ static int resolve_symbol(const uint8_t *file, size_t file_size,
 			  const Elf64_Shdr *sections, size_t section_count,
 			  const struct loaded_section *loaded,
 			  const Elf64_Shdr *symbol_table,
-			  const Elf64_Sym *symbol, uint64_t *value_out)
+			  const Elf64_Sym symbol[],
+			  kobox_elf64_resolve_fn resolve, void *resolve_context,
+			  uint64_t *value_out)
 {
 	const char *name;
-	void *resolved;
+	uintptr_t resolved;
 
 	if (symbol->st_shndx == SHN_ABS) {
 		*value_out = symbol->st_value;
@@ -98,16 +98,9 @@ static int resolve_symbol(const uint8_t *file, size_t file_size,
 		if (symbol_name(file, file_size, sections, section_count,
 				symbol_table, symbol, &name))
 			return -1;
-		dlerror();
-		resolved = dlsym(RTLD_DEFAULT, name);
-		if (!resolved) {
-			if (ELF64_ST_BIND(symbol->st_info) == STB_WEAK) {
-				*value_out = 0;
-				return 0;
-			}
+		if (!resolve || resolve(resolve_context, name, &resolved))
 			return -1;
-		}
-		*value_out = (uint64_t)(uintptr_t)resolved;
+		*value_out = (uint64_t)resolved;
 		return 0;
 	}
 	if (symbol->st_shndx >= section_count ||
@@ -213,7 +206,9 @@ static size_t relocation_width(uint32_t type)
 
 static int apply_relocations(const uint8_t *file, size_t file_size,
 			     const Elf64_Shdr *sections, size_t section_count,
-			     struct loaded_section *loaded)
+			     struct loaded_section *loaded,
+			     kobox_elf64_resolve_fn resolve,
+			     void *resolve_context)
 {
 	size_t section_index;
 
@@ -264,12 +259,15 @@ static int apply_relocations(const uint8_t *file, size_t file_size,
 			uint64_t symbol;
 			size_t symbol_index = ELF64_R_SYM(relocation->r_info);
 
+			if (type == R_X86_64_NONE)
+				continue;
 			if (width == SIZE_MAX || relocation->r_offset > target->size ||
 			    width > target->size - (size_t)relocation->r_offset ||
 			    symbol_index >= symbol_count ||
 			    resolve_symbol(file, file_size, sections, section_count,
 					   loaded, symbol_table,
-					   &symbols[symbol_index], &symbol) ||
+					   &symbols[symbol_index], resolve,
+					   resolve_context, &symbol) ||
 			    write_relocation(target->address + relocation->r_offset,
 					     type, symbol, relocation->r_addend,
 					     (uint64_t)(uintptr_t)(target->address +
@@ -283,7 +281,8 @@ static int apply_relocations(const uint8_t *file, size_t file_size,
 static int find_symbol_address(const uint8_t *file, size_t file_size,
 			       const Elf64_Shdr *sections, size_t section_count,
 			       const struct loaded_section *loaded,
-			       const char *wanted, uintptr_t *address_out)
+			       const char *wanted, uint32_t wanted_kind,
+			       uintptr_t *address_out)
 {
 	size_t section_index;
 
@@ -307,7 +306,11 @@ static int find_symbol_address(const uint8_t *file, size_t file_size,
 			const char *name;
 			uint64_t value;
 
-			if (ELF64_ST_TYPE(symbol->st_info) != STT_FUNC ||
+			if (ELF64_ST_TYPE(symbol->st_info) !=
+				    (wanted_kind == KOBOX_ELF64_SYMBOL_FUNCTION
+					     ? STT_FUNC
+					     : STT_OBJECT) ||
+			    ELF64_ST_BIND(symbol->st_info) != STB_GLOBAL ||
 			    symbol->st_shndx == SHN_UNDEF ||
 			    symbol->st_shndx >= section_count ||
 			    !loaded[symbol->st_shndx].address ||
@@ -320,7 +323,8 @@ static int find_symbol_address(const uint8_t *file, size_t file_size,
 			if (strcmp(name, wanted))
 				continue;
 			if (resolve_symbol(file, file_size, sections, section_count,
-					   loaded, symbol_table, symbol, &value))
+					   loaded, symbol_table, symbol, NULL, NULL,
+					   &value))
 				return -1;
 			*address_out = (uintptr_t)value;
 			return 0;
@@ -329,8 +333,12 @@ static int find_symbol_address(const uint8_t *file, size_t file_size,
 	return -1;
 }
 
-int kobox_elf64_module_load(const char *path,
-			    struct kobox_elf64_module *module_out)
+int kobox_elf64_module_load_fd(int file_descriptor,
+			       struct kobox_elf64_export *exports,
+			       size_t export_count,
+			       kobox_elf64_resolve_fn resolve,
+			       void *resolve_context,
+			       struct kobox_elf64_module *module_out)
 {
 	const Elf64_Ehdr *header;
 	const Elf64_Shdr *sections;
@@ -343,14 +351,18 @@ int kobox_elf64_module_load(const char *path,
 	size_t page_size;
 	size_t section_index;
 	long native_page_size;
-	int file_descriptor = -1;
 	int result = -1;
 
-	if (!path || !module_out)
+	if (file_descriptor < 0 || !exports || !export_count || !module_out)
 		return -1;
+	for (section_index = 0; section_index < export_count; section_index++) {
+		if (!exports[section_index].name ||
+		    exports[section_index].kind > KOBOX_ELF64_SYMBOL_OBJECT)
+			return -1;
+		exports[section_index].address = 0;
+	}
 	memset(module_out, 0, sizeof(*module_out));
-	file_descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-	if (file_descriptor < 0 || fstat(file_descriptor, &status) ||
+	if (fstat(file_descriptor, &status) ||
 	    !S_ISREG(status.st_mode) || status.st_size < (off_t)sizeof(*header))
 		goto out;
 	file_size = (size_t)status.st_size;
@@ -433,14 +445,16 @@ int kobox_elf64_module_load(const char *path,
 		}
 	}
 	if (apply_relocations(file, file_size, sections, header->e_shnum,
-			      loaded) ||
-	    find_symbol_address(file, file_size, sections, header->e_shnum,
-				loaded, "kobox_fixture_module_init",
-				&module_out->init_address) ||
-	    find_symbol_address(file, file_size, sections, header->e_shnum,
-				loaded, "kobox_fixture_module_exit",
-				&module_out->exit_address) ||
-	    mprotect(mapping, mapping_size, PROT_NONE))
+			      loaded, resolve, resolve_context))
+		goto out;
+	for (section_index = 0; section_index < export_count; section_index++) {
+		if (find_symbol_address(file, file_size, sections, header->e_shnum,
+					loaded, exports[section_index].name,
+					exports[section_index].kind,
+					&exports[section_index].address))
+			goto out;
+	}
+	if (mprotect(mapping, mapping_size, PROT_NONE))
 		goto out;
 	for (section_index = 0; section_index < header->e_shnum;
 	     section_index++) {
@@ -466,11 +480,14 @@ out:
 		munmap(mapping, mapping_size);
 	if (file != MAP_FAILED)
 		munmap(file, file_size);
-	if (file_descriptor >= 0)
-		close(file_descriptor);
 	free(loaded);
 	if (result)
 		memset(module_out, 0, sizeof(*module_out));
+	if (result) {
+		for (section_index = 0; section_index < export_count;
+		     section_index++)
+			exports[section_index].address = 0;
+	}
 	return result;
 }
 

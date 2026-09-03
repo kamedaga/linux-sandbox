@@ -22,7 +22,8 @@ typedef int (*kobox_resource_import_fn)(
 	void *context, const kb2_resource_grant_slot_t *slot,
 	const kb2_resource_grant_object_t *object,
 	const struct kobox_resource_native_handle *handles,
-	size_t handle_count, void **native_object_out);
+	size_t handle_count, void **native_object_out,
+	const struct kobox_resource_interface_operations **operations_out);
 typedef void (*kobox_resource_release_fn)(void *context,
 					 void *native_object);
 

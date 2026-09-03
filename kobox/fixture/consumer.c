@@ -3,6 +3,7 @@
 #include "fixture.h"
 
 #include <kobox2/closure_layout.h>
+#include <kobox2/protocol_layout.h>
 
 #include <linux/compiler_attributes.h>
 
@@ -100,15 +101,22 @@ unlock_rcu:
 __attribute__((visibility("default")))
 int kobox_fixture_consumer_init(const struct kobox_module_context *context)
 {
+	static const uint8_t resource_interface_digest[
+		KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE] =
+			KB2_PROTOCOL_SCHEMA_SHA256_BYTES;
+	struct kobox_module_resource_binding resource_binding;
 	struct kobox_module_resource_handle stale;
 	struct kobox_module_resource_info info;
+	uint8_t wrong_interface_digest[
+		KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE];
 	const struct kobox_fixture_core_ops *ops;
 	uint32_t state;
 	size_t count;
 
 	if (!context || context->node_id != KOBOX_FIXTURE_CONSUMER_NODE_ID ||
 	    consumer_context || !context->core_operations ||
-	    !context->runtime_operations)
+	    !context->runtime_operations ||
+	    !context->runtime_operations->resource_bind)
 		return -1;
 	ops = context->core_operations;
 	if (!fixture_ops_valid(ops) ||
@@ -123,6 +131,12 @@ int kobox_fixture_consumer_init(const struct kobox_module_context *context)
 		    &consumer_resource) != KOBOX_MODULE_RESOURCE_OK ||
 	    context->runtime_operations->resource_info(
 		    context, consumer_resource, &info) != KOBOX_MODULE_RESOURCE_OK ||
+	    context->runtime_operations->resource_bind(
+		    context, consumer_resource, resource_interface_digest,
+		    &resource_binding) != KOBOX_MODULE_RESOURCE_OK ||
+	    !resource_binding.object || !resource_binding.operations ||
+	    resource_binding.operations->size <
+		    sizeof(*resource_binding.operations) ||
 	    info.resource_type != KB2_CLOSURE_RESOURCE_CHANNEL ||
 	    info.granted_rights != (KB2_CLOSURE_CHANNEL_RIGHT_SEND |
 				    KB2_CLOSURE_CHANNEL_RIGHT_RECEIVE) ||
@@ -130,10 +144,20 @@ int kobox_fixture_consumer_init(const struct kobox_module_context *context)
 		    context, KOBOX_FIXTURE_RESOURCE_SLOT_ID, 0,
 		    UINT64_C(1) << 63, &stale) != KOBOX_MODULE_RESOURCE_RIGHTS)
 		return -1;
+	for (count = 0; count < sizeof(wrong_interface_digest); count++)
+		wrong_interface_digest[count] = resource_interface_digest[count];
+	wrong_interface_digest[0] ^= 1u;
+	if (context->runtime_operations->resource_bind(
+		    context, consumer_resource, wrong_interface_digest,
+		    &resource_binding) != KOBOX_MODULE_RESOURCE_INTERFACE)
+		return -1;
 	stale = consumer_resource;
 	stale.generation--;
 	if (context->runtime_operations->resource_info(context, stale, &info) !=
-	    KOBOX_MODULE_RESOURCE_STALE)
+		    KOBOX_MODULE_RESOURCE_STALE ||
+	    context->runtime_operations->resource_bind(
+		    context, stale, resource_interface_digest,
+		    &resource_binding) != KOBOX_MODULE_RESOURCE_STALE)
 		return -1;
 #ifdef KOBOX_FIXTURE_FAIL_INIT
 	if (consumer_fail_init)

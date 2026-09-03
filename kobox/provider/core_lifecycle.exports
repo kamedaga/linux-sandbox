@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+
+{
+	global:
+		kobox_linux_core_cleanup;
+		kobox_linux_core_directory;
+		kobox_linux_core_init;
+		kobox_linux_core_quiesce;
+	local:
+		*;
+};

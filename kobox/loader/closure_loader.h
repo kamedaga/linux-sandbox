@@ -48,6 +48,7 @@ struct kobox_closure_loader_config {
 	uint32_t core_operations_node_id;
 	const char *core_operations_symbol;
 	size_t core_operations_symbol_length;
+	uint32_t logical_cpu_count;
 };
 
 enum kobox_closure_loader_status kobox_closure_loader_open(

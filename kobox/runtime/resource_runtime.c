@@ -10,7 +10,10 @@ struct registry_object {
 	uint32_t resource_type;
 	uint64_t object_id;
 	uint64_t granted_rights;
+	uint8_t interface_schema_digest[
+		KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE];
 	void *native_object;
+	const struct kobox_resource_interface_operations *operations;
 };
 
 struct view_slot {
@@ -84,6 +87,8 @@ static int module_context_valid(const struct kobox_module_context *context,
 
 	if (!context || context->size != sizeof(*context) ||
 	    memcmp(context->identity, identity, sizeof(identity)) ||
+	    !context->logical_cpu_count || context->reserved ||
+	    context->reserved2 ||
 	    context->runtime_operations != kobox_resource_runtime_operations() ||
 	    !context->resource_view)
 		return 0;
@@ -143,18 +148,18 @@ static int module_resource_acquire(
 	return KOBOX_MODULE_RESOURCE_OK;
 }
 
-static int module_resource_info(
+static int module_resource_object(
 	const struct kobox_module_context *context,
 	struct kobox_module_resource_handle handle,
-	struct kobox_module_resource_info *info_out)
+	const struct registry_object **object_out)
 {
 	const struct kobox_resource_runtime *runtime;
 	const struct node_view *view;
 	size_t slot_index;
 
-	if (!info_out || !module_context_valid(context, &view))
+	if (!object_out || !module_context_valid(context, &view))
 		return KOBOX_MODULE_RESOURCE_INVALID_ARGUMENT;
-	memset(info_out, 0, sizeof(*info_out));
+	*object_out = NULL;
 	if (handle.generation != context->generation)
 		return KOBOX_MODULE_RESOURCE_STALE;
 	runtime = view->runtime;
@@ -169,13 +174,54 @@ static int module_resource_info(
 
 			if (object->object_id != handle.object_id)
 				continue;
-			info_out->resource_type = object->resource_type;
-			info_out->reserved = 0;
-			info_out->granted_rights = object->granted_rights;
+			*object_out = object;
 			return KOBOX_MODULE_RESOURCE_OK;
 		}
 	}
 	return KOBOX_MODULE_RESOURCE_NOT_VISIBLE;
+}
+
+static int module_resource_bind(
+	const struct kobox_module_context *context,
+	struct kobox_module_resource_handle handle,
+	const uint8_t expected_interface_digest
+		[KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE],
+	struct kobox_module_resource_binding *binding_out)
+{
+	const struct registry_object *object;
+	int status;
+
+	if (!expected_interface_digest || !binding_out)
+		return KOBOX_MODULE_RESOURCE_INVALID_ARGUMENT;
+	*binding_out = (struct kobox_module_resource_binding){ 0 };
+	status = module_resource_object(context, handle, &object);
+	if (status != KOBOX_MODULE_RESOURCE_OK)
+		return status;
+	if (memcmp(object->interface_schema_digest, expected_interface_digest,
+		   sizeof(object->interface_schema_digest)))
+		return KOBOX_MODULE_RESOURCE_INTERFACE;
+	binding_out->operations = object->operations;
+	binding_out->object = object->native_object;
+	return KOBOX_MODULE_RESOURCE_OK;
+}
+
+static int module_resource_info(
+	const struct kobox_module_context *context,
+	struct kobox_module_resource_handle handle,
+	struct kobox_module_resource_info *info_out)
+{
+	const struct registry_object *object;
+	int status;
+
+	if (!info_out)
+		return KOBOX_MODULE_RESOURCE_INVALID_ARGUMENT;
+	memset(info_out, 0, sizeof(*info_out));
+	status = module_resource_object(context, handle, &object);
+	if (status != KOBOX_MODULE_RESOURCE_OK)
+		return status;
+	info_out->resource_type = object->resource_type;
+	info_out->granted_rights = object->granted_rights;
+	return KOBOX_MODULE_RESOURCE_OK;
 }
 
 static const struct kobox_module_runtime_operations runtime_operations = {
@@ -183,6 +229,7 @@ static const struct kobox_module_runtime_operations runtime_operations = {
 	.identity = KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER,
 	.resource_count = module_resource_count,
 	.resource_acquire = module_resource_acquire,
+	.resource_bind = module_resource_bind,
 	.resource_info = module_resource_info,
 };
 
@@ -381,14 +428,23 @@ static enum kobox_resource_runtime_status import_objects(
 		destination->resource_type = slot.resource_type;
 		destination->object_id = object.object_id;
 		destination->granted_rights = object.granted_rights;
+		memcpy(destination->interface_schema_digest,
+		       slot.interface_schema_digest,
+		       sizeof(destination->interface_schema_digest));
 		if (config->import_object(config->object_context, &slot, &object,
 					  handles, object.handle_count,
-					  &destination->native_object)) {
+					  &destination->native_object,
+					  &destination->operations)) {
 			free(handles);
 			return KOBOX_RESOURCE_RUNTIME_IMPORT_FAILURE;
 		}
 		free(handles);
-		if (!destination->native_object)
+		if (!destination->native_object || !destination->operations ||
+		    destination->operations->size <
+			    sizeof(*destination->operations) ||
+		    memcmp(destination->operations->identity,
+			   runtime_operations.identity,
+			   sizeof(destination->operations->identity)))
 			return KOBOX_RESOURCE_RUNTIME_IMPORT_FAILURE;
 	}
 	return KOBOX_RESOURCE_RUNTIME_OK;

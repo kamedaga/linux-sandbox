@@ -122,16 +122,24 @@ static int validate_shared(void *context, int descriptor,
 		       : -1;
 }
 
+static const struct kobox_resource_interface_operations
+	test_resource_operations = {
+		.size = sizeof(test_resource_operations),
+		.identity = KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER,
+	};
+
 static int import_resource(
 	void *context, const kb2_resource_grant_slot_t *slot,
 	const kb2_resource_grant_object_t *object,
 	const struct kobox_resource_native_handle *handles, size_t handle_count,
-	void **native_object_out)
+	void **native_object_out,
+	const struct kobox_resource_interface_operations **operations_out)
 {
 	struct import_tracker *tracker = context;
 	int *native_object;
 
 	if (!tracker || !slot || !object || !handles || !native_object_out ||
+	    !operations_out ||
 	    tracker->fail || slot->slot_id != KOBOX_FIXTURE_RESOURCE_SLOT_ID ||
 	    slot->resource_type != KB2_CLOSURE_RESOURCE_CHANNEL ||
 	    object->slot_id != slot->slot_id || handle_count != 1 ||
@@ -147,6 +155,7 @@ static int import_resource(
 	}
 	tracker->imports++;
 	*native_object_out = native_object;
+	*operations_out = &test_resource_operations;
 	return 0;
 }
 
@@ -384,6 +393,7 @@ static void configure_loader(struct kobox_closure_loader_config *config,
 	config->core_operations_symbol = "kobox_fixture_core_operations";
 	config->core_operations_symbol_length =
 		sizeof("kobox_fixture_core_operations") - 1;
+	config->logical_cpu_count = KOBOX_FIXTURE_CPU_COUNT;
 }
 
 KOBOX_MANUAL_ELF_CALL static int call_consumer(uintptr_t address,

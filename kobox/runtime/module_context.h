@@ -8,6 +8,8 @@
 
 #define KOBOX_MODULE_INTERFACE_IDENTITY_SIZE 4u
 #define KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER { 'd', 'e', 'v', '\0' }
+#define KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE 32u
+#define KOBOX_MODULE_CONTEXT_SIZE 56u
 
 enum kobox_module_resource_status {
 	KOBOX_MODULE_RESOURCE_OK = 0,
@@ -16,6 +18,7 @@ enum kobox_module_resource_status {
 	KOBOX_MODULE_RESOURCE_ABSENT,
 	KOBOX_MODULE_RESOURCE_STALE,
 	KOBOX_MODULE_RESOURCE_RIGHTS,
+	KOBOX_MODULE_RESOURCE_INTERFACE,
 };
 
 enum kobox_module_resource_state {
@@ -34,6 +37,16 @@ struct kobox_module_resource_info {
 	uint64_t granted_rights;
 };
 
+struct kobox_resource_interface_operations {
+	uint32_t size;
+	uint8_t identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
+};
+
+struct kobox_module_resource_binding {
+	const struct kobox_resource_interface_operations *operations;
+	void *object;
+};
+
 struct kobox_module_context;
 
 struct kobox_module_runtime_operations {
@@ -47,6 +60,12 @@ struct kobox_module_runtime_operations {
 				uint32_t slot_id, size_t object_index,
 				uint64_t required_rights,
 				struct kobox_module_resource_handle *handle_out);
+	int (*resource_bind)(
+		const struct kobox_module_context *context,
+		struct kobox_module_resource_handle handle,
+		const uint8_t expected_interface_digest
+			[KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE],
+		struct kobox_module_resource_binding *binding_out);
 	int (*resource_info)(const struct kobox_module_context *context,
 			     struct kobox_module_resource_handle handle,
 			     struct kobox_module_resource_info *info_out);
@@ -61,7 +80,15 @@ struct kobox_module_context {
 	const void *resource_view;
 	const struct kobox_module_runtime_operations *runtime_operations;
 	const void *core_operations;
+	uint32_t logical_cpu_count;
+	uint32_t reserved2;
 };
+
+_Static_assert(sizeof(struct kobox_module_context) ==
+	       KOBOX_MODULE_CONTEXT_SIZE,
+	       "module context layout mismatch");
+_Static_assert(offsetof(struct kobox_module_context, logical_cpu_count) == 48,
+	       "module context CPU count offset mismatch");
 
 typedef int (*kobox_module_lifecycle_fn)(
 	const struct kobox_module_context *context);

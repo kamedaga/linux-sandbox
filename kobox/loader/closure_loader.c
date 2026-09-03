@@ -847,6 +847,7 @@ static enum kobox_closure_loader_status build_module_contexts(
 			kobox_resource_runtime_operations();
 		node->context.core_operations =
 			(const void *)(uintptr_t)core_export->address;
+		node->context.logical_cpu_count = config->logical_cpu_count;
 	}
 	return KOBOX_CLOSURE_OK;
 }
@@ -912,7 +913,7 @@ enum kobox_closure_loader_status kobox_closure_loader_open(
 	enum kobox_closure_loader_status status;
 
 	if (!config || !config->manifest || !config->artifact_descriptors ||
-	    !loader_out)
+	    !config->logical_cpu_count || !loader_out)
 		return KOBOX_CLOSURE_INVALID_ARGUMENT;
 	*loader_out = NULL;
 	loader = calloc(1, sizeof(*loader));

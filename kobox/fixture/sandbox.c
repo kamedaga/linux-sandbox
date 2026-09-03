@@ -130,11 +130,18 @@ struct fixture_native_resource {
 	int descriptor;
 };
 
+static const struct kobox_resource_interface_operations
+	fixture_resource_operations = {
+		.size = sizeof(fixture_resource_operations),
+		.identity = KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER,
+	};
+
 static int import_resource(
 	void *context, const kb2_resource_grant_slot_t *slot,
 	const kb2_resource_grant_object_t *object,
 	const struct kobox_resource_native_handle *handles, size_t handle_count,
-	void **native_object_out)
+	void **native_object_out,
+	const struct kobox_resource_interface_operations **operations_out)
 {
 	const int *transport_descriptor = context;
 	struct fixture_native_resource *resource;
@@ -143,7 +150,7 @@ static int import_resource(
 	uint8_t interface_digest[KB2_CLOSURE_SCHEMA_DIGEST_SIZE];
 
 	if (!transport_descriptor || !slot || !object || !handles ||
-	    !native_object_out || handle_count != 1 ||
+	    !native_object_out || !operations_out || handle_count != 1 ||
 	    kb2_protocol_copy_schema_digest(interface_digest,
 					       sizeof(interface_digest)) !=
 		    KB2_PROTOCOL_OK ||
@@ -168,6 +175,7 @@ static int import_resource(
 		return -1;
 	}
 	*native_object_out = resource;
+	*operations_out = &fixture_resource_operations;
 	return 0;
 }
 
@@ -208,6 +216,7 @@ static int open_generic_closure(struct kobox_fixture_runtime *runtime,
 		.core_operations_symbol = "kobox_fixture_core_operations",
 		.core_operations_symbol_length =
 			sizeof("kobox_fixture_core_operations") - 1,
+		.logical_cpu_count = KOBOX_FIXTURE_CPU_COUNT,
 	};
 	struct stat status;
 	struct stat resource_status;

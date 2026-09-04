@@ -25,6 +25,18 @@ struct kobox_posix_permit {
 	bool initialized;
 };
 
+struct kobox_posix_memory_backing {
+	int descriptor;
+	size_t size;
+	bool initialized;
+};
+
+struct kobox_posix_memory_window {
+	void *address;
+	size_t size;
+	bool initialized;
+};
+
 typedef void (*kobox_posix_timer_fn)(void *context);
 
 struct kobox_posix_oneshot_timer {
@@ -117,6 +129,28 @@ int kobox_posix_memory_protect(
 	size_t size,
 	unsigned int protection);
 int kobox_posix_memory_unmap(void *address, size_t size);
+int kobox_posix_memory_backing_init(
+	struct kobox_posix_memory_backing *backing,
+	size_t size);
+int kobox_posix_memory_backing_destroy(
+	struct kobox_posix_memory_backing *backing);
+int kobox_posix_memory_window_init(
+	struct kobox_posix_memory_window *window,
+	size_t size);
+int kobox_posix_memory_window_map(
+	struct kobox_posix_memory_window *window,
+	size_t window_offset,
+	struct kobox_posix_memory_backing *backing,
+	size_t backing_offset,
+	size_t size,
+	unsigned int protection,
+	void **address_out);
+int kobox_posix_memory_window_reset(
+	struct kobox_posix_memory_window *window,
+	size_t window_offset,
+	size_t size);
+int kobox_posix_memory_window_destroy(
+	struct kobox_posix_memory_window *window);
 
 int kobox_posix_cpu_init(
 	struct kobox_posix_cpu *cpu,

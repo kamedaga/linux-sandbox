@@ -278,6 +278,8 @@ static int join_success(struct kobox_posix_thread *thread)
 
 static int test_basic_primitives(void)
 {
+	struct kobox_posix_memory_backing backing = {0};
+	struct kobox_posix_memory_window windows[2] = {{0}};
 	struct kobox_posix_permit permit = {0};
 	struct kobox_posix_oneshot_timer timer = {0};
 	struct timer_case timer_test = {0};
@@ -286,6 +288,7 @@ static int test_basic_primitives(void)
 	uint64_t deadline;
 	long page_size;
 	unsigned char *mapping;
+	unsigned char *aliases[2];
 	unsigned int index;
 
 	CHECK(kobox_posix_monotonic_ns(&before) == 0);
@@ -307,6 +310,31 @@ static int test_basic_primitives(void)
 		mapping, (size_t)page_size * 2, KOBOX_POSIX_MEMORY_READ) == 0);
 	CHECK(kobox_posix_memory_unmap(
 		mapping, (size_t)page_size * 2) == 0);
+
+	CHECK(kobox_posix_memory_backing_init(
+		&backing, (size_t)page_size * 2) == 0);
+	CHECK(kobox_posix_memory_window_init(
+		&windows[0], (size_t)page_size * 2) == 0);
+	CHECK(kobox_posix_memory_window_init(
+		&windows[1], (size_t)page_size * 2) == 0);
+	CHECK(kobox_posix_memory_window_map(
+		&windows[0], 0, &backing, 0, (size_t)page_size * 2,
+		KOBOX_POSIX_MEMORY_READ | KOBOX_POSIX_MEMORY_WRITE,
+		(void **)&aliases[0]) == 0);
+	CHECK(kobox_posix_memory_window_map(
+		&windows[1], 0, &backing, 0, (size_t)page_size * 2,
+		KOBOX_POSIX_MEMORY_READ | KOBOX_POSIX_MEMORY_WRITE,
+		(void **)&aliases[1]) == 0);
+	aliases[0][0] = 0x39;
+	aliases[1][(size_t)page_size + 7] = 0xc4;
+	CHECK(aliases[1][0] == 0x39 &&
+	      aliases[0][(size_t)page_size + 7] == 0xc4);
+	CHECK(kobox_posix_memory_window_reset(
+		&windows[1], 0, (size_t)page_size) == 0);
+	CHECK(aliases[0][0] == 0x39);
+	CHECK(kobox_posix_memory_window_destroy(&windows[1]) == 0);
+	CHECK(kobox_posix_memory_window_destroy(&windows[0]) == 0);
+	CHECK(kobox_posix_memory_backing_destroy(&backing) == 0);
 
 	CHECK(kobox_posix_permit_init(&permit, 0) == 0);
 	CHECK(kobox_posix_permit_post(&permit, 1) == 0);

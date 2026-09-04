@@ -150,6 +150,73 @@ set_tests_properties(
 	PROPERTIES LABELS "linux-runtime;go-no-go" TIMEOUT 15
 )
 
+if(KOBOX_LINUX_BOOT_BUILD_DIR)
+	set(_kobox_memory_output "${CMAKE_CURRENT_BINARY_DIR}/linux-memory")
+	set(_kobox_memory_provider_build
+		"${CMAKE_CURRENT_BINARY_DIR}/linux-memory-provider")
+	set(_kobox_memory_core
+		"${_kobox_memory_output}/linux-early-memory-gate.so")
+	set(_kobox_memory_boundary
+		"${_kobox_memory_output}/linux-early-memory-boundary.so")
+	set(_kobox_memory_inventory
+		"${_kobox_memory_output}/inventory.json")
+	add_custom_command(
+		OUTPUT
+			"${_kobox_memory_core}"
+			"${_kobox_memory_boundary}"
+			"${_kobox_memory_inventory}"
+		COMMAND "${CMAKE_COMMAND}" -E make_directory
+			"${_kobox_memory_output}"
+		COMMAND
+			"${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
+			--source-tree "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--canonical-build-dir "${KOBOX_LINUX_BOOT_BUILD_DIR}"
+			--provider-build-dir "${_kobox_memory_provider_build}"
+			--output-dir "${_kobox_memory_output}"
+			--protocol-include
+				"${PROJECT_SOURCE_DIR}/protocol/generated/include"
+			--inventory "${_kobox_memory_inventory}"
+		DEPENDS
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/build_shared_providers.py"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/provider.lds"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/cacheflush.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/linux/init.h"
+			"${KOBOX_LINUX_BOOT_BUILD_DIR}/.config"
+			"${KOBOX_LINUX_BOOT_BUILD_DIR}/vmlinux"
+			"${KOBOX_LINUX_BOOT_BUILD_DIR}/vmlinux.a"
+		VERBATIM
+	)
+	add_custom_target(kobox_linux_early_memory_artifact ALL DEPENDS
+		"${_kobox_memory_core}"
+		"${_kobox_memory_boundary}"
+		"${_kobox_memory_inventory}"
+	)
+	add_executable(kobox_linux_early_memory_test memory/early_boot_test.c)
+	target_compile_features(kobox_linux_early_memory_test PRIVATE c_std_11)
+	set_target_properties(kobox_linux_early_memory_test PROPERTIES
+		C_EXTENSIONS OFF)
+	target_compile_options(kobox_linux_early_memory_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_include_directories(kobox_linux_early_memory_test
+		PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/memory")
+	target_link_libraries(kobox_linux_early_memory_test
+		PRIVATE kobox_posix_host ${CMAKE_DL_LIBS})
+	add_dependencies(kobox_linux_early_memory_test
+		kobox_linux_early_memory_artifact)
+	add_test(
+		NAME kobox2.linux_early_memory_gate
+		COMMAND kobox_linux_early_memory_test
+			"${_kobox_memory_boundary}"
+			"${_kobox_memory_core}"
+	)
+	set_tests_properties(kobox2.linux_early_memory_gate PROPERTIES
+		LABELS "linux-runtime;go-no-go" TIMEOUT 30)
+endif()
+
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)
 target_compile_features(kobox_provider_arena_test PRIVATE c_std_11)
 target_compile_options(

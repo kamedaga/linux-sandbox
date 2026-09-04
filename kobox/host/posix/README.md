@@ -7,7 +7,7 @@ boundary. It provides only:
 - a monotonic-clock counting permit;
 - `CLOCK_MONOTONIC` time;
 - a rearmable one-shot timer;
-- anonymous memory mapping and protection; and
+- anonymous mapping plus shared backing and fixed alias windows; and
 - asynchronous tick/IRQ notification with POSIX real-time signals.
 
 It does not implement Linux tasks, scheduling classes, waitqueues, mutexes,
@@ -27,7 +27,8 @@ and all possible owner threads have stopped.
 
 `kobox2.posix_host_gate` exercises two logical CPUs and proves serialization,
 cross-CPU concurrency, CPU-bound tick delivery, IRQ deferral, and
-wake-before-park. `kobox2.posix_host_surface_gate` rejects undeclared imports
+wake-before-park. It also verifies that two windows alias the same shared
+backing. `kobox2.posix_host_surface_gate` rejects undeclared imports
 and Linux-specific `futex`, `eventfd`, and `timerfd` shortcuts.
 
 All state objects must be zero-initialized before their init/start call and

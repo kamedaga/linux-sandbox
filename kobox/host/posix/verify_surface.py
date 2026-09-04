@@ -14,13 +14,20 @@ ALLOWED_SYMBOLS = {
     "__libc_current_sigrtmax",
     "__libc_current_sigrtmin",
     "clock_gettime",
+    "close",
+    "ftruncate",
+    "getpid",
     "memset",
     "mmap",
     "mprotect",
     "munmap",
+    "shm_open",
+    "shm_unlink",
     "sigaction",
     "sigaddset",
     "sigemptyset",
+    "snprintf",
+    "sysconf",
 }
 ALLOWED_PREFIXES = ("kobox_posix_", "pthread_")
 FORBIDDEN_SUBSTRINGS = ("eventfd", "futex", "timerfd")

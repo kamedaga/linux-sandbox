@@ -6,7 +6,7 @@
 - monotonic clockを使うcounting permit
 - `CLOCK_MONOTONIC`時刻
 - 再arm可能なone-shot timer
-- anonymous memory mappingとprotection
+- anonymous mappingと、共有backingを固定aliasするwindow
 - POSIX realtime signalによる非同期tick/IRQ通知
 
 Linux task、scheduler class、waitqueue、mutex、workqueue、timer、IRQ subsystemは実装しません。
@@ -20,7 +20,8 @@ notification callbackはsignal contextで実行されるため、async-signal-sa
 producerとownerになり得る全threadを停止してからCPU objectをdestroyします。
 
 `kobox2.posix_host_gate`は2 logical CPUで直列進入、CPU間並行実行、CPU-bound threadへのtick、IRQ
-保留、wake-before-parkを証明します。`kobox2.posix_host_surface_gate`は未宣言importとLinux固有の
+保留、wake-before-park、二つのwindowから同じbackingへのaliasを証明します。
+`kobox2.posix_host_surface_gate`は未宣言importとLinux固有の
 `futex`、`eventfd`、`timerfd` shortcutを拒否します。
 
 全state objectはinit/start前にzero初期化し、active中はcopyしません。

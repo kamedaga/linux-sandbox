@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
 
-"""Generate a deterministic Linux module closure inventory."""
+"""Generate a deterministic, modules-only Linux driver closure inventory."""
 
 import argparse
 import hashlib
@@ -13,12 +13,12 @@ import sys
 from collections import defaultdict, deque
 
 
-INVENTORY_FORMAT = "kobox-linux-closure-inventory-dev"
-PROFILE_FORMAT = "kobox-linux-closure-profile-dev"
+INVENTORY_FORMAT = "kobox-linux-driver-closure-inventory-dev"
+PROFILE_FORMAT = "kobox-linux-runtime-profile-dev"
 
 
 class ClosureError(Exception):
-    """A build or profile cannot form a complete closure."""
+    """A build or profile cannot form a complete driver closure."""
 
 
 def run_command(arguments):
@@ -47,7 +47,6 @@ def parse_config(text):
     values = {}
     value_pattern = re.compile(r"^(CONFIG_[A-Za-z0-9_]+)=(.*)$")
     disabled_pattern = re.compile(r"^# (CONFIG_[A-Za-z0-9_]+) is not set$")
-
     for line in text.splitlines():
         match = value_pattern.match(line)
         if match:
@@ -61,7 +60,6 @@ def parse_config(text):
 
 def parse_baseline(text):
     values = {}
-
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -75,7 +73,6 @@ def parse_baseline(text):
 
 def parse_symvers(text):
     symbols = {}
-
     for line_number, line in enumerate(text.splitlines(), 1):
         fields = line.split("\t")
         if len(fields) < 4:
@@ -95,19 +92,88 @@ def parse_symvers(text):
 
 def parse_undefined_symbols(text):
     symbols = []
-
     for line in text.splitlines():
         fields = line.split()
-        if len(fields) < 2:
-            continue
-        symbol_type = fields[1]
-        if symbol_type not in ("U", "w", "v"):
+        if len(fields) < 2 or fields[1] not in ("U", "w", "v"):
             continue
         symbols.append({
             "name": fields[0],
-            "weak": symbol_type in ("w", "v"),
+            "weak": fields[1] in ("w", "v"),
         })
     return sorted(symbols, key=lambda item: item["name"])
+
+
+def parse_defined_symbols(text):
+    symbols = set()
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] not in ("U", "w", "v"):
+            symbols.add(fields[0])
+    return symbols
+
+
+def parse_vmlinux_archive_symbols(text, build_dir):
+    pattern = re.compile(r"^.*\[(.*)\]: (\S+) ([A-Za-z?])(?: |$)")
+    definitions = defaultdict(list)
+    build_dir = build_dir.resolve()
+    for line in text.splitlines():
+        match = pattern.match(line)
+        if not match:
+            continue
+        member = pathlib.Path(match.group(1))
+        if not member.is_absolute():
+            member = build_dir / member
+        try:
+            member = member.resolve().relative_to(build_dir)
+        except ValueError as error:
+            raise ClosureError(
+                f"vmlinux archive member escapes build tree: {member}"
+            ) from error
+        definitions[match.group(2)].append({
+            "source_object": member.as_posix(),
+            "symbol_type": match.group(3),
+        })
+    return definitions
+
+
+def select_vmlinux_definition(symbol, definitions, linked_symbols):
+    candidates = definitions.get(symbol, [])
+    strong = [
+        item for item in candidates
+        if item["symbol_type"].isupper() and
+        item["symbol_type"] not in ("W", "V")
+    ]
+    if len(strong) == 1:
+        return strong[0]
+    if not strong and len(candidates) == 1:
+        return candidates[0]
+    if not candidates and symbol in linked_symbols:
+        return {"source_object": "vmlinux-linker-defined", "symbol_type": "A"}
+    if not candidates:
+        raise ClosureError(f"no source object defines vmlinux export: {symbol}")
+    paths = ", ".join(sorted(item["source_object"] for item in candidates))
+    raise ClosureError(f"ambiguous vmlinux definition for {symbol}: {paths}")
+
+
+def classify_provider(source_object, shared_providers):
+    matches = []
+    default = None
+    for provider in shared_providers:
+        if provider.get("default"):
+            if default is not None:
+                raise ClosureError("profile has more than one default provider")
+            default = provider["name"]
+        for prefix in provider.get("source_prefixes", []):
+            if source_object.startswith(prefix):
+                matches.append((len(prefix), provider["name"]))
+    if matches:
+        matches.sort(reverse=True)
+        if len(matches) > 1 and matches[0][0] == matches[1][0]:
+            raise ClosureError(f"ambiguous shared provider for {source_object}")
+        return matches[0][1]
+    if default is None:
+        raise ClosureError(f"no shared provider owns {source_object}")
+    return default
 
 
 def resolve_export(module_path, undefined, symvers):
@@ -127,64 +193,10 @@ def validate_import_namespace(module_path, symbol, namespace,
         )
 
 
-def parse_vmlinux_archive_symbols(text, build_dir):
-    pattern = re.compile(r"^.*\[(.*)\]: ([^ ]+) ([A-Za-z?])(?: |$)")
-    definitions = defaultdict(list)
-    build_dir = build_dir.resolve()
-
-    for line in text.splitlines():
-        match = pattern.match(line)
-        if not match:
-            continue
-        member = pathlib.Path(match.group(1))
-        if not member.is_absolute():
-            member = build_dir / member
-        try:
-            member = member.resolve().relative_to(build_dir)
-        except ValueError as error:
-            raise ClosureError(f"vmlinux archive member escapes build tree: {member}") from error
-        definitions[match.group(2)].append({
-            "source_object": member.as_posix(),
-            "symbol_type": match.group(3),
-        })
-    return definitions
-
-
-def parse_defined_symbols(text):
-    symbols = set()
-
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[1] not in ("U", "w", "v"):
-            symbols.add(fields[0])
-    return symbols
-
-
-def select_vmlinux_definition(symbol, definitions, linked_symbols):
-    candidates = definitions.get(symbol, [])
-    strong = [item for item in candidates if item["symbol_type"].isupper() and
-              item["symbol_type"] not in ("W", "V")]
-
-    if len(strong) == 1:
-        return strong[0]
-    if not strong and len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        if symbol in linked_symbols:
-            return {
-                "source_object": "vmlinux-linker-defined",
-                "symbol_type": "A",
-            }
-        raise ClosureError(f"no source object defines vmlinux export: {symbol}")
-    paths = ", ".join(sorted(item["source_object"] for item in candidates))
-    raise ClosureError(f"ambiguous vmlinux definition for {symbol}: {paths}")
-
-
 def parse_softdeps(lines):
     before = []
     after = []
     destination = None
-
     for line in lines:
         for token in line.split():
             if token == "pre:":
@@ -215,66 +227,6 @@ def module_path_from_order(path):
     return f"{path[:-2]}.ko"
 
 
-def classify_provider(source_object, shared_providers):
-    matches = []
-    default = None
-
-    for provider in shared_providers:
-        if provider.get("default"):
-            if default is not None:
-                raise ClosureError("profile has more than one default shared provider")
-            default = provider["name"]
-        for prefix in provider.get("source_prefixes", []):
-            if source_object.startswith(prefix):
-                matches.append((len(prefix), provider["name"]))
-    if matches:
-        matches.sort(reverse=True)
-        if len(matches) > 1 and matches[0][0] == matches[1][0]:
-            raise ClosureError(f"ambiguous shared provider for {source_object}")
-        return matches[0][1]
-    if default is None:
-        raise ClosureError(f"no shared provider owns {source_object}")
-    return default
-
-
-def provider_symbol_overrides(profile):
-    overrides = {}
-
-    for provider in profile["shared_providers"]:
-        owner = provider["name"]
-        for symbol, source in provider.get("support_symbols", {}).items():
-            if (not isinstance(symbol, str) or not symbol or
-                    not isinstance(source, str) or
-                    not source.startswith("kobox/provider/") or
-                    symbol in overrides):
-                raise ClosureError("invalid shared provider symbol override")
-            overrides[symbol] = (owner, source)
-    return overrides
-
-
-def provider_runtime_exports(profile):
-    exports = {}
-
-    for provider in profile["shared_providers"]:
-        owner = provider["name"]
-        for source in (
-            provider.get("runtime_sources", []) +
-            provider.get("linux_runtime_sources", [])
-        ):
-            for symbol in source.get("exports", []):
-                if symbol in exports:
-                    raise ClosureError(
-                        f"duplicate shared provider runtime export: {symbol}"
-                    )
-                exports[symbol] = {
-                    "owner": owner,
-                    "export": "KBOX_PROVIDER_EXPORT",
-                    "namespace": "",
-                    "source_object": source["path"],
-                }
-    return exports
-
-
 def topological_order(nodes, dependency_edges, ordering_edges,
                       preferred_nodes=None):
     preferred_nodes = preferred_nodes or set()
@@ -284,16 +236,15 @@ def topological_order(nodes, dependency_edges, ordering_edges,
 
     successors = {node: set() for node in nodes}
     indegree = {node: 0 for node in nodes}
-
     for consumer, provider in dependency_edges:
         if consumer not in nodes or provider not in nodes:
-            raise ClosureError("dependency names an unknown artifact")
+            raise ClosureError("dependency names an unknown module")
         if consumer not in successors[provider]:
             successors[provider].add(consumer)
             indegree[consumer] += 1
     for before, after in ordering_edges:
         if before not in nodes or after not in nodes:
-            raise ClosureError("ordering constraint names an unknown artifact")
+            raise ClosureError("ordering constraint names an unknown module")
         if after not in successors[before]:
             successors[before].add(after)
             indegree[after] += 1
@@ -321,69 +272,53 @@ def validate_profile(profile):
     if profile.get("format") != PROFILE_FORMAT:
         raise ClosureError("unsupported closure profile format")
     required = (
-        "name",
-        "linux_tag",
-        "linux_commit",
-        "kernel_release",
-        "config_sha256",
-        "toolchain",
-        "roots",
-        "explicit_dependencies",
-        "resource_slots",
-        "shared_providers",
-        "required_config",
+        "name", "linux_tag", "linux_commit", "kernel_release",
+        "config_sha256", "toolchain", "kernel_runtime", "roots",
+        "explicit_dependencies", "resource_slots", "required_config",
     )
     for field in required:
         if field not in profile:
             raise ClosureError(f"profile is missing {field}")
-    if not profile["roots"]:
-        raise ClosureError("profile has no root module")
-    provider_names = [item.get("name") for item in profile["shared_providers"]]
-    if None in provider_names or len(provider_names) != len(set(provider_names)):
-        raise ClosureError("shared provider names must be present and unique")
-    if sum(bool(item.get("default")) for item in profile["shared_providers"]) != 1:
-        raise ClosureError("profile must have exactly one default shared provider")
-    for provider in profile["shared_providers"]:
-        unknown = set(provider.get("dependencies", [])) - set(provider_names)
-        if unknown:
-            raise ClosureError(f"shared provider dependency is unknown: {sorted(unknown)[0]}")
-    provider_symbol_overrides(profile)
+    runtime = profile["kernel_runtime"]
+    expected_runtime = {
+        "name": "linux-runtime",
+        "artifact": "vmlinux",
+        "root_symbol": "start_kernel",
+        "root_source": "init/main.o",
+        "linker_script": "arch/x86/kernel/vmlinux.lds.S",
+        "driver_closure": "modules-only",
+        "process_lifecycle": "one-boot",
+        "shutdown": "quiesce-modules-then-exit",
+    }
+    for field, expected in expected_runtime.items():
+        if runtime.get(field) != expected:
+            raise ClosureError(f"invalid kernel runtime {field}")
+    if runtime.get("upper_api_overrides") != []:
+        raise ClosureError("Linux upper API overrides must be empty")
+    if not profile["roots"] or any(
+        not isinstance(root, str) or not root.endswith(".ko")
+        for root in profile["roots"]
+    ):
+        raise ClosureError("profile roots must be Linux modules")
+
     expected_slots = (
-        (1, "pci-function", "kobox2.pci-function", "device", 7, True),
-        (2, "dma-domain", "kobox2.dma-domain", "device", 5, False),
-        (3, "irq-endpoint", "kobox2.irq-endpoint", "notification", 1, False),
+        (1, "pci-function", "kobox2.pci-function", "device", 7, 1, True),
+        (2, "dma-domain", "kobox2.dma-domain", "device", 5, 1, False),
+        (3, "irq-endpoint", "kobox2.irq-endpoint", "notification", 1, 2048, False),
     )
     slots = profile["resource_slots"]
-    if not isinstance(slots, list) or len(slots) < len(expected_slots):
+    if not isinstance(slots, list) or len(slots) != len(expected_slots):
         raise ClosureError("profile has an incomplete device resource slot set")
     for slot, expected in zip(slots, expected_slots):
         identity = (
             slot.get("slot_id"), slot.get("name"), slot.get("schema"),
             slot.get("resource_type"), slot.get("required_rights"),
-            slot.get("reset_required"),
+            slot.get("maximum_count"), slot.get("reset_required"),
         )
-        if identity != expected:
+        if identity != expected or slot.get("minimum_count") != 1:
             raise ClosureError("profile device resource slot identity mismatch")
-        maximum_count = 2048 if slot.get("slot_id") == 3 else 1
-        if (slot.get("minimum_count") != 1 or
-                slot.get("maximum_count") != maximum_count or
-                slot.get("consumers") != ["device-pci.so"]):
-            raise ClosureError("profile device resource slot contract mismatch")
-    prior_slot_id = 0
-    names = set()
-    for slot in slots:
-        slot_id = slot.get("slot_id")
-        name = slot.get("name")
-        consumers = slot.get("consumers")
-        if (not isinstance(slot_id, int) or slot_id != prior_slot_id + 1 or
-                not isinstance(name, str) or not name or name in names or
-                not isinstance(consumers, list) or not consumers or
-                len(consumers) != len(set(consumers)) or
-                any(not isinstance(consumer, str) or not consumer
-                    for consumer in consumers)):
-            raise ClosureError("profile resource slot catalog is invalid")
-        prior_slot_id = slot_id
-        names.add(name)
+        if slot.get("consumers") != [runtime["name"]]:
+            raise ClosureError("device resources must terminate at Linux runtime")
 
 
 def modinfo_values(module, field, modinfo):
@@ -394,7 +329,6 @@ def modinfo_values(module, field, modinfo):
 def read_modules(build_dir, modules_order, nm, modinfo):
     records = {}
     names = {}
-
     for entry in modules_order.read_text(encoding="utf-8").splitlines():
         if not entry:
             continue
@@ -408,9 +342,8 @@ def read_modules(build_dir, modules_order, nm, modinfo):
         module_name = normalize_module_name(module_names[0])
         if module_name in names:
             raise ClosureError(f"duplicate module name: {module_name}")
-        depends_values = modinfo_values(module_path, "depends", modinfo)
         dependencies = []
-        for value in depends_values:
+        for value in modinfo_values(module_path, "depends", modinfo):
             dependencies.extend(item for item in value.split(",") if item)
         soft_pre, soft_post = parse_softdeps(
             modinfo_values(module_path, "softdep", modinfo)
@@ -429,17 +362,10 @@ def read_modules(build_dir, modules_order, nm, modinfo):
             "modinfo_dependencies": sorted(
                 {normalize_module_name(item) for item in dependencies}
             ),
-            "softdep_pre": sorted(
-                {normalize_module_name(item) for item in soft_pre}
-            ),
-            "softdep_post": sorted(
-                {normalize_module_name(item) for item in soft_post}
-            ),
+            "softdep_pre": soft_pre,
+            "softdep_post": soft_post,
             "undefined": parse_undefined_symbols(run_command([
-                nm,
-                "--undefined-only",
-                "--format=posix",
-                str(module_path),
+                nm, "--undefined-only", "--format=posix", str(module_path),
             ])),
         }
         names[module_name] = relative_path
@@ -448,9 +374,7 @@ def read_modules(build_dir, modules_order, nm, modinfo):
 
 def owner_module_path(owner, records):
     candidate = f"{owner}.ko"
-    if candidate in records:
-        return candidate
-    return None
+    return candidate if candidate in records else None
 
 
 def add_edge(edge_reasons, consumer, provider, reason, symbol=None):
@@ -467,85 +391,47 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
     core_build_dir = (core_build_dir or build_dir).resolve()
     validate_profile(profile)
 
-    config_path = build_dir / ".config"
-    symvers_path = build_dir / "Module.symvers"
-    modules_order_path = build_dir / "modules.order"
-    archive_path = core_build_dir / "vmlinux.a"
-    vmlinux_path = core_build_dir / "vmlinux"
-    release_path = build_dir / "include/config/kernel.release"
-    core_config_path = core_build_dir / ".config"
-    core_release_path = core_build_dir / "include/config/kernel.release"
-    baseline_path = source_tree / "kobox/upstream-baseline.env"
-    for required_path in (
-        config_path,
-        symvers_path,
-        modules_order_path,
-        archive_path,
-        vmlinux_path,
-        release_path,
-        core_config_path,
-        core_release_path,
-        baseline_path,
-    ):
-        if not required_path.is_file():
-            raise ClosureError(f"required build input is missing: {required_path}")
+    paths = {
+        "config": build_dir / ".config",
+        "symvers": build_dir / "Module.symvers",
+        "modules_order": build_dir / "modules.order",
+        "release": build_dir / "include/config/kernel.release",
+        "vmlinux": core_build_dir / profile["kernel_runtime"]["artifact"],
+        "core_config": core_build_dir / ".config",
+        "core_release": core_build_dir / "include/config/kernel.release",
+        "baseline": source_tree / "kobox/upstream-baseline.env",
+    }
+    for path in paths.values():
+        if not path.is_file():
+            raise ClosureError(f"required build input is missing: {path}")
 
-    baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
-    if baseline.get("LINUX_TAG") != profile["linux_tag"] or \
-       baseline.get("LINUX_COMMIT") != profile["linux_commit"]:
+    baseline = parse_baseline(paths["baseline"].read_text(encoding="utf-8"))
+    if (baseline.get("LINUX_TAG") != profile["linux_tag"] or
+            baseline.get("LINUX_COMMIT") != profile["linux_commit"]):
         raise ClosureError("profile does not match the pinned upstream baseline")
-    kernel_release = release_path.read_text(encoding="utf-8").strip()
+    kernel_release = paths["release"].read_text(encoding="utf-8").strip()
     if kernel_release != profile["kernel_release"]:
-        raise ClosureError(
-            f"kernel release mismatch: expected {profile['kernel_release']}, "
-            f"found {kernel_release}"
-        )
-    config_text = config_path.read_text(encoding="utf-8")
+        raise ClosureError("kernel release mismatch")
+    config_text = paths["config"].read_text(encoding="utf-8")
     config_sha256 = hashlib.sha256(config_text.encode()).hexdigest()
     if config_sha256 != profile["config_sha256"]:
-        raise ClosureError(
-            f"config digest mismatch: expected {profile['config_sha256']}, "
-            f"found {config_sha256}"
-        )
-    core_config_sha256 = sha256_file(core_config_path)
-    if core_config_sha256 != config_sha256:
+        raise ClosureError("config digest mismatch")
+    if sha256_file(paths["core_config"]) != config_sha256:
         raise ClosureError("module and core build config digests differ")
-    if core_release_path.read_text(encoding="utf-8").strip() != kernel_release:
+    if paths["core_release"].read_text(encoding="utf-8").strip() != kernel_release:
         raise ClosureError("module and core kernel releases differ")
     config = parse_config(config_text)
     for name, expected in sorted(profile["required_config"].items()):
-        actual = config.get(name, "n")
-        if actual != expected:
-            raise ClosureError(
-                f"config mismatch for {name}: expected {expected}, found {actual}"
-            )
+        if config.get(name, "n") != expected:
+            raise ClosureError(f"config mismatch for {name}")
 
     records, module_names = read_modules(
-        build_dir, modules_order_path, nm, modinfo
+        build_dir, paths["modules_order"], nm, modinfo
     )
-    symvers = parse_symvers(symvers_path.read_text(encoding="utf-8"))
-    runtime_exports = provider_runtime_exports(profile)
-    overlap = set(symvers) & set(runtime_exports)
-    if overlap:
-        raise ClosureError(
-            f"shared provider runtime export shadows Linux export: "
-            f"{sorted(overlap)[0]}"
-        )
-    symvers.update(runtime_exports)
-    vmlinux_definitions = parse_vmlinux_archive_symbols(run_command([
-        nm,
-        "-A",
-        "--extern-only",
-        "--defined-only",
-        "--format=posix",
-        str(archive_path),
-    ]), core_build_dir)
+    symvers = parse_symvers(paths["symvers"].read_text(encoding="utf-8"))
     linked_symbols = parse_defined_symbols(run_command([
-        nm,
-        "--extern-only",
-        "--defined-only",
-        "--format=posix",
-        str(vmlinux_path),
+        nm, "--extern-only", "--defined-only", "--format=posix",
+        str(paths["vmlinux"]),
     ]))
 
     roots = set(profile["roots"])
@@ -554,10 +440,9 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             raise ClosureError(f"root module is missing: {root}")
     explicit = profile["explicit_dependencies"]
     for dependency in explicit:
-        if dependency.get("consumer") not in records:
-            raise ClosureError("explicit dependency consumer is missing")
-        if dependency.get("provider") not in records:
-            raise ClosureError("explicit dependency provider is missing")
+        if (dependency.get("consumer") not in records or
+                dependency.get("provider") not in records):
+            raise ClosureError("explicit dependency module is missing")
         if not dependency.get("kind") or not dependency.get("reason"):
             raise ClosureError("explicit dependency lacks kind or reason")
 
@@ -568,14 +453,10 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
     while pending:
         path = pending.popleft()
         record = records[path]
-
-        dependency_names = [
+        dependencies = [
             (name, "modinfo") for name in record["modinfo_dependencies"]
-        ]
-        dependency_names.extend(
-            (name, "softdep-pre") for name in record["softdep_pre"]
-        )
-        for name, kind in dependency_names:
+        ] + [(name, "softdep-pre") for name in record["softdep_pre"]]
+        for name, kind in dependencies:
             provider = resolve_module_dependency(name, module_names)
             add_edge(edge_reasons, path, provider, kind)
             if provider not in selected:
@@ -598,26 +479,17 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
                     selected.add(provider)
                     pending.append(provider)
         for dependency in explicit:
-            if dependency["consumer"] != path:
-                continue
-            provider = dependency["provider"]
-            add_edge(
-                edge_reasons,
-                path,
-                provider,
-                dependency["kind"],
-            )
-            if provider not in selected:
-                selected.add(provider)
-                pending.append(provider)
+            if dependency["consumer"] == path:
+                provider = dependency["provider"]
+                add_edge(edge_reasons, path, provider, dependency["kind"])
+                if provider not in selected:
+                    selected.add(provider)
+                    pending.append(provider)
 
-    provider_by_name = {
-        item["name"]: item for item in profile["shared_providers"]
-    }
-    symbol_overrides = provider_symbol_overrides(profile)
-    shared_requirements = defaultdict(dict)
-    module_requirements = defaultdict(dict)
+    runtime_requirements = defaultdict(set)
+    module_requirements = defaultdict(lambda: defaultdict(set))
     module_output = []
+    runtime_name = profile["kernel_runtime"]["name"]
     for path in sorted(selected):
         record = records[path]
         imports = []
@@ -625,176 +497,70 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             exported = resolve_export(path, item, symvers)
             if exported is None:
                 imports.append({
-                    "name": item["name"],
-                    "optional": True,
-                    "provider": None,
+                    "name": item["name"], "optional": True, "provider": None,
                 })
                 continue
-            namespace = exported["namespace"]
             validate_import_namespace(
-                path,
-                item["name"],
-                namespace,
+                path, item["name"], exported["namespace"],
                 record["import_namespaces"],
             )
             provider = owner_module_path(exported["owner"], records)
-            source_object = None
             if exported["owner"] == "vmlinux":
-                definition = select_vmlinux_definition(
-                    item["name"], vmlinux_definitions, linked_symbols
-                )
-                source_object = definition["source_object"]
-                override = symbol_overrides.get(item["name"])
-                if override:
-                    provider, source_object = override
-                else:
-                    provider = classify_provider(
-                        source_object, profile["shared_providers"]
+                if item["name"] not in linked_symbols:
+                    raise ClosureError(
+                        f"vmlinux export is absent from runtime: {item['name']}"
                     )
-                requirement = shared_requirements[provider].setdefault(
-                    item["name"],
-                    {
-                        "name": item["name"],
-                        "export": exported["export"],
-                        "namespace": namespace,
-                        "source_object": source_object,
-                        "consumers": set(),
-                    },
-                )
-                requirement["consumers"].add(path)
-                add_edge(edge_reasons, path, provider, "symbol", item["name"])
-            elif exported["owner"] in provider_by_name:
-                provider = exported["owner"]
-                source_object = exported["source_object"]
-                requirement = shared_requirements[provider].setdefault(
-                    item["name"],
-                    {
-                        "name": item["name"],
-                        "export": exported["export"],
-                        "namespace": namespace,
-                        "source_object": source_object,
-                        "consumers": set(),
-                    },
-                )
-                requirement["consumers"].add(path)
-                add_edge(edge_reasons, path, provider, "symbol", item["name"])
+                provider = runtime_name
+                runtime_requirements[item["name"]].add(path)
             elif provider is None:
                 raise ClosureError(
                     f"export provider was not built as a module: "
                     f"{exported['owner']}: {item['name']}"
                 )
-            else:
-                requirement = module_requirements[provider].setdefault(
-                    item["name"],
-                    {
-                        "name": item["name"],
-                        "export": exported["export"],
-                        "namespace": namespace,
-                        "consumers": set(),
-                    },
-                )
-                requirement["consumers"].add(path)
+            elif provider != path:
+                module_requirements[provider][item["name"]].add(path)
             imports.append({
                 "name": item["name"],
                 "optional": item["weak"],
                 "provider": provider,
                 "export": exported["export"],
-                "namespace": namespace,
-                **({"source_object": source_object} if source_object else {}),
+                "namespace": exported["namespace"],
             })
-
         module_output.append({
             key: value for key, value in record.items() if key != "undefined"
-        } | {
-            "root": path in roots,
-            "imports": imports,
-        })
+        } | {"root": path in roots, "imports": imports})
 
     for module in module_output:
-        requirements = []
-        for requirement in module_requirements[module["path"]].values():
-            requirement = dict(requirement)
-            requirement["consumers"] = sorted(requirement["consumers"])
-            requirements.append(requirement)
-        module["required_exports"] = sorted(
-            requirements, key=lambda item: item["name"]
-        )
+        module["required_exports"] = [
+            {"name": name, "consumers": sorted(consumers)}
+            for name, consumers in sorted(
+                module_requirements[module["path"]].items()
+            )
+        ]
 
-    used_providers = set(shared_requirements)
-    pending_providers = deque(sorted(used_providers))
-    while pending_providers:
-        provider = pending_providers.popleft()
-        if provider not in provider_by_name:
-            raise ClosureError(f"unknown selected shared provider: {provider}")
-        for dependency in provider_by_name[provider].get("dependencies", []):
-            add_edge(edge_reasons, provider, dependency, "shared-provider")
-            if dependency not in used_providers:
-                used_providers.add(dependency)
-                pending_providers.append(dependency)
-
-    shared_output = []
-    for name in sorted(used_providers):
-        definition = provider_by_name[name]
-        requirements = []
-        source_objects = set()
-        for requirement in shared_requirements[name].values():
-            requirement = dict(requirement)
-            requirement["consumers"] = sorted(requirement["consumers"])
-            source_objects.add(requirement["source_object"])
-            requirements.append(requirement)
-        shared_output.append({
-            "name": name,
-            "dependencies": sorted(definition.get("dependencies", [])),
-            "source_objects": sorted(source_objects),
-            "required_exports": sorted(
-                requirements, key=lambda item: item["name"]
-            ),
-        })
-
-    nodes = selected | used_providers
-    unknown_resource_consumers = {
-        consumer
-        for slot in profile["resource_slots"]
-        for consumer in slot["consumers"]
-        if consumer not in nodes
-    }
-    if unknown_resource_consumers:
-        raise ClosureError(
-            "resource slot consumer is not in the closure: "
-            f"{sorted(unknown_resource_consumers)[0]}"
-        )
     dependency_edges = set(edge_reasons)
     ordering_edges = set(ordering_reasons)
-    load_order = topological_order(
-        nodes,
-        dependency_edges,
-        ordering_edges,
-        used_providers,
-    )
+    load_order = topological_order(selected, dependency_edges, ordering_edges)
+    if any(not artifact.endswith(".ko") for artifact in load_order):
+        raise ClosureError("driver closure contains a non-module artifact")
 
-    dependencies_output = []
-    for (consumer, provider), reason in sorted(edge_reasons.items()):
-        dependencies_output.append({
+    dependencies_output = [
+        {
             "consumer": consumer,
             "provider": provider,
             "kinds": sorted(reason["kinds"]),
             "symbol_count": len(reason["symbols"]),
-        })
-    ordering_output = []
-    for (before, after), kinds in sorted(ordering_reasons.items()):
-        ordering_output.append({
-            "before": before,
-            "after": after,
-            "kinds": sorted(kinds),
-        })
-
-    module_imports = sum(len(item["imports"]) for item in module_output)
-    module_exports = sum(
-        len(item["required_exports"]) for item in module_output
-    )
-    shared_exports = sum(
-        len(item["required_exports"]) for item in shared_output
-    )
+        }
+        for (consumer, provider), reason in sorted(edge_reasons.items())
+    ]
+    ordering_output = [
+        {"before": before, "after": after, "kinds": sorted(kinds)}
+        for (before, after), kinds in sorted(ordering_reasons.items())
+    ]
+    runtime_exports = [
+        {"name": name, "consumers": sorted(consumers)}
+        for name, consumers in sorted(runtime_requirements.items())
+    ]
     return {
         "format": INVENTORY_FORMAT,
         "profile": profile["name"],
@@ -805,19 +571,27 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             "config_sha256": config_sha256,
             "toolchain": profile["toolchain"],
         },
+        "kernel_runtime": {
+            "name": runtime_name,
+            "artifact": profile["kernel_runtime"]["artifact"],
+            "root_symbol": profile["kernel_runtime"]["root_symbol"],
+            "required_exports": runtime_exports,
+        },
         "roots": sorted(roots),
         "summary": {
             "module_count": len(module_output),
-            "shared_provider_count": len(shared_output),
-            "module_import_count": module_imports,
-            "required_module_export_count": module_exports,
-            "required_shared_export_count": shared_exports,
+            "module_import_count": sum(
+                len(module["imports"]) for module in module_output
+            ),
+            "required_module_export_count": sum(
+                len(module["required_exports"]) for module in module_output
+            ),
+            "required_runtime_export_count": len(runtime_exports),
             "dependency_count": len(dependencies_output),
             "ordering_constraint_count": len(ordering_output),
             "resource_slot_count": len(profile["resource_slots"]),
         },
         "resource_slots": profile["resource_slots"],
-        "shared_providers": shared_output,
         "modules": module_output,
         "dependencies": dependencies_output,
         "ordering_constraints": ordering_output,
@@ -828,10 +602,7 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
 
 def encode_inventory(inventory):
     return json.dumps(
-        inventory,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
+        inventory, ensure_ascii=False, indent=2, sort_keys=True,
     ) + "\n"
 
 
@@ -839,11 +610,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-tree", type=pathlib.Path, required=True)
     parser.add_argument("--build-dir", type=pathlib.Path, required=True)
-    parser.add_argument(
-        "--core-build-dir",
-        type=pathlib.Path,
-        help="build tree containing vmlinux and vmlinux.a (defaults to --build-dir)",
-    )
+    parser.add_argument("--core-build-dir", type=pathlib.Path)
     parser.add_argument("--profile", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--check", type=pathlib.Path)
@@ -856,12 +623,8 @@ def main():
     try:
         profile = json.loads(arguments.profile.read_text(encoding="utf-8"))
         encoded = encode_inventory(generate_inventory(
-            arguments.source_tree,
-            arguments.build_dir,
-            profile,
-            arguments.nm,
-            arguments.modinfo,
-            arguments.core_build_dir,
+            arguments.source_tree, arguments.build_dir, profile,
+            arguments.nm, arguments.modinfo, arguments.core_build_dir,
         ))
         if arguments.check:
             if arguments.check.read_text(encoding="utf-8") != encoded:
@@ -874,7 +637,7 @@ def main():
         else:
             sys.stdout.write(encoded)
     except (ClosureError, OSError, json.JSONDecodeError) as error:
-        print(f"closure inventory: {error}", file=sys.stderr)
+        print(f"driver closure inventory: {error}", file=sys.stderr)
         return 1
     return 0
 

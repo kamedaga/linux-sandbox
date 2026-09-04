@@ -10,6 +10,12 @@ add_test(
         "${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_closure_inventory_test.py"
 )
 add_test(
+	NAME kobox2.boot_core_inventory
+	COMMAND
+		"${Python3_EXECUTABLE}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_boot_core_inventory_test.py"
+)
+add_test(
     NAME kobox2.shared_provider_build
     COMMAND
         "${Python3_EXECUTABLE}"
@@ -38,127 +44,62 @@ target_link_libraries(
 	kobox_link_plan_loader PUBLIC kobox2::protocol ${CMAKE_DL_LIBS}
 )
 
-set(KOBOX_VIRGL_LINUX_BUILD_DIR "" CACHE PATH
-	"Pinned Linux build directory for the real VirGL closure link gate")
-set(KOBOX_VIRGL_PROVIDER_DIR "" CACHE PATH
-	"Shared provider artifact directory for the real VirGL closure link gate")
-set(KOBOX_VIRGL_PROVIDER_INVENTORY "" CACHE FILEPATH
-	"Shared provider inventory for the real VirGL closure link gate")
-set(KOBOX_VIRGL_NM "llvm-nm-18" CACHE STRING
-	"nm command used to generate the real VirGL closure link plan")
-
-set(_kobox_virgl_gate_inputs
-	"${KOBOX_VIRGL_LINUX_BUILD_DIR}"
-	"${KOBOX_VIRGL_PROVIDER_DIR}"
-	"${KOBOX_VIRGL_PROVIDER_INVENTORY}"
-)
-set(_kobox_virgl_gate_input_count 0)
-foreach(input IN LISTS _kobox_virgl_gate_inputs)
-	if(input)
-		math(EXPR _kobox_virgl_gate_input_count
-			"${_kobox_virgl_gate_input_count} + 1")
-	endif()
-endforeach()
-if(_kobox_virgl_gate_input_count GREATER 0 AND
-	NOT _kobox_virgl_gate_input_count EQUAL 3)
-	message(FATAL_ERROR
-		"The real VirGL closure link gate requires all three KOBOX_VIRGL paths")
-endif()
-
-if(_kobox_virgl_gate_input_count EQUAL 3)
-	set(_kobox_virgl_closure_inventory
-		"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generated/virtio_gpu_virgl.json")
-	set(_kobox_virgl_link_plan
-		"${CMAKE_CURRENT_BINARY_DIR}/generated/virtio_gpu_virgl_link_plan.c")
-	set(_kobox_virgl_artifacts
-		"${KOBOX_VIRGL_PROVIDER_DIR}/core/primitive.so"
-		"${KOBOX_VIRGL_PROVIDER_DIR}/device-pci.so"
-		"${KOBOX_VIRGL_PROVIDER_DIR}/drm.so"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_kms_helper.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_panel_orientation_quirks.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_shmem_helper.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/virtio/virtio-gpu.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/i2c/i2c-core.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_dma_buf.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_pci.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_pci_modern_dev.ko"
-		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_ring.ko"
-	)
-	add_custom_command(
-		OUTPUT "${_kobox_virgl_link_plan}"
+set(KOBOX_LINUX_BOOT_BUILD_DIR "" CACHE PATH
+	"Canonical Linux build directory for the boot-core gate")
+set(KOBOX_LINUX_NM "llvm-nm-18" CACHE STRING
+	"nm command used by the Linux core gates")
+set(KOBOX_LINUX_READELF "llvm-readelf-18" CACHE STRING
+	"readelf command used by the Linux core gates")
+if(KOBOX_LINUX_BOOT_BUILD_DIR)
+	set(_kobox_linux_profile
+		"${CMAKE_CURRENT_SOURCE_DIR}/manifest/profiles/virtio_gpu_virgl.json")
+	set(_kobox_boot_inventory
+		"${CMAKE_CURRENT_BINARY_DIR}/generated/linux_boot_core.json")
+	set(_kobox_driver_inventory
+		"${CMAKE_CURRENT_BINARY_DIR}/generated/virtio_gpu_virgl.json")
+	add_test(
+		NAME kobox2.linux_boot_core_gate
 		COMMAND
 			"${Python3_EXECUTABLE}"
-			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_link_plan.py"
-			--closure-inventory "${_kobox_virgl_closure_inventory}"
-			--provider-inventory "${KOBOX_VIRGL_PROVIDER_INVENTORY}"
-			--linux-build-dir "${KOBOX_VIRGL_LINUX_BUILD_DIR}"
-			--provider-dir "${KOBOX_VIRGL_PROVIDER_DIR}"
-			--nm "${KOBOX_VIRGL_NM}"
-			--output "${_kobox_virgl_link_plan}"
-		DEPENDS
-			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_link_plan.py"
-			"${_kobox_virgl_closure_inventory}"
-			"${KOBOX_VIRGL_PROVIDER_INVENTORY}"
-			${_kobox_virgl_artifacts}
-		VERBATIM
-	)
-	add_executable(
-		kobox_real_virgl_closure_link_test
-		loader/real_closure_link_test.c
-		"${_kobox_virgl_link_plan}"
-	)
-	target_compile_features(
-		kobox_real_virgl_closure_link_test PRIVATE c_std_11
-	)
-	target_compile_options(
-		kobox_real_virgl_closure_link_test
-		PRIVATE -Wall -Wextra -Wpedantic -Werror
-	)
-	target_link_libraries(
-		kobox_real_virgl_closure_link_test
-		PRIVATE kobox_link_plan_loader Threads::Threads
+			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_boot_core_inventory.py"
+			--source-tree "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--build-dir "${KOBOX_LINUX_BOOT_BUILD_DIR}"
+			--profile "${_kobox_linux_profile}"
+			--nm "${KOBOX_LINUX_NM}"
+			--readelf "${KOBOX_LINUX_READELF}"
+			--output "${_kobox_boot_inventory}"
 	)
 	add_test(
-		NAME kobox2.real_virgl_closure_link
+		NAME kobox2.linux_driver_closure_gate
 		COMMAND
-			kobox_real_virgl_closure_link_test
-			"${KOBOX_VIRGL_PROVIDER_DIR}"
-			"${KOBOX_VIRGL_LINUX_BUILD_DIR}"
+			"${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_closure_inventory.py"
+			--source-tree "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--build-dir "${KOBOX_LINUX_BOOT_BUILD_DIR}"
+			--profile "${_kobox_linux_profile}"
+			--nm "${KOBOX_LINUX_NM}"
+			--output "${_kobox_driver_inventory}"
 	)
 	set_tests_properties(
-		kobox2.real_virgl_closure_link
-		PROPERTIES
-			ENVIRONMENT "LD_PREFER_MAP_32BIT_EXEC=1"
-			LABELS "virgl;integration"
-			TIMEOUT 30
-	)
-	add_executable(
-		kobox_linux_kernel_core_test
-		provider/linux_kernel_core_test.c
-	)
-	target_compile_features(kobox_linux_kernel_core_test PRIVATE c_std_11)
-	target_compile_options(
-		kobox_linux_kernel_core_test
-		PRIVATE -Wall -Wextra -Wpedantic -Werror
-	)
-	target_link_libraries(
-		kobox_linux_kernel_core_test
-		PRIVATE kobox2::protocol ${CMAKE_DL_LIBS}
-	)
-	add_test(
-		NAME kobox2.linux_kernel_core
-		COMMAND
-			kobox_linux_kernel_core_test
-			"${KOBOX_VIRGL_PROVIDER_DIR}/core/primitive.so"
-			"${KOBOX_VIRGL_PROVIDER_DIR}/device-pci.so"
-	)
-	set_tests_properties(
-		kobox2.linux_kernel_core
-		PROPERTIES LABELS "virgl;integration" TIMEOUT 30
+		kobox2.linux_boot_core_gate kobox2.linux_driver_closure_gate
+		PROPERTIES LABELS "linux-runtime;integration" TIMEOUT 30
 	)
 endif()
+
+add_executable(
+	kobox_linux_process_lifecycle_test
+	runtime/linux_process_lifecycle.c
+	runtime/linux_process_lifecycle_test.c
+)
+target_compile_features(kobox_linux_process_lifecycle_test PRIVATE c_std_11)
+target_compile_options(
+	kobox_linux_process_lifecycle_test
+	PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+add_test(
+	NAME kobox2.linux_process_lifecycle
+	COMMAND kobox_linux_process_lifecycle_test
+)
 
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)
 target_compile_features(kobox_provider_arena_test PRIVATE c_std_11)

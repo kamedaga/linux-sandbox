@@ -1,5 +1,5 @@
 {
-  "format": "kobox-linux-closure-profile-dev",
+  "format": "kobox-linux-runtime-profile-dev",
   "name": "virtio-gpu-virgl",
   "linux_tag": "v6.18.48",
   "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
@@ -10,6 +10,54 @@
     "compiler_version": "18.1.3",
     "linker": "lld",
     "linker_version": "18.1.3"
+  },
+  "kernel_runtime": {
+    "name": "linux-runtime",
+    "artifact": "vmlinux",
+    "root_symbol": "start_kernel",
+    "root_source": "init/main.o",
+    "linker_script": "arch/x86/kernel/vmlinux.lds.S",
+    "driver_closure": "modules-only",
+    "process_lifecycle": "one-boot",
+    "shutdown": "quiesce-modules-then-exit",
+    "upper_api_overrides": [],
+    "required_sections": [
+      ".text",
+      ".rodata",
+      ".data",
+      ".init.text",
+      ".init.data",
+      ".data..percpu",
+      ".bss"
+    ],
+    "required_boundaries": [
+      ["__init_begin", "__init_end"],
+      ["__initcall_start", "__initcall_end"],
+      ["__per_cpu_start", "__per_cpu_end"],
+      ["__sched_class_highest", "__sched_class_lowest"],
+      ["__start___param", "__stop___param"],
+      ["__setup_start", "__setup_end"]
+    ],
+    "required_initcall_order": [
+      "__initcall_start",
+      "__initcall0_start",
+      "__initcall1_start",
+      "__initcall2_start",
+      "__initcall3_start",
+      "__initcall4_start",
+      "__initcall5_start",
+      "__initcallrootfs_start",
+      "__initcall6_start",
+      "__initcall7_start",
+      "__initcall_end"
+    ],
+    "required_scheduler_classes": [
+      "stop_sched_class",
+      "dl_sched_class",
+      "rt_sched_class",
+      "fair_sched_class",
+      "idle_sched_class"
+    ]
   },
   "roots": [
     "drivers/gpu/drm/virtio/virtio-gpu.ko"
@@ -32,7 +80,7 @@
       "minimum_count": 1,
       "maximum_count": 1,
       "reset_required": true,
-      "consumers": ["device-pci.so"]
+      "consumers": ["linux-runtime"]
     },
     {
       "slot_id": 2,
@@ -43,7 +91,7 @@
       "minimum_count": 1,
       "maximum_count": 1,
       "reset_required": false,
-      "consumers": ["device-pci.so"]
+      "consumers": ["linux-runtime"]
     },
     {
       "slot_id": 3,
@@ -54,374 +102,7 @@
       "minimum_count": 1,
       "maximum_count": 2048,
       "reset_required": false,
-      "consumers": ["device-pci.so"]
-    }
-  ],
-  "provider_link": {
-    "allowed_host_imports": [
-      "__tls_get_addr",
-      "pthread_attr_destroy",
-      "pthread_attr_init",
-      "pthread_attr_setstacksize",
-      "pthread_create",
-      "pthread_detach",
-      "pthread_join",
-      "pthread_self",
-      "pthread_setaffinity_np",
-      "pthread_setname_np"
-    ],
-    "linker_aliases": {
-      "jiffies": "jiffies_64"
-    },
-    "linker_symbols": {
-      "__brk_base": "core/primitive.so",
-      "__brk_limit": "core/primitive.so",
-      "__bss_stop": "core/primitive.so",
-      "__cpuidle_text_end": "core/primitive.so",
-      "__cpuidle_text_start": "core/primitive.so",
-      "__end_init_stack": "core/primitive.so",
-      "__end_of_kernel_reserve": "core/primitive.so",
-      "__end_pci_fixups_early": "device-pci.so",
-      "__end_pci_fixups_enable": "device-pci.so",
-      "__end_pci_fixups_final": "device-pci.so",
-      "__end_pci_fixups_header": "device-pci.so",
-      "__end_pci_fixups_resume": "device-pci.so",
-      "__end_pci_fixups_resume_early": "device-pci.so",
-      "__end_pci_fixups_suspend": "device-pci.so",
-      "__end_pci_fixups_suspend_late": "device-pci.so",
-      "__end_rodata": "core/primitive.so",
-      "__end_rodata_hpage_align": "core/primitive.so",
-      "__init_begin": "core/primitive.so",
-      "__init_end": "core/primitive.so",
-      "__per_cpu_end": "core/primitive.so",
-      "__per_cpu_hot_end": "core/primitive.so",
-      "__per_cpu_hot_start": "core/primitive.so",
-      "__per_cpu_start": "core/primitive.so",
-      "__sched_class_highest": "core/primitive.so",
-      "__sched_class_lowest": "core/primitive.so",
-      "__start_init_stack": "core/primitive.so",
-      "__start_pci_fixups_early": "device-pci.so",
-      "__start_pci_fixups_enable": "device-pci.so",
-      "__start_pci_fixups_final": "device-pci.so",
-      "__start_pci_fixups_header": "device-pci.so",
-      "__start_pci_fixups_resume": "device-pci.so",
-      "__start_pci_fixups_resume_early": "device-pci.so",
-      "__start_pci_fixups_suspend": "device-pci.so",
-      "__start_pci_fixups_suspend_late": "device-pci.so",
-      "__start_rodata": "core/primitive.so",
-      "__start_runtime_ptr_dentry_hashtable": "core/primitive.so",
-      "__start_runtime_shift_d_hash_shift": "core/primitive.so",
-      "__start_runtime_ptr_USER_PTR_MAX": "core/primitive.so",
-      "__stop_runtime_ptr_dentry_hashtable": "core/primitive.so",
-      "__stop_runtime_shift_d_hash_shift": "core/primitive.so",
-      "__stop_runtime_ptr_USER_PTR_MAX": "core/primitive.so",
-      "__top_init_kernel_stack": "core/primitive.so",
-      "__x86_cpu_dev_end": "core/primitive.so",
-      "__x86_cpu_dev_start": "core/primitive.so",
-      "_einittext": "core/primitive.so",
-      "_sdata": "core/primitive.so",
-      "_sinittext": "core/primitive.so",
-      "_stext": "core/primitive.so",
-      "_text": "core/primitive.so",
-      "init_stack": "core/primitive.so",
-      "init_thread_union": "core/primitive.so",
-      "jiffies": "core/primitive.so"
-    }
-  },
-  "shared_providers": [
-    {
-      "name": "core/primitive.so",
-      "default": true,
-      "source_prefixes": [],
-      "dependencies": [],
-      "linker_script": "kobox/provider/provider.lds",
-      "support_sources": [
-        "kobox/provider/context_switch.S",
-        "kobox/provider/machine.c",
-        "kobox/provider/memory.c"
-      ],
-      "support_symbols": {
-        "__boot_cpu_id": "kobox/provider/runtime.c",
-        "__cpu_active_mask": "kobox/provider/runtime.c",
-        "__cpu_dying_mask": "kobox/provider/runtime.c",
-        "__cpu_enabled_mask": "kobox/provider/runtime.c",
-        "__cpu_online_mask": "kobox/provider/runtime.c",
-        "__cpu_possible_mask": "kobox/provider/runtime.c",
-        "__cpu_present_mask": "kobox/provider/runtime.c",
-        "__num_online_cpus": "kobox/provider/runtime.c",
-        "__flush_workqueue": "kobox/provider/linux_core_kernel.c",
-        "__local_bh_enable_ip": "kobox/provider/linux_core_kernel.c",
-        "__mutex_init": "kobox/provider/linux_core_kernel.c",
-        "__release_region": "kobox/provider/linux_core_kernel.c",
-        "__request_region": "kobox/provider/linux_core_kernel.c",
-        "__srcu_read_lock": "kobox/provider/linux_core_kernel.c",
-        "__srcu_read_unlock": "kobox/provider/linux_core_kernel.c",
-        "_raw_spin_lock": "kobox/provider/linux_core_kernel.c",
-        "_raw_spin_lock_irq": "kobox/provider/linux_core_kernel.c",
-        "_raw_spin_lock_irqsave": "kobox/provider/linux_core_kernel.c",
-        "_raw_spin_unlock_irqrestore": "kobox/provider/linux_core_kernel.c",
-        "__switch_to_asm": "kobox/provider/context_switch.S",
-        "arch_dynirq_lower_bound": "kobox/provider/runtime.c",
-        "alloc_workqueue_noprof": "kobox/provider/linux_core_kernel.c",
-        "alloc_large_system_hash": "kobox/provider/linux_core_kernel.c",
-        "asm_load_gs_index": "kobox/provider/machine.c",
-        "bool_x86_init_noop": "kobox/provider/machine.c",
-        "boot_command_line": "kobox/provider/machine.c",
-        "cpu_all_bits": "kobox/provider/runtime.c",
-        "cpu_bit_bitmap": "kobox/provider/runtime.c",
-        "cpu_hotplug_disable": "kobox/provider/runtime.c",
-        "cpu_hotplug_disable_offlining": "kobox/provider/runtime.c",
-        "cpu_hotplug_enable": "kobox/provider/runtime.c",
-        "cpus_read_lock": "kobox/provider/runtime.c",
-        "cpus_read_trylock": "kobox/provider/runtime.c",
-        "cpus_read_unlock": "kobox/provider/runtime.c",
-        "cpus_write_lock": "kobox/provider/runtime.c",
-        "cpus_write_unlock": "kobox/provider/runtime.c",
-        "cancel_delayed_work": "kobox/provider/linux_core_kernel.c",
-        "cancel_delayed_work_sync": "kobox/provider/linux_core_kernel.c",
-        "cancel_work": "kobox/provider/linux_core_kernel.c",
-        "cancel_work_sync": "kobox/provider/linux_core_kernel.c",
-        "complete": "kobox/provider/linux_core_kernel.c",
-        "complete_all": "kobox/provider/linux_core_kernel.c",
-        "current_work": "kobox/provider/linux_core_kernel.c",
-        "delayed_work_timer_fn": "kobox/provider/linux_core_kernel.c",
-        "destroy_workqueue": "kobox/provider/linux_core_kernel.c",
-        "drain_workqueue": "kobox/provider/linux_core_kernel.c",
-        "early_boot_irqs_disabled": "kobox/provider/runtime.c",
-        "early_pci_allowed": "kobox/provider/runtime.c",
-        "entry_SYSCALL32_ignore": "kobox/provider/context_switch.S",
-        "entry_SYSCALL_64": "kobox/provider/context_switch.S",
-        "get_rtc_noop": "kobox/provider/machine.c",
-        "flush_delayed_work": "kobox/provider/linux_core_kernel.c",
-        "flush_work": "kobox/provider/linux_core_kernel.c",
-        "initcall_debug": "kobox/provider/runtime.c",
-        "irq_affinity_online_cpu": "kobox/provider/runtime.c",
-        "irq_lock_sparse": "kobox/provider/runtime.c",
-        "irq_migrate_all_off_this_cpu": "kobox/provider/runtime.c",
-        "irq_unlock_sparse": "kobox/provider/runtime.c",
-        "lapic_can_unplug_cpu": "kobox/provider/machine.c",
-        "lapic_offline": "kobox/provider/machine.c",
-        "lapic_online": "kobox/provider/machine.c",
-        "lapic_update_legacy_vectors": "kobox/provider/machine.c",
-        "legacy_pic": "kobox/provider/machine.c",
-        "lock_vector_lock": "kobox/provider/machine.c",
-        "loops_per_jiffy": "kobox/provider/runtime.c",
-        "lockdep_assert_cpus_held": "kobox/provider/runtime.c",
-        "nr_ioapics": "kobox/provider/runtime.c",
-        "noioapicquirk": "kobox/provider/machine.c",
-        "noioapicreroute": "kobox/provider/machine.c",
-        "null_legacy_pic": "kobox/provider/machine.c",
-        "mod_delayed_work_on": "kobox/provider/linux_core_kernel.c",
-        "mutex_is_locked": "kobox/provider/linux_core_kernel.c",
-        "mutex_lock": "kobox/provider/linux_core_kernel.c",
-        "mutex_lock_interruptible": "kobox/provider/linux_core_kernel.c",
-        "mutex_trylock": "kobox/provider/linux_core_kernel.c",
-        "mutex_unlock": "kobox/provider/linux_core_kernel.c",
-        "pgtable_cache_init": "kobox/provider/machine.c",
-        "ret_from_fork_asm": "kobox/provider/context_switch.S",
-        "set_rtc_noop": "kobox/provider/machine.c",
-        "synchronize_srcu": "kobox/provider/linux_core_kernel.c",
-        "queue_delayed_work_on": "kobox/provider/linux_core_kernel.c",
-        "queue_work_on": "kobox/provider/linux_core_kernel.c",
-        "schedule": "kobox/provider/linux_core_kernel.c",
-        "schedule_timeout": "kobox/provider/linux_core_kernel.c",
-        "static_key_initialized": "kobox/provider/machine.c",
-        "system_bh_highpri_wq": "kobox/provider/linux_core_kernel.c",
-        "system_bh_wq": "kobox/provider/linux_core_kernel.c",
-        "system_dfl_wq": "kobox/provider/linux_core_kernel.c",
-        "system_freezable_power_efficient_wq": "kobox/provider/linux_core_kernel.c",
-        "system_freezable_wq": "kobox/provider/linux_core_kernel.c",
-        "system_highpri_wq": "kobox/provider/linux_core_kernel.c",
-        "system_long_wq": "kobox/provider/linux_core_kernel.c",
-        "system_percpu_wq": "kobox/provider/linux_core_kernel.c",
-        "system_power_efficient_wq": "kobox/provider/linux_core_kernel.c",
-        "system_unbound_wq": "kobox/provider/linux_core_kernel.c",
-        "system_wq": "kobox/provider/linux_core_kernel.c",
-        "system_state": "kobox/provider/runtime.c",
-        "unlock_vector_lock": "kobox/provider/machine.c",
-        "wait_for_completion": "kobox/provider/linux_core_kernel.c",
-        "wait_for_completion_timeout": "kobox/provider/linux_core_kernel.c",
-        "vmemmap_populate": "kobox/provider/memory.c",
-        "x86_64_start_kernel": "kobox/provider/context_switch.S",
-        "x86_apic_ops": "kobox/provider/machine.c",
-        "x86_cpuinit": "kobox/provider/machine.c",
-        "x86_init": "kobox/provider/machine.c",
-        "x86_init_noop": "kobox/provider/machine.c",
-        "x86_init_uint_noop": "kobox/provider/machine.c",
-        "x86_op_int_noop": "kobox/provider/machine.c",
-        "x86_platform": "kobox/provider/machine.c",
-        "__kmalloc_cache_noprof": "kobox/provider/linux_core_kernel.c",
-        "__kmalloc_cache_node_noprof": "kobox/provider/linux_core_kernel.c",
-        "__kmalloc_node_noprof": "kobox/provider/linux_core_kernel.c",
-        "__kmalloc_node_track_caller_noprof": "kobox/provider/linux_core_kernel.c",
-        "__kmalloc_noprof": "kobox/provider/linux_core_kernel.c",
-        "__kmem_cache_create_args": "kobox/provider/linux_core_kernel.c",
-        "__kvmalloc_node_noprof": "kobox/provider/linux_core_kernel.c",
-        "kfree": "kobox/provider/linux_core_kernel.c",
-        "kmalloc_caches": "kobox/provider/linux_core_kernel.c",
-        "kmem_cache_alloc_noprof": "kobox/provider/linux_core_kernel.c",
-        "kmem_cache_alloc_lru_noprof": "kobox/provider/linux_core_kernel.c",
-        "kmem_cache_alloc_node_noprof": "kobox/provider/linux_core_kernel.c",
-        "kmem_cache_destroy": "kobox/provider/linux_core_kernel.c",
-        "kmem_cache_free": "kobox/provider/linux_core_kernel.c",
-        "free_percpu": "kobox/provider/linux_core_kernel.c",
-        "pcpu_alloc_noprof": "kobox/provider/linux_core_kernel.c",
-        "krealloc_node_align_noprof": "kobox/provider/linux_core_kernel.c",
-        "ksize": "kobox/provider/linux_core_kernel.c",
-        "kvfree": "kobox/provider/linux_core_kernel.c"
-      },
-      "runtime_sources": [
-        {
-          "path": "kobox/provider/runtime.c",
-          "exports": [
-            "kobox_provider_get_percpu_offset",
-            "kobox_provider_get_task_size_limit",
-            "kobox_provider_percpu_offset",
-            "kobox_provider_set_percpu_offset",
-            "kobox_provider_set_task_size_limit"
-          ]
-        },
-        {
-          "path": "kobox/provider/arena.c",
-          "exports": [
-            "kobox_provider_arena_allocate",
-            "kobox_provider_arena_destroy",
-            "kobox_provider_arena_free_pages",
-            "kobox_provider_arena_init",
-            "kobox_provider_arena_max_order",
-            "kobox_provider_arena_page_base",
-            "kobox_provider_arena_release",
-            "kobox_provider_arena_total_pages"
-          ]
-        },
-        {
-          "path": "kobox/provider/lifecycle.c",
-          "exports": [
-            "kobox_provider_lifecycle_bind",
-            "kobox_provider_lifecycle_cleanup",
-            "kobox_provider_lifecycle_init",
-            "kobox_provider_lifecycle_quiesce"
-          ]
-        },
-        {
-          "path": "kobox/provider/core_lifecycle.c",
-          "exports": [
-            "kobox_linux_core_cleanup",
-            "kobox_linux_core_directory",
-            "kobox_linux_core_init",
-            "kobox_linux_core_quiesce"
-          ]
-        }
-      ],
-      "linux_runtime_sources": [
-        {
-          "path": "kobox/provider/linux_core_kernel.c",
-          "exports": [
-            "__local_bh_disable_ip",
-            "kobox_provider_cpu_idle",
-            "kobox_provider_current_percpu_offset",
-            "kobox_provider_irq_disable",
-            "kobox_provider_irq_enable",
-            "kobox_provider_irq_restore",
-            "kobox_provider_irq_save",
-            "kobox_provider_irq_save_flags",
-            "kobox_linux_scheduler_notify",
-            "kobox_linux_core_kernel_active",
-            "kobox_linux_core_kernel_init"
-          ]
-        }
-      ],
-      "link_exports": [
-        "kobox_linux_core_cleanup",
-        "kobox_linux_core_directory",
-        "kobox_linux_core_init",
-        "kobox_linux_core_kernel_active",
-        "kobox_linux_core_kernel_init",
-        "kobox_linux_scheduler_notify",
-        "kobox_linux_core_quiesce"
-      ]
-    },
-    {
-      "name": "device-pci.so",
-      "default": false,
-      "source_prefixes": [
-        "arch/x86/pci/",
-        "drivers/iommu/",
-        "drivers/pci/",
-        "kernel/irq/"
-      ],
-      "dependencies": [
-        "core/primitive.so"
-      ],
-      "prelinker_script": "kobox/provider/device_pci_prelink.lds",
-      "linker_script": "kobox/provider/device_pci.lds",
-      "support_symbols": {
-        "__dma_need_sync": "kobox/provider/device_pci_bridge.c",
-        "__dma_sync_single_for_cpu": "kobox/provider/device_pci_bridge.c",
-        "__dma_sync_single_for_device": "kobox/provider/device_pci_bridge.c",
-        "arch_early_irq_init": "kobox/provider/device_pci_bridge.c",
-        "arch_probe_nr_irqs": "kobox/provider/device_pci_bridge.c",
-        "dma_alloc_attrs": "kobox/provider/device_pci_bridge.c",
-        "dma_free_attrs": "kobox/provider/device_pci_bridge.c",
-        "dma_map_page_attrs": "kobox/provider/device_pci_bridge.c",
-        "dma_max_mapping_size": "kobox/provider/device_pci_bridge.c",
-        "dma_unmap_page_attrs": "kobox/provider/device_pci_bridge.c",
-        "ioread8": "kobox/provider/device_pci_bridge.c",
-        "ioread16": "kobox/provider/device_pci_bridge.c",
-        "ioread32": "kobox/provider/device_pci_bridge.c",
-        "iowrite8": "kobox/provider/device_pci_bridge.c",
-        "iowrite16": "kobox/provider/device_pci_bridge.c",
-        "iowrite32": "kobox/provider/device_pci_bridge.c",
-        "pci_iomap_range": "kobox/provider/device_pci_bridge.c",
-        "pci_iounmap": "kobox/provider/device_pci_bridge.c"
-      },
-      "runtime_sources": [
-        {
-          "path": "kobox/provider/device_pci_lifecycle.c",
-          "exports": [
-            "kobox_linux_device_pci_cleanup",
-            "kobox_linux_device_pci_init",
-            "kobox_linux_device_pci_probe_resources",
-            "kobox_linux_device_pci_quiesce"
-          ]
-        }
-      ],
-      "linux_runtime_sources": [
-        {
-          "path": "kobox/provider/device_pci_bridge.c",
-          "exports": [
-            "kobox_linux_device_pci_bridge_bound",
-            "kobox_linux_device_pci_bridge_probe",
-            "kobox_linux_device_pci_bridge_remove",
-            "kobox_linux_device_pci_core_active",
-            "kobox_linux_device_pci_core_init"
-          ]
-        }
-      ],
-      "link_exports": [
-        "kobox_linux_device_pci_bridge_bound",
-        "kobox_linux_device_pci_bridge_probe",
-        "kobox_linux_device_pci_bridge_remove",
-        "kobox_linux_device_pci_core_active",
-        "kobox_linux_device_pci_core_init",
-        "kobox_linux_device_pci_cleanup",
-        "kobox_linux_device_pci_init",
-        "kobox_linux_device_pci_probe_resources",
-        "kobox_linux_device_pci_quiesce"
-      ]
-    },
-    {
-      "name": "drm.so",
-      "default": false,
-      "source_prefixes": [
-        "arch/x86/video/",
-        "drivers/dma-buf/",
-        "drivers/video/"
-      ],
-      "dependencies": [
-        "core/primitive.so",
-        "device-pci.so"
-      ]
+      "consumers": ["linux-runtime"]
     }
   ],
   "required_config": {

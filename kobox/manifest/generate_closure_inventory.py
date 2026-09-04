@@ -237,6 +237,44 @@ def classify_provider(source_object, shared_providers):
     return default
 
 
+def provider_symbol_overrides(profile):
+    overrides = {}
+
+    for provider in profile["shared_providers"]:
+        owner = provider["name"]
+        for symbol, source in provider.get("support_symbols", {}).items():
+            if (not isinstance(symbol, str) or not symbol or
+                    not isinstance(source, str) or
+                    not source.startswith("kobox/provider/") or
+                    symbol in overrides):
+                raise ClosureError("invalid shared provider symbol override")
+            overrides[symbol] = (owner, source)
+    return overrides
+
+
+def provider_runtime_exports(profile):
+    exports = {}
+
+    for provider in profile["shared_providers"]:
+        owner = provider["name"]
+        for source in (
+            provider.get("runtime_sources", []) +
+            provider.get("linux_runtime_sources", [])
+        ):
+            for symbol in source.get("exports", []):
+                if symbol in exports:
+                    raise ClosureError(
+                        f"duplicate shared provider runtime export: {symbol}"
+                    )
+                exports[symbol] = {
+                    "owner": owner,
+                    "export": "KBOX_PROVIDER_EXPORT",
+                    "namespace": "",
+                    "source_object": source["path"],
+                }
+    return exports
+
+
 def topological_order(nodes, dependency_edges, ordering_edges,
                       preferred_nodes=None):
     preferred_nodes = preferred_nodes or set()
@@ -291,6 +329,7 @@ def validate_profile(profile):
         "toolchain",
         "roots",
         "explicit_dependencies",
+        "resource_slots",
         "shared_providers",
         "required_config",
     )
@@ -308,6 +347,43 @@ def validate_profile(profile):
         unknown = set(provider.get("dependencies", [])) - set(provider_names)
         if unknown:
             raise ClosureError(f"shared provider dependency is unknown: {sorted(unknown)[0]}")
+    provider_symbol_overrides(profile)
+    expected_slots = (
+        (1, "pci-function", "kobox2.pci-function", "device", 7, True),
+        (2, "dma-domain", "kobox2.dma-domain", "device", 5, False),
+        (3, "irq-endpoint", "kobox2.irq-endpoint", "notification", 1, False),
+    )
+    slots = profile["resource_slots"]
+    if not isinstance(slots, list) or len(slots) < len(expected_slots):
+        raise ClosureError("profile has an incomplete device resource slot set")
+    for slot, expected in zip(slots, expected_slots):
+        identity = (
+            slot.get("slot_id"), slot.get("name"), slot.get("schema"),
+            slot.get("resource_type"), slot.get("required_rights"),
+            slot.get("reset_required"),
+        )
+        if identity != expected:
+            raise ClosureError("profile device resource slot identity mismatch")
+        maximum_count = 2048 if slot.get("slot_id") == 3 else 1
+        if (slot.get("minimum_count") != 1 or
+                slot.get("maximum_count") != maximum_count or
+                slot.get("consumers") != ["device-pci.so"]):
+            raise ClosureError("profile device resource slot contract mismatch")
+    prior_slot_id = 0
+    names = set()
+    for slot in slots:
+        slot_id = slot.get("slot_id")
+        name = slot.get("name")
+        consumers = slot.get("consumers")
+        if (not isinstance(slot_id, int) or slot_id != prior_slot_id + 1 or
+                not isinstance(name, str) or not name or name in names or
+                not isinstance(consumers, list) or not consumers or
+                len(consumers) != len(set(consumers)) or
+                any(not isinstance(consumer, str) or not consumer
+                    for consumer in consumers)):
+            raise ClosureError("profile resource slot catalog is invalid")
+        prior_slot_id = slot_id
+        names.add(name)
 
 
 def modinfo_values(module, field, modinfo):
@@ -384,17 +460,21 @@ def add_edge(edge_reasons, consumer, provider, reason, symbol=None):
         edge["symbols"].add(symbol)
 
 
-def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinfo"):
+def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinfo",
+                       core_build_dir=None):
     source_tree = source_tree.resolve()
     build_dir = build_dir.resolve()
+    core_build_dir = (core_build_dir or build_dir).resolve()
     validate_profile(profile)
 
     config_path = build_dir / ".config"
     symvers_path = build_dir / "Module.symvers"
     modules_order_path = build_dir / "modules.order"
-    archive_path = build_dir / "vmlinux.a"
-    vmlinux_path = build_dir / "vmlinux"
+    archive_path = core_build_dir / "vmlinux.a"
+    vmlinux_path = core_build_dir / "vmlinux"
     release_path = build_dir / "include/config/kernel.release"
+    core_config_path = core_build_dir / ".config"
+    core_release_path = core_build_dir / "include/config/kernel.release"
     baseline_path = source_tree / "kobox/upstream-baseline.env"
     for required_path in (
         config_path,
@@ -403,6 +483,8 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
         archive_path,
         vmlinux_path,
         release_path,
+        core_config_path,
+        core_release_path,
         baseline_path,
     ):
         if not required_path.is_file():
@@ -425,6 +507,11 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             f"config digest mismatch: expected {profile['config_sha256']}, "
             f"found {config_sha256}"
         )
+    core_config_sha256 = sha256_file(core_config_path)
+    if core_config_sha256 != config_sha256:
+        raise ClosureError("module and core build config digests differ")
+    if core_release_path.read_text(encoding="utf-8").strip() != kernel_release:
+        raise ClosureError("module and core kernel releases differ")
     config = parse_config(config_text)
     for name, expected in sorted(profile["required_config"].items()):
         actual = config.get(name, "n")
@@ -437,6 +524,14 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
         build_dir, modules_order_path, nm, modinfo
     )
     symvers = parse_symvers(symvers_path.read_text(encoding="utf-8"))
+    runtime_exports = provider_runtime_exports(profile)
+    overlap = set(symvers) & set(runtime_exports)
+    if overlap:
+        raise ClosureError(
+            f"shared provider runtime export shadows Linux export: "
+            f"{sorted(overlap)[0]}"
+        )
+    symvers.update(runtime_exports)
     vmlinux_definitions = parse_vmlinux_archive_symbols(run_command([
         nm,
         "-A",
@@ -444,7 +539,7 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
         "--defined-only",
         "--format=posix",
         str(archive_path),
-    ]), build_dir)
+    ]), core_build_dir)
     linked_symbols = parse_defined_symbols(run_command([
         nm,
         "--extern-only",
@@ -519,6 +614,7 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
     provider_by_name = {
         item["name"]: item for item in profile["shared_providers"]
     }
+    symbol_overrides = provider_symbol_overrides(profile)
     shared_requirements = defaultdict(dict)
     module_requirements = defaultdict(dict)
     module_output = []
@@ -548,9 +644,28 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
                     item["name"], vmlinux_definitions, linked_symbols
                 )
                 source_object = definition["source_object"]
-                provider = classify_provider(
-                    source_object, profile["shared_providers"]
+                override = symbol_overrides.get(item["name"])
+                if override:
+                    provider, source_object = override
+                else:
+                    provider = classify_provider(
+                        source_object, profile["shared_providers"]
+                    )
+                requirement = shared_requirements[provider].setdefault(
+                    item["name"],
+                    {
+                        "name": item["name"],
+                        "export": exported["export"],
+                        "namespace": namespace,
+                        "source_object": source_object,
+                        "consumers": set(),
+                    },
                 )
+                requirement["consumers"].add(path)
+                add_edge(edge_reasons, path, provider, "symbol", item["name"])
+            elif exported["owner"] in provider_by_name:
+                provider = exported["owner"]
+                source_object = exported["source_object"]
                 requirement = shared_requirements[provider].setdefault(
                     item["name"],
                     {
@@ -637,6 +752,17 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
         })
 
     nodes = selected | used_providers
+    unknown_resource_consumers = {
+        consumer
+        for slot in profile["resource_slots"]
+        for consumer in slot["consumers"]
+        if consumer not in nodes
+    }
+    if unknown_resource_consumers:
+        raise ClosureError(
+            "resource slot consumer is not in the closure: "
+            f"{sorted(unknown_resource_consumers)[0]}"
+        )
     dependency_edges = set(edge_reasons)
     ordering_edges = set(ordering_reasons)
     load_order = topological_order(
@@ -688,7 +814,9 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             "required_shared_export_count": shared_exports,
             "dependency_count": len(dependencies_output),
             "ordering_constraint_count": len(ordering_output),
+            "resource_slot_count": len(profile["resource_slots"]),
         },
+        "resource_slots": profile["resource_slots"],
         "shared_providers": shared_output,
         "modules": module_output,
         "dependencies": dependencies_output,
@@ -711,6 +839,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-tree", type=pathlib.Path, required=True)
     parser.add_argument("--build-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--core-build-dir",
+        type=pathlib.Path,
+        help="build tree containing vmlinux and vmlinux.a (defaults to --build-dir)",
+    )
     parser.add_argument("--profile", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--check", type=pathlib.Path)
@@ -728,6 +861,7 @@ def main():
             profile,
             arguments.nm,
             arguments.modinfo,
+            arguments.core_build_dir,
         ))
         if arguments.check:
             if arguments.check.read_text(encoding="utf-8") != encoded:

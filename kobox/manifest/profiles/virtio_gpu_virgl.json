@@ -22,6 +22,41 @@
       "reason": "virtio PCI transport enumerates the GPU device"
     }
   ],
+  "resource_slots": [
+    {
+      "slot_id": 1,
+      "name": "pci-function",
+      "schema": "kobox2.pci-function",
+      "resource_type": "device",
+      "required_rights": 7,
+      "minimum_count": 1,
+      "maximum_count": 1,
+      "reset_required": true,
+      "consumers": ["device-pci.so"]
+    },
+    {
+      "slot_id": 2,
+      "name": "dma-domain",
+      "schema": "kobox2.dma-domain",
+      "resource_type": "device",
+      "required_rights": 5,
+      "minimum_count": 1,
+      "maximum_count": 1,
+      "reset_required": false,
+      "consumers": ["device-pci.so"]
+    },
+    {
+      "slot_id": 3,
+      "name": "irq-endpoint",
+      "schema": "kobox2.irq-endpoint",
+      "resource_type": "notification",
+      "required_rights": 1,
+      "minimum_count": 1,
+      "maximum_count": 2048,
+      "reset_required": false,
+      "consumers": ["device-pci.so"]
+    }
+  ],
   "provider_link": {
     "allowed_host_imports": [
       "__tls_get_addr",
@@ -74,7 +109,11 @@
       "__start_pci_fixups_suspend": "device-pci.so",
       "__start_pci_fixups_suspend_late": "device-pci.so",
       "__start_rodata": "core/primitive.so",
+      "__start_runtime_ptr_dentry_hashtable": "core/primitive.so",
+      "__start_runtime_shift_d_hash_shift": "core/primitive.so",
       "__start_runtime_ptr_USER_PTR_MAX": "core/primitive.so",
+      "__stop_runtime_ptr_dentry_hashtable": "core/primitive.so",
+      "__stop_runtime_shift_d_hash_shift": "core/primitive.so",
       "__stop_runtime_ptr_USER_PTR_MAX": "core/primitive.so",
       "__top_init_kernel_stack": "core/primitive.so",
       "__x86_cpu_dev_end": "core/primitive.so",
@@ -110,8 +149,21 @@
         "__cpu_possible_mask": "kobox/provider/runtime.c",
         "__cpu_present_mask": "kobox/provider/runtime.c",
         "__num_online_cpus": "kobox/provider/runtime.c",
+        "__flush_workqueue": "kobox/provider/linux_core_kernel.c",
+        "__local_bh_enable_ip": "kobox/provider/linux_core_kernel.c",
+        "__mutex_init": "kobox/provider/linux_core_kernel.c",
+        "__release_region": "kobox/provider/linux_core_kernel.c",
+        "__request_region": "kobox/provider/linux_core_kernel.c",
+        "__srcu_read_lock": "kobox/provider/linux_core_kernel.c",
+        "__srcu_read_unlock": "kobox/provider/linux_core_kernel.c",
+        "_raw_spin_lock": "kobox/provider/linux_core_kernel.c",
+        "_raw_spin_lock_irq": "kobox/provider/linux_core_kernel.c",
+        "_raw_spin_lock_irqsave": "kobox/provider/linux_core_kernel.c",
+        "_raw_spin_unlock_irqrestore": "kobox/provider/linux_core_kernel.c",
         "__switch_to_asm": "kobox/provider/context_switch.S",
         "arch_dynirq_lower_bound": "kobox/provider/runtime.c",
+        "alloc_workqueue_noprof": "kobox/provider/linux_core_kernel.c",
+        "alloc_large_system_hash": "kobox/provider/linux_core_kernel.c",
         "asm_load_gs_index": "kobox/provider/machine.c",
         "bool_x86_init_noop": "kobox/provider/machine.c",
         "boot_command_line": "kobox/provider/machine.c",
@@ -125,11 +177,23 @@
         "cpus_read_unlock": "kobox/provider/runtime.c",
         "cpus_write_lock": "kobox/provider/runtime.c",
         "cpus_write_unlock": "kobox/provider/runtime.c",
+        "cancel_delayed_work": "kobox/provider/linux_core_kernel.c",
+        "cancel_delayed_work_sync": "kobox/provider/linux_core_kernel.c",
+        "cancel_work": "kobox/provider/linux_core_kernel.c",
+        "cancel_work_sync": "kobox/provider/linux_core_kernel.c",
+        "complete": "kobox/provider/linux_core_kernel.c",
+        "complete_all": "kobox/provider/linux_core_kernel.c",
+        "current_work": "kobox/provider/linux_core_kernel.c",
+        "delayed_work_timer_fn": "kobox/provider/linux_core_kernel.c",
+        "destroy_workqueue": "kobox/provider/linux_core_kernel.c",
+        "drain_workqueue": "kobox/provider/linux_core_kernel.c",
         "early_boot_irqs_disabled": "kobox/provider/runtime.c",
         "early_pci_allowed": "kobox/provider/runtime.c",
         "entry_SYSCALL32_ignore": "kobox/provider/context_switch.S",
         "entry_SYSCALL_64": "kobox/provider/context_switch.S",
         "get_rtc_noop": "kobox/provider/machine.c",
+        "flush_delayed_work": "kobox/provider/linux_core_kernel.c",
+        "flush_work": "kobox/provider/linux_core_kernel.c",
         "initcall_debug": "kobox/provider/runtime.c",
         "irq_affinity_online_cpu": "kobox/provider/runtime.c",
         "irq_lock_sparse": "kobox/provider/runtime.c",
@@ -147,12 +211,36 @@
         "noioapicquirk": "kobox/provider/machine.c",
         "noioapicreroute": "kobox/provider/machine.c",
         "null_legacy_pic": "kobox/provider/machine.c",
+        "mod_delayed_work_on": "kobox/provider/linux_core_kernel.c",
+        "mutex_is_locked": "kobox/provider/linux_core_kernel.c",
+        "mutex_lock": "kobox/provider/linux_core_kernel.c",
+        "mutex_lock_interruptible": "kobox/provider/linux_core_kernel.c",
+        "mutex_trylock": "kobox/provider/linux_core_kernel.c",
+        "mutex_unlock": "kobox/provider/linux_core_kernel.c",
         "pgtable_cache_init": "kobox/provider/machine.c",
         "ret_from_fork_asm": "kobox/provider/context_switch.S",
         "set_rtc_noop": "kobox/provider/machine.c",
+        "synchronize_srcu": "kobox/provider/linux_core_kernel.c",
+        "queue_delayed_work_on": "kobox/provider/linux_core_kernel.c",
+        "queue_work_on": "kobox/provider/linux_core_kernel.c",
+        "schedule": "kobox/provider/linux_core_kernel.c",
+        "schedule_timeout": "kobox/provider/linux_core_kernel.c",
         "static_key_initialized": "kobox/provider/machine.c",
+        "system_bh_highpri_wq": "kobox/provider/linux_core_kernel.c",
+        "system_bh_wq": "kobox/provider/linux_core_kernel.c",
+        "system_dfl_wq": "kobox/provider/linux_core_kernel.c",
+        "system_freezable_power_efficient_wq": "kobox/provider/linux_core_kernel.c",
+        "system_freezable_wq": "kobox/provider/linux_core_kernel.c",
+        "system_highpri_wq": "kobox/provider/linux_core_kernel.c",
+        "system_long_wq": "kobox/provider/linux_core_kernel.c",
+        "system_percpu_wq": "kobox/provider/linux_core_kernel.c",
+        "system_power_efficient_wq": "kobox/provider/linux_core_kernel.c",
+        "system_unbound_wq": "kobox/provider/linux_core_kernel.c",
+        "system_wq": "kobox/provider/linux_core_kernel.c",
         "system_state": "kobox/provider/runtime.c",
         "unlock_vector_lock": "kobox/provider/machine.c",
+        "wait_for_completion": "kobox/provider/linux_core_kernel.c",
+        "wait_for_completion_timeout": "kobox/provider/linux_core_kernel.c",
         "vmemmap_populate": "kobox/provider/memory.c",
         "x86_64_start_kernel": "kobox/provider/context_switch.S",
         "x86_apic_ops": "kobox/provider/machine.c",
@@ -161,7 +249,26 @@
         "x86_init_noop": "kobox/provider/machine.c",
         "x86_init_uint_noop": "kobox/provider/machine.c",
         "x86_op_int_noop": "kobox/provider/machine.c",
-        "x86_platform": "kobox/provider/machine.c"
+        "x86_platform": "kobox/provider/machine.c",
+        "__kmalloc_cache_noprof": "kobox/provider/linux_core_kernel.c",
+        "__kmalloc_cache_node_noprof": "kobox/provider/linux_core_kernel.c",
+        "__kmalloc_node_noprof": "kobox/provider/linux_core_kernel.c",
+        "__kmalloc_node_track_caller_noprof": "kobox/provider/linux_core_kernel.c",
+        "__kmalloc_noprof": "kobox/provider/linux_core_kernel.c",
+        "__kmem_cache_create_args": "kobox/provider/linux_core_kernel.c",
+        "__kvmalloc_node_noprof": "kobox/provider/linux_core_kernel.c",
+        "kfree": "kobox/provider/linux_core_kernel.c",
+        "kmalloc_caches": "kobox/provider/linux_core_kernel.c",
+        "kmem_cache_alloc_noprof": "kobox/provider/linux_core_kernel.c",
+        "kmem_cache_alloc_lru_noprof": "kobox/provider/linux_core_kernel.c",
+        "kmem_cache_alloc_node_noprof": "kobox/provider/linux_core_kernel.c",
+        "kmem_cache_destroy": "kobox/provider/linux_core_kernel.c",
+        "kmem_cache_free": "kobox/provider/linux_core_kernel.c",
+        "free_percpu": "kobox/provider/linux_core_kernel.c",
+        "pcpu_alloc_noprof": "kobox/provider/linux_core_kernel.c",
+        "krealloc_node_align_noprof": "kobox/provider/linux_core_kernel.c",
+        "ksize": "kobox/provider/linux_core_kernel.c",
+        "kvfree": "kobox/provider/linux_core_kernel.c"
       },
       "runtime_sources": [
         {
@@ -205,6 +312,33 @@
             "kobox_linux_core_quiesce"
           ]
         }
+      ],
+      "linux_runtime_sources": [
+        {
+          "path": "kobox/provider/linux_core_kernel.c",
+          "exports": [
+            "__local_bh_disable_ip",
+            "kobox_provider_cpu_idle",
+            "kobox_provider_current_percpu_offset",
+            "kobox_provider_irq_disable",
+            "kobox_provider_irq_enable",
+            "kobox_provider_irq_restore",
+            "kobox_provider_irq_save",
+            "kobox_provider_irq_save_flags",
+            "kobox_linux_scheduler_notify",
+            "kobox_linux_core_kernel_active",
+            "kobox_linux_core_kernel_init"
+          ]
+        }
+      ],
+      "link_exports": [
+        "kobox_linux_core_cleanup",
+        "kobox_linux_core_directory",
+        "kobox_linux_core_init",
+        "kobox_linux_core_kernel_active",
+        "kobox_linux_core_kernel_init",
+        "kobox_linux_scheduler_notify",
+        "kobox_linux_core_quiesce"
       ]
     },
     {
@@ -219,7 +353,62 @@
       "dependencies": [
         "core/primitive.so"
       ],
-      "linker_script": "kobox/provider/device_pci.lds"
+      "prelinker_script": "kobox/provider/device_pci_prelink.lds",
+      "linker_script": "kobox/provider/device_pci.lds",
+      "support_symbols": {
+        "__dma_need_sync": "kobox/provider/device_pci_bridge.c",
+        "__dma_sync_single_for_cpu": "kobox/provider/device_pci_bridge.c",
+        "__dma_sync_single_for_device": "kobox/provider/device_pci_bridge.c",
+        "arch_early_irq_init": "kobox/provider/device_pci_bridge.c",
+        "arch_probe_nr_irqs": "kobox/provider/device_pci_bridge.c",
+        "dma_alloc_attrs": "kobox/provider/device_pci_bridge.c",
+        "dma_free_attrs": "kobox/provider/device_pci_bridge.c",
+        "dma_map_page_attrs": "kobox/provider/device_pci_bridge.c",
+        "dma_max_mapping_size": "kobox/provider/device_pci_bridge.c",
+        "dma_unmap_page_attrs": "kobox/provider/device_pci_bridge.c",
+        "ioread8": "kobox/provider/device_pci_bridge.c",
+        "ioread16": "kobox/provider/device_pci_bridge.c",
+        "ioread32": "kobox/provider/device_pci_bridge.c",
+        "iowrite8": "kobox/provider/device_pci_bridge.c",
+        "iowrite16": "kobox/provider/device_pci_bridge.c",
+        "iowrite32": "kobox/provider/device_pci_bridge.c",
+        "pci_iomap_range": "kobox/provider/device_pci_bridge.c",
+        "pci_iounmap": "kobox/provider/device_pci_bridge.c"
+      },
+      "runtime_sources": [
+        {
+          "path": "kobox/provider/device_pci_lifecycle.c",
+          "exports": [
+            "kobox_linux_device_pci_cleanup",
+            "kobox_linux_device_pci_init",
+            "kobox_linux_device_pci_probe_resources",
+            "kobox_linux_device_pci_quiesce"
+          ]
+        }
+      ],
+      "linux_runtime_sources": [
+        {
+          "path": "kobox/provider/device_pci_bridge.c",
+          "exports": [
+            "kobox_linux_device_pci_bridge_bound",
+            "kobox_linux_device_pci_bridge_probe",
+            "kobox_linux_device_pci_bridge_remove",
+            "kobox_linux_device_pci_core_active",
+            "kobox_linux_device_pci_core_init"
+          ]
+        }
+      ],
+      "link_exports": [
+        "kobox_linux_device_pci_bridge_bound",
+        "kobox_linux_device_pci_bridge_probe",
+        "kobox_linux_device_pci_bridge_remove",
+        "kobox_linux_device_pci_core_active",
+        "kobox_linux_device_pci_core_init",
+        "kobox_linux_device_pci_cleanup",
+        "kobox_linux_device_pci_init",
+        "kobox_linux_device_pci_probe_resources",
+        "kobox_linux_device_pci_quiesce"
+      ]
     },
     {
       "name": "drm.so",

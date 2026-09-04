@@ -48,6 +48,18 @@ class ClosureInventoryTest(unittest.TestCase):
             "symbol_type": "T",
         }])
 
+    def test_cli_accepts_separate_core_build_directory(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("--core-build-dir", result.stdout)
+
     def test_resolve_export_rejects_missing_strong_provider(self):
         with self.assertRaisesRegex(
             closure_inventory.ClosureError,
@@ -72,6 +84,28 @@ class ClosureInventoryTest(unittest.TestCase):
             "module dependency is unavailable: virtio",
         ):
             closure_inventory.resolve_module_dependency("virtio", {})
+
+    def test_provider_runtime_exports_are_owned_by_shared_provider(self):
+        profile = {
+            "shared_providers": [{
+                "name": "core.so",
+                "runtime_sources": [{
+                    "path": "kobox/provider/runtime.c",
+                    "exports": ["provider_entry"],
+                }],
+            }],
+        }
+        self.assertEqual(
+            closure_inventory.provider_runtime_exports(profile)[
+                "provider_entry"
+            ],
+            {
+                "owner": "core.so",
+                "export": "KBOX_PROVIDER_EXPORT",
+                "namespace": "",
+                "source_object": "kobox/provider/runtime.c",
+            },
+        )
 
     def test_validate_import_namespace_rejects_missing_namespace(self):
         with self.assertRaisesRegex(
@@ -157,6 +191,37 @@ class ClosureInventoryTest(unittest.TestCase):
             ),
             "device-pci.so",
         )
+        self.assertEqual(
+            closure_inventory.provider_symbol_overrides(profile)[
+                "pci_iounmap"
+            ],
+            ("device-pci.so", "kobox/provider/device_pci_bridge.c"),
+        )
+
+        closure_inventory.validate_profile(profile)
+        self.assertEqual(
+            [slot["schema"] for slot in profile["resource_slots"]],
+            [
+                "kobox2.pci-function",
+                "kobox2.dma-domain",
+                "kobox2.irq-endpoint",
+            ],
+        )
+
+    def test_virtio_profile_rejects_incomplete_device_resources(self):
+        import copy
+        import json
+
+        profile_path = SCRIPT.parent / "profiles/virtio_gpu_virgl.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile = copy.deepcopy(profile)
+        profile["resource_slots"].pop()
+        with self.assertRaisesRegex(
+            closure_inventory.ClosureError,
+            "incomplete device resource slot set",
+        ):
+            closure_inventory.validate_profile(profile)
+
     def test_topological_order_prefers_shared_providers(self):
         nodes = {"core.so", "drm.so", "driver.ko", "transport.ko"}
         dependencies = {

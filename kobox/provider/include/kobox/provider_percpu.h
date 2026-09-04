@@ -10,9 +10,9 @@
 #ifndef _ASM_X86_PERCPU_H
 #define _ASM_X86_PERCPU_H
 
-extern __thread unsigned long kobox_provider_percpu_offset;
+extern unsigned long kobox_provider_current_percpu_offset(void);
 
-#define __my_cpu_offset kobox_provider_percpu_offset
+#define __my_cpu_offset kobox_provider_current_percpu_offset()
 #include <asm-generic/percpu.h>
 
 #define __percpu_seg_override

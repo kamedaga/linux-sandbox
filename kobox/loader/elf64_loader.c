@@ -353,7 +353,7 @@ int kobox_elf64_module_load_fd(int file_descriptor,
 	long native_page_size;
 	int result = -1;
 
-	if (file_descriptor < 0 || !exports || !export_count || !module_out)
+	if (file_descriptor < 0 || (export_count && !exports) || !module_out)
 		return -1;
 	for (section_index = 0; section_index < export_count; section_index++) {
 		if (!exports[section_index].name ||
@@ -425,7 +425,7 @@ int kobox_elf64_module_load_fd(int file_descriptor,
 	if (!mapping_size)
 		goto out;
 	mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
-		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		       MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
 	if (mapping == MAP_FAILED)
 		goto out;
 	for (section_index = 0; section_index < header->e_shnum;
@@ -500,9 +500,9 @@ void kobox_elf64_module_unload(struct kobox_elf64_module *module)
 	memset(module, 0, sizeof(*module));
 }
 
-int kobox_elf64_validate_export_set_fd(
+static int validate_exports_fd(
 	int file_descriptor, const struct kobox_elf64_symbol *expected,
-	size_t expected_count)
+	size_t expected_count, int exact)
 {
 	const Elf64_Ehdr *header;
 	const Elf64_Shdr *sections;
@@ -515,7 +515,7 @@ int kobox_elf64_validate_export_set_fd(
 	uint32_t table_type;
 	int result = -1;
 
-	if (file_descriptor < 0 || !expected || !expected_count)
+	if (file_descriptor < 0 || (expected_count && !expected))
 		return -1;
 	for (section_index = 0; section_index < expected_count; section_index++) {
 		if (!expected[section_index].name || !expected[section_index].name[0] ||
@@ -542,8 +542,8 @@ int kobox_elf64_validate_export_set_fd(
 		goto out;
 	sections = (const Elf64_Shdr *)(file + header->e_shoff);
 	table_type = header->e_type == ET_REL ? SHT_SYMTAB : SHT_DYNSYM;
-	matched = calloc(expected_count, sizeof(*matched));
-	if (!matched)
+	matched = expected_count ? calloc(expected_count, sizeof(*matched)) : NULL;
+	if (expected_count && !matched)
 		goto out;
 	for (section_index = 0; section_index < header->e_shnum;
 	     section_index++) {
@@ -587,14 +587,18 @@ int kobox_elf64_validate_export_set_fd(
 				    !strcmp(expected[expected_index].name, name))
 					break;
 			}
-			if (expected_index == expected_count ||
-			    matched[expected_index])
+			if (expected_index == expected_count) {
+				if (exact)
+					goto out;
+				continue;
+			}
+			if (matched[expected_index])
 				goto out;
 			matched[expected_index] = 1;
 			actual_count++;
 		}
 	}
-	if (actual_count != expected_count)
+	if (exact && actual_count != expected_count)
 		goto out;
 	for (section_index = 0; section_index < expected_count; section_index++) {
 		if (!matched[section_index])
@@ -607,4 +611,18 @@ out:
 	if (file != MAP_FAILED)
 		munmap(file, file_size);
 	return result;
+}
+
+int kobox_elf64_validate_export_set_fd(
+	int file_descriptor, const struct kobox_elf64_symbol *expected,
+	size_t expected_count)
+{
+	return validate_exports_fd(file_descriptor, expected, expected_count, 1);
+}
+
+int kobox_elf64_validate_export_subset_fd(
+	int file_descriptor, const struct kobox_elf64_symbol *expected,
+	size_t expected_count)
+{
+	return validate_exports_fd(file_descriptor, expected, expected_count, 0);
 }

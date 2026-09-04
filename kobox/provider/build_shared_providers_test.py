@@ -29,12 +29,18 @@ def test_profile():
                     "path": "kobox/provider/runtime.c",
                     "exports": ["runtime_call"],
                 }],
+                "link_exports": ["runtime_call"],
             },
             {
                 "name": "device.so",
                 "default": False,
                 "source_prefixes": ["drivers/"],
                 "dependencies": ["core.so"],
+                "linux_runtime_sources": [{
+                    "path": "kobox/provider/device.c",
+                    "exports": ["device_runtime_call"],
+                }],
+                "link_exports": ["device_runtime_call"],
             },
         ],
     }
@@ -44,6 +50,9 @@ class SharedProviderBuildTest(unittest.TestCase):
     def test_runtime_exports_retain_their_source(self):
         self.assertEqual(provider.collect_runtime_symbols(test_profile()), {
             "runtime_call": ("core.so", "kobox/provider/runtime.c"),
+            "device_runtime_call": (
+                "device.so", "kobox/provider/device.c"
+            ),
         })
 
     def test_duplicate_runtime_export_is_rejected(self):
@@ -56,6 +65,15 @@ class SharedProviderBuildTest(unittest.TestCase):
             provider.ProviderBuildError, "duplicate provider runtime export"
         ):
             provider.collect_runtime_symbols(profile)
+
+    def test_link_export_must_be_a_runtime_export(self):
+        profile = test_profile()
+        profile["shared_providers"][0]["link_exports"] = ["missing"]
+        with self.assertRaisesRegex(
+            provider.ProviderBuildError,
+            "link export is not a runtime export",
+        ):
+            provider.validate_link_exports(profile)
 
     def test_provider_order_places_dependencies_first(self):
         self.assertEqual(
@@ -199,15 +217,36 @@ class SharedProviderBuildTest(unittest.TestCase):
             provider.non_pic_relocation_symbols(error), ["needed"]
         )
 
-    def test_relocatable_gc_roots_only_declared_symbols(self):
+    def test_relocatable_link_roots_only_declared_symbols(self):
         self.assertEqual(
-            provider.relocatable_gc_arguments(
+            provider.relocatable_link_arguments(
                 "linked.o", {"z_root", "a_root"}, ["one.o", "two.o"]
             ),
             [
                 "-r", "--gc-sections", "-o", "linked.o",
                 "-u", "a_root", "-u", "z_root", "one.o", "two.o",
             ],
+        )
+        self.assertEqual(
+            provider.relocatable_link_arguments(
+                "linked.o", set(), ["one.o"], "prelink.lds"
+            ),
+            [
+                "-r", "--gc-sections", "-o", "linked.o",
+                "--script=prelink.lds", "one.o",
+            ],
+        )
+
+    def test_source_objects_follow_canonical_archive_order(self):
+        self.assertEqual(
+            provider.ordered_source_objects(
+                {"drivers/pci/pci-driver.o", "drivers/pci/probe.o", "extra.o"},
+                {
+                    "drivers/pci/probe.o": 10,
+                    "drivers/pci/pci-driver.o": 11,
+                },
+            ),
+            ["drivers/pci/probe.o", "drivers/pci/pci-driver.o", "extra.o"],
         )
 
 

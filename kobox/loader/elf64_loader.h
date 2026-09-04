@@ -38,5 +38,8 @@ void kobox_elf64_module_unload(struct kobox_elf64_module *module);
 int kobox_elf64_validate_export_set_fd(
 	int file_descriptor, const struct kobox_elf64_symbol *expected,
 	size_t expected_count);
+int kobox_elf64_validate_export_subset_fd(
+	int file_descriptor, const struct kobox_elf64_symbol *expected,
+	size_t expected_count);
 
 #endif

@@ -38,7 +38,7 @@
         "symbol"
       ],
       "provider": "device-pci.so",
-      "symbol_count": 1
+      "symbol_count": 2
     },
     {
       "consumer": "drivers/gpu/drm/drm.ko",
@@ -72,7 +72,7 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 47
+      "symbol_count": 50
     },
     {
       "consumer": "drivers/gpu/drm/drm_kms_helper.ko",
@@ -130,7 +130,7 @@
         "symbol"
       ],
       "provider": "device-pci.so",
-      "symbol_count": 4
+      "symbol_count": 5
     },
     {
       "consumer": "drivers/gpu/drm/virtio/virtio-gpu.ko",
@@ -208,7 +208,7 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 69
+      "symbol_count": 70
     },
     {
       "consumer": "drivers/i2c/i2c-core.ko",
@@ -224,7 +224,7 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 18
+      "symbol_count": 19
     },
     {
       "consumer": "drivers/virtio/virtio.ko",
@@ -249,7 +249,7 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 22
+      "symbol_count": 15
     },
     {
       "consumer": "drivers/virtio/virtio_pci.ko",
@@ -257,7 +257,7 @@
         "symbol"
       ],
       "provider": "device-pci.so",
-      "symbol_count": 19
+      "symbol_count": 26
     },
     {
       "consumer": "drivers/virtio/virtio_pci.ko",
@@ -292,7 +292,7 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 10
+      "symbol_count": 3
     },
     {
       "consumer": "drivers/virtio/virtio_pci_modern_dev.ko",
@@ -300,7 +300,7 @@
         "symbol"
       ],
       "provider": "device-pci.so",
-      "symbol_count": 7
+      "symbol_count": 14
     },
     {
       "consumer": "drivers/virtio/virtio_ring.ko",
@@ -308,7 +308,15 @@
         "symbol"
       ],
       "provider": "core/primitive.so",
-      "symbol_count": 20
+      "symbol_count": 12
+    },
+    {
+      "consumer": "drivers/virtio/virtio_ring.ko",
+      "kinds": [
+        "symbol"
+      ],
+      "provider": "device-pci.so",
+      "symbol_count": 8
     },
     {
       "consumer": "drm.so",
@@ -359,7 +367,7 @@
   "modules": [
     {
       "aliases": [],
-      "content_size": 565944,
+      "content_size": 566768,
       "import_namespaces": [
         "DMA_BUF"
       ],
@@ -426,7 +434,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -434,7 +442,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -442,7 +450,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -450,7 +458,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -458,7 +466,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -546,7 +554,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -554,7 +562,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -658,7 +666,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -666,7 +674,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -674,7 +682,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -682,7 +690,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -778,7 +786,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -810,7 +818,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -826,7 +834,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -1081,8 +1089,8 @@
           "name": "dma_max_mapping_size",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1161,7 +1169,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1456,7 +1464,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1480,7 +1488,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1499,12 +1507,28 @@
           "source_object": "lib/kobject_uevent.o"
         },
         {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_current_percpu_offset",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_enable",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
           "export": "EXPORT_SYMBOL",
           "name": "krealloc_node_align_noprof",
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1512,7 +1536,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1600,7 +1624,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1704,7 +1728,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1712,7 +1736,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1720,7 +1744,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1728,7 +1752,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1864,7 +1888,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1936,7 +1960,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/core.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -1944,7 +1968,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/time/sleep_timeout.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -2160,7 +2184,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -2176,7 +2200,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -2184,15 +2208,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
-        },
-        {
-          "export": "EXPORT_SYMBOL",
-          "name": "this_cpu_off",
-          "namespace": "",
-          "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "arch/x86/kernel/setup_percpu.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -2264,7 +2280,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4022,7 +4038,7 @@
         }
       ],
       "root": false,
-      "sha256": "39a35ec0cbd9b3f64f2ad12c9a409be26ca74f466eae33fbf2c7537b0ec29bc2",
+      "sha256": "97c0a92ee026e4e83593bdc7b9f8209f3159a766a057a17a5c970b63b96ee978",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -4031,7 +4047,7 @@
     },
     {
       "aliases": [],
-      "content_size": 180784,
+      "content_size": 181048,
       "import_namespaces": [
         "DMA_BUF"
       ],
@@ -4128,7 +4144,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4136,7 +4152,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4152,7 +4168,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4176,7 +4192,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4184,7 +4200,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4192,7 +4208,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4200,7 +4216,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4208,7 +4224,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4216,7 +4232,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4224,7 +4240,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -4232,7 +4248,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5273,7 +5289,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5281,7 +5297,31 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_current_percpu_offset",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_enable",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_save_flags",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5289,7 +5329,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -5329,7 +5369,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5337,7 +5377,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5345,7 +5385,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5353,7 +5393,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5361,7 +5401,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5393,7 +5433,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5401,7 +5441,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5417,7 +5457,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/time/sleep_timeout.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5425,7 +5465,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -5433,7 +5473,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5441,7 +5481,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5481,7 +5521,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         }
       ],
       "license": [
@@ -5704,7 +5744,7 @@
         }
       ],
       "root": false,
-      "sha256": "cddbf7a981fb247b0f78c85c53843d3758379f3ea3df02e6e7cd8183976f8de7",
+      "sha256": "1196cb17bc21e54538aab95f49d01f96b637ac3713968e53047c40f8bbfb2673",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -5733,7 +5773,7 @@
         }
       ],
       "root": false,
-      "sha256": "3e3d00d0174cd786282f16cea42f051b109dc2e31534bcd1a9e9475ad2c31e9d",
+      "sha256": "bf749b4547b6a7cd2395431728a6c72a8421ace32b95b3c4c0d00ce5393d1877",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -5769,7 +5809,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -5969,7 +6009,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -5977,7 +6017,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -6207,7 +6247,7 @@
         }
       ],
       "root": false,
-      "sha256": "74f34563776edc4a97edd20ed7396a72b1ae620527cfe701430c64a5315da104",
+      "sha256": "fefdfec820d927664253a6cdb8d03b98463c8bc7ceb74d98476bf73532fee0da",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -6218,7 +6258,7 @@
       "aliases": [
         "virtio:d00000010v*"
       ],
-      "content_size": 82128,
+      "content_size": 82208,
       "import_namespaces": [
         "DMA_BUF"
       ],
@@ -6289,7 +6329,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6297,7 +6337,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6305,7 +6345,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6313,7 +6353,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6321,7 +6361,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -6368,7 +6408,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6376,7 +6416,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6384,7 +6424,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -6543,8 +6583,8 @@
           "name": "dma_max_mapping_size",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7343,7 +7383,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7414,7 +7454,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7422,7 +7462,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7430,7 +7470,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7438,7 +7478,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7446,7 +7486,15 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_current_percpu_offset",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7454,7 +7502,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7486,7 +7534,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7494,7 +7542,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7558,7 +7606,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7582,7 +7630,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/core.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7590,7 +7638,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/time/sleep_timeout.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7662,7 +7710,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -7837,7 +7885,7 @@
       "path": "drivers/gpu/drm/virtio/virtio-gpu.ko",
       "required_exports": [],
       "root": true,
-      "sha256": "7fabbec25313c01ffdf6f20b5445029c0761e3ba5d50430d560b7c803d4d5b50",
+      "sha256": "60ec6f6558f93a3777d2c1f079e24f30430555ee9af17518bf722b8bb6928f47",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -7846,7 +7894,7 @@
     },
     {
       "aliases": [],
-      "content_size": 55184,
+      "content_size": 55208,
       "import_namespaces": [],
       "imports": [
         {
@@ -7927,7 +7975,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7935,7 +7983,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -7943,7 +7991,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -8007,7 +8055,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -8319,7 +8367,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8327,7 +8375,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8336,6 +8384,14 @@
           "optional": false,
           "provider": "core/primitive.so",
           "source_object": "mm/util.o"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_save_flags",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8367,7 +8423,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8375,7 +8431,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -8455,7 +8511,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "init/main.o"
+          "source_object": "kobox/provider/runtime.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8487,7 +8543,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         }
       ],
       "license": [
@@ -8507,7 +8563,7 @@
         }
       ],
       "root": false,
-      "sha256": "916f3fe48fc8169adb61122ae3f4fbf3dfabd03a625ddb54be9583e8156d68d7",
+      "sha256": "192d02659b6a2af53b2286f7605246057d4b3abcf73e598f8992db4c58c9da3c",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -8516,7 +8572,7 @@
     },
     {
       "aliases": [],
-      "content_size": 15296,
+      "content_size": 15472,
       "import_namespaces": [],
       "imports": [
         {
@@ -8525,7 +8581,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8533,7 +8589,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8541,7 +8597,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
@@ -8638,6 +8694,14 @@
           "optional": false,
           "provider": "core/primitive.so",
           "source_object": "lib/idr.o"
+        },
+        {
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_enable",
+          "namespace": "",
+          "optional": false,
+          "provider": "core/primitive.so",
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8762,7 +8826,7 @@
         }
       ],
       "root": false,
-      "sha256": "4f4e4ec8e2eac3f99f2fe6a85b76e34c30c9a8de5b8dea3ea3936f270f834b45",
+      "sha256": "d59289aac64f52bc9da774d49273cc5e3408fe340a88116ed39ea8fe0b87a006",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -8810,7 +8874,7 @@
         }
       ],
       "root": false,
-      "sha256": "7ac1139b496390801f833965cf003e84c1d75ed7769603d7cddc3fc8b9c803e2",
+      "sha256": "ddffebd1a5d0d5d271835db21fe049e0969b7188b0235596662615f403a82188",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -8846,7 +8910,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8854,7 +8918,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8870,7 +8934,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8878,7 +8942,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8886,7 +8950,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8909,48 +8973,48 @@
           "name": "ioread16",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "ioread32",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "ioread8",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite16",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite32",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite8",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8958,7 +9022,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -8966,7 +9030,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9045,8 +9109,8 @@
           "name": "pci_iounmap",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9444,7 +9508,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         }
       ],
       "license": [
@@ -9459,7 +9523,7 @@
       "path": "drivers/virtio/virtio_pci.ko",
       "required_exports": [],
       "root": false,
-      "sha256": "b3c31a81a13b67870cf414a299ab84a1d66b91e2dbeb6148e597e590aa1bd65c",
+      "sha256": "f90e95ec78cd4b7f7a81cb059fb47cdacf5f9d08dad711df4df6c5a86b5d3aac",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -9492,48 +9556,48 @@
           "name": "ioread16",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "ioread32",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "ioread8",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite16",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite32",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "iowrite8",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9565,15 +9629,15 @@
           "namespace": "",
           "optional": false,
           "provider": "device-pci.so",
-          "source_object": "drivers/pci/iomap.o"
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "pci_iounmap",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "lib/iomap.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9777,7 +9841,7 @@
         }
       ],
       "root": false,
-      "sha256": "2465d70154552edd9d0c4c35435c67a8b714d9988c09360bab8337872cd1dc95",
+      "sha256": "e8a93648f56a4c8a90a3fc9877c2a2411b740185ddbc3e7cb7c21751cfc76750",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -9794,24 +9858,24 @@
           "name": "__dma_need_sync",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "__dma_sync_single_for_cpu",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "__dma_sync_single_for_device",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9819,7 +9883,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9827,7 +9891,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9835,7 +9899,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9850,40 +9914,40 @@
           "name": "dma_alloc_attrs",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "dma_free_attrs",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "dma_map_page_attrs",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL_GPL",
           "name": "dma_max_mapping_size",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
           "name": "dma_unmap_page_attrs",
           "namespace": "",
           "optional": false,
-          "provider": "core/primitive.so",
-          "source_object": "kernel/dma/mapping.o"
+          "provider": "device-pci.so",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9907,7 +9971,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -9915,7 +9979,7 @@
           "namespace": "",
           "optional": false,
           "provider": "core/primitive.so",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "export": "EXPORT_SYMBOL",
@@ -10116,7 +10180,7 @@
         }
       ],
       "root": false,
-      "sha256": "0bbf09b9a5eb2657b8562c235b54ce51f3c6c4c67400bd47c17a4e2c5b1a025d",
+      "sha256": "01175763616b965a518759d1d0de711c6da6fc126b9f4caf52272c3809a5e549",
       "softdep_post": [],
       "softdep_pre": [],
       "vermagic": [
@@ -10126,6 +10190,47 @@
   ],
   "ordering_constraints": [],
   "profile": "virtio-gpu-virgl",
+  "resource_slots": [
+    {
+      "consumers": [
+        "device-pci.so"
+      ],
+      "maximum_count": 1,
+      "minimum_count": 1,
+      "name": "pci-function",
+      "required_rights": 7,
+      "reset_required": true,
+      "resource_type": "device",
+      "schema": "kobox2.pci-function",
+      "slot_id": 1
+    },
+    {
+      "consumers": [
+        "device-pci.so"
+      ],
+      "maximum_count": 1,
+      "minimum_count": 1,
+      "name": "dma-domain",
+      "required_rights": 5,
+      "reset_required": false,
+      "resource_type": "device",
+      "schema": "kobox2.dma-domain",
+      "slot_id": 2
+    },
+    {
+      "consumers": [
+        "device-pci.so"
+      ],
+      "maximum_count": 2048,
+      "minimum_count": 1,
+      "name": "irq-endpoint",
+      "required_rights": 1,
+      "reset_required": false,
+      "resource_type": "notification",
+      "schema": "kobox2.irq-endpoint",
+      "slot_id": 3
+    }
+  ],
   "roots": [
     "drivers/gpu/drm/virtio/virtio-gpu.ko"
   ],
@@ -10211,37 +10316,10 @@
         },
         {
           "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL_GPL",
-          "name": "__dma_need_sync",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
             "drivers/gpu/drm/virtio/virtio-gpu.ko"
           ],
           "export": "EXPORT_SYMBOL",
           "name": "__dma_sync_sg_for_device",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "__dma_sync_single_for_cpu",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "__dma_sync_single_for_device",
           "namespace": "",
           "source_object": "kernel/dma/mapping.o"
         },
@@ -10324,7 +10402,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__kmalloc_cache_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10333,7 +10411,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__kmalloc_node_track_caller_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10347,7 +10425,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__kmalloc_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10356,7 +10434,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__kmem_cache_create_args",
           "namespace": "",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10366,7 +10444,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__kvmalloc_node_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10387,7 +10465,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "__mutex_init",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10496,7 +10574,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "__srcu_read_lock",
           "namespace": "",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10505,7 +10583,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "__srcu_read_unlock",
           "namespace": "",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10631,7 +10709,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "_raw_spin_lock",
           "namespace": "",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10642,7 +10720,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "_raw_spin_lock_irq",
           "namespace": "",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10655,7 +10733,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "_raw_spin_lock_irqsave",
           "namespace": "",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10668,7 +10746,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "_raw_spin_unlock_irqrestore",
           "namespace": "",
-          "source_object": "kernel/locking/spinlock.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10807,7 +10885,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "cancel_delayed_work_sync",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10862,7 +10940,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "complete",
           "namespace": "",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10872,7 +10950,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "complete_all",
           "namespace": "",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10909,7 +10987,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "current_work",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10919,7 +10997,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "delayed_work_timer_fn",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -10937,7 +11015,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "destroy_workqueue",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11131,33 +11209,6 @@
         },
         {
           "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "dma_alloc_attrs",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "dma_free_attrs",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "dma_map_page_attrs",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
             "drivers/gpu/drm/virtio/virtio-gpu.ko"
           ],
           "export": "EXPORT_SYMBOL",
@@ -11177,17 +11228,6 @@
         },
         {
           "consumers": [
-            "drivers/gpu/drm/drm.ko",
-            "drivers/gpu/drm/virtio/virtio-gpu.ko",
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL_GPL",
-          "name": "dma_max_mapping_size",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
             "drivers/virtio/virtio_pci_modern_dev.ko"
           ],
           "export": "EXPORT_SYMBOL",
@@ -11201,15 +11241,6 @@
           ],
           "export": "EXPORT_SYMBOL",
           "name": "dma_set_mask",
-          "namespace": "",
-          "source_object": "kernel/dma/mapping.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_ring.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "dma_unmap_page_attrs",
           "namespace": "",
           "source_object": "kernel/dma/mapping.o"
         },
@@ -11308,7 +11339,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "flush_work",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11616,66 +11647,6 @@
         },
         {
           "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "ioread16",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "ioread32",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "ioread8",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "iowrite16",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "iowrite32",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "iowrite8",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
             "drivers/gpu/drm/drm.ko"
           ],
           "export": "EXPORT_SYMBOL",
@@ -11752,7 +11723,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kfree",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11785,7 +11756,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kmalloc_caches",
           "namespace": "",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11794,7 +11765,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kmem_cache_alloc_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11803,7 +11774,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kmem_cache_destroy",
           "namespace": "",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11812,7 +11783,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kmem_cache_free",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11836,12 +11807,44 @@
         {
           "consumers": [
             "drivers/gpu/drm/drm.ko",
+            "drivers/gpu/drm/drm_kms_helper.ko",
+            "drivers/gpu/drm/virtio/virtio-gpu.ko"
+          ],
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_current_percpu_offset",
+          "namespace": "",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "consumers": [
+            "drivers/gpu/drm/drm.ko",
+            "drivers/gpu/drm/drm_kms_helper.ko",
+            "drivers/virtio/virtio.ko"
+          ],
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_enable",
+          "namespace": "",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "consumers": [
+            "drivers/gpu/drm/drm_kms_helper.ko",
+            "drivers/i2c/i2c-core.ko"
+          ],
+          "export": "KBOX_PROVIDER_EXPORT",
+          "name": "kobox_provider_irq_save_flags",
+          "namespace": "",
+          "source_object": "kobox/provider/linux_core_kernel.c"
+        },
+        {
+          "consumers": [
+            "drivers/gpu/drm/drm.ko",
             "drivers/gpu/drm/drm_kms_helper.ko"
           ],
           "export": "EXPORT_SYMBOL",
           "name": "krealloc_node_align_noprof",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11850,7 +11853,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "ksize",
           "namespace": "",
-          "source_object": "mm/slab_common.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -11951,7 +11954,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "kvfree",
           "namespace": "",
-          "source_object": "mm/slub.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12059,7 +12062,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "mod_delayed_work_on",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12098,7 +12101,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "mutex_is_locked",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12110,7 +12113,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "mutex_lock",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12119,7 +12122,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "mutex_lock_interruptible",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12128,7 +12131,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "mutex_trylock",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12140,7 +12143,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "mutex_unlock",
           "namespace": "",
-          "source_object": "kernel/locking/mutex.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12238,16 +12241,6 @@
         },
         {
           "consumers": [
-            "drivers/virtio/virtio_pci.ko",
-            "drivers/virtio/virtio_pci_modern_dev.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "pci_iounmap",
-          "namespace": "",
-          "source_object": "lib/iomap.o"
-        },
-        {
-          "consumers": [
             "drivers/gpu/drm/drm.ko",
             "drivers/gpu/drm/drm_shmem_helper.ko",
             "drivers/gpu/drm/virtio/virtio-gpu.ko"
@@ -12332,7 +12325,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "queue_delayed_work_on",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12343,7 +12336,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "queue_work_on",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12464,7 +12457,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "schedule",
           "namespace": "",
-          "source_object": "kernel/sched/core.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12475,7 +12468,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "schedule_timeout",
           "namespace": "",
-          "source_object": "kernel/time/sleep_timeout.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12775,7 +12768,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "synchronize_srcu",
           "namespace": "",
-          "source_object": "kernel/rcu/srcutree.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12793,7 +12786,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "system_long_wq",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12804,7 +12797,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "system_percpu_wq",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12813,7 +12806,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "system_state",
           "namespace": "",
-          "source_object": "init/main.o"
+          "source_object": "kobox/provider/runtime.c"
         },
         {
           "consumers": [
@@ -12822,7 +12815,7 @@
           "export": "EXPORT_SYMBOL_GPL",
           "name": "system_unbound_wq",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12831,16 +12824,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "system_wq",
           "namespace": "",
-          "source_object": "kernel/workqueue.o"
-        },
-        {
-          "consumers": [
-            "drivers/gpu/drm/drm.ko"
-          ],
-          "export": "EXPORT_SYMBOL",
-          "name": "this_cpu_off",
-          "namespace": "",
-          "source_object": "arch/x86/kernel/setup_percpu.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -12993,7 +12977,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "wait_for_completion",
           "namespace": "",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -13021,7 +13005,7 @@
           "export": "EXPORT_SYMBOL",
           "name": "wait_for_completion_timeout",
           "namespace": "",
-          "source_object": "kernel/sched/build_utility.o"
+          "source_object": "kobox/provider/linux_core_kernel.c"
         },
         {
           "consumers": [
@@ -13117,7 +13101,6 @@
         "arch/x86/kernel/head64.o",
         "arch/x86/kernel/head_64.o",
         "arch/x86/kernel/setup.o",
-        "arch/x86/kernel/setup_percpu.o",
         "arch/x86/lib/cache-smp.o",
         "arch/x86/lib/delay.o",
         "arch/x86/lib/getuser.o",
@@ -13153,7 +13136,6 @@
         "fs/read_write.o",
         "fs/seq_file.o",
         "fs/super.o",
-        "init/main.o",
         "kernel/dma/mapping.o",
         "kernel/kthread.o",
         "kernel/locking/mutex.o",
@@ -13165,7 +13147,6 @@
         "kernel/params.o",
         "kernel/pid.o",
         "kernel/printk/printk.o",
-        "kernel/rcu/srcutree.o",
         "kernel/rcu/tree.o",
         "kernel/resource.o",
         "kernel/sched/build_policy.o",
@@ -13177,11 +13158,11 @@
         "kernel/time/time.o",
         "kernel/time/timekeeping.o",
         "kernel/time/timer.o",
-        "kernel/workqueue.o",
+        "kobox/provider/linux_core_kernel.c",
+        "kobox/provider/runtime.c",
         "lib/ctype.o",
         "lib/find_bit.o",
         "lib/idr.o",
-        "lib/iomap.o",
         "lib/kasprintf.o",
         "lib/kobject_uevent.o",
         "lib/list_sort.o",
@@ -13203,8 +13184,6 @@
         "mm/page-writeback.o",
         "mm/page_alloc.o",
         "mm/shmem.o",
-        "mm/slab_common.o",
-        "mm/slub.o",
         "mm/swap.o",
         "mm/truncate.o",
         "mm/util.o",
@@ -13219,6 +13198,33 @@
       ],
       "name": "device-pci.so",
       "required_exports": [
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__dma_need_sync",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "__dma_sync_single_for_cpu",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "__dma_sync_single_for_device",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
         {
           "consumers": [
             "drivers/virtio/virtio_pci.ko"
@@ -13257,6 +13263,53 @@
         },
         {
           "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_alloc_attrs",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_free_attrs",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_map_page_attrs",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/gpu/drm/drm.ko",
+            "drivers/gpu/drm/virtio/virtio-gpu.ko",
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dma_max_mapping_size",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_ring.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_unmap_page_attrs",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
             "drivers/i2c/i2c-core.ko"
           ],
           "export": "EXPORT_SYMBOL_GPL",
@@ -13290,6 +13343,66 @@
           "name": "handle_simple_irq",
           "namespace": "",
           "source_object": "kernel/irq/chip.o"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "ioread16",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "ioread32",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "ioread8",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "iowrite16",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "iowrite32",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "iowrite8",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "consumers": [
@@ -13453,7 +13566,17 @@
           "export": "EXPORT_SYMBOL",
           "name": "pci_iomap_range",
           "namespace": "",
-          "source_object": "drivers/pci/iomap.o"
+          "source_object": "kobox/provider/device_pci_bridge.c"
+        },
+        {
+          "consumers": [
+            "drivers/virtio/virtio_pci.ko",
+            "drivers/virtio/virtio_pci_modern_dev.ko"
+          ],
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_iounmap",
+          "namespace": "",
+          "source_object": "kobox/provider/device_pci_bridge.c"
         },
         {
           "consumers": [
@@ -13568,7 +13691,6 @@
       ],
       "source_objects": [
         "drivers/pci/access.o",
-        "drivers/pci/iomap.o",
         "drivers/pci/msi/api.o",
         "drivers/pci/pci-driver.o",
         "drivers/pci/pci.o",
@@ -13578,7 +13700,8 @@
         "kernel/irq/dummychip.o",
         "kernel/irq/irqdesc.o",
         "kernel/irq/irqdomain.o",
-        "kernel/irq/manage.o"
+        "kernel/irq/manage.o",
+        "kobox/provider/device_pci_bridge.c"
       ]
     },
     {
@@ -14090,12 +14213,13 @@
     }
   ],
   "summary": {
-    "dependency_count": 37,
+    "dependency_count": 38,
     "module_count": 11,
-    "module_import_count": 928,
+    "module_import_count": 935,
     "ordering_constraint_count": 0,
     "required_module_export_count": 295,
-    "required_shared_export_count": 401,
+    "required_shared_export_count": 403,
+    "resource_slot_count": 3,
     "shared_provider_count": 3
   }
 }

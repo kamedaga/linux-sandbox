@@ -3,8 +3,7 @@
 #ifndef KOBOX_MODULE_CONTEXT_H
 #define KOBOX_MODULE_CONTEXT_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include "abi_types.h"
 
 #define KOBOX_MODULE_INTERFACE_IDENTITY_SIZE 4u
 #define KOBOX_MODULE_INTERFACE_IDENTITY_INITIALIZER { 'd', 'e', 'v', '\0' }
@@ -27,19 +26,19 @@ enum kobox_module_resource_state {
 };
 
 struct kobox_module_resource_handle {
-	uint64_t generation;
-	uint64_t object_id;
+	kobox_abi_u64 generation;
+	kobox_abi_u64 object_id;
 };
 
 struct kobox_module_resource_info {
-	uint32_t resource_type;
-	uint32_t reserved;
-	uint64_t granted_rights;
+	kobox_abi_u32 resource_type;
+	kobox_abi_u32 reserved;
+	kobox_abi_u64 granted_rights;
 };
 
 struct kobox_resource_interface_operations {
-	uint32_t size;
-	uint8_t identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
+	kobox_abi_u32 size;
+	kobox_abi_u8 identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
 };
 
 struct kobox_module_resource_binding {
@@ -50,20 +49,20 @@ struct kobox_module_resource_binding {
 struct kobox_module_context;
 
 struct kobox_module_runtime_operations {
-	uint32_t size;
-	uint8_t identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
+	kobox_abi_u32 size;
+	kobox_abi_u8 identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
 
 	int (*resource_count)(const struct kobox_module_context *context,
-			      uint32_t slot_id, uint32_t *state_out,
+			      kobox_abi_u32 slot_id, kobox_abi_u32 *state_out,
 			      size_t *count_out);
 	int (*resource_acquire)(const struct kobox_module_context *context,
-				uint32_t slot_id, size_t object_index,
-				uint64_t required_rights,
+				kobox_abi_u32 slot_id, size_t object_index,
+				kobox_abi_u64 required_rights,
 				struct kobox_module_resource_handle *handle_out);
 	int (*resource_bind)(
 		const struct kobox_module_context *context,
 		struct kobox_module_resource_handle handle,
-		const uint8_t expected_interface_digest
+		const kobox_abi_u8 expected_interface_digest
 			[KOBOX_MODULE_RESOURCE_INTERFACE_DIGEST_SIZE],
 		struct kobox_module_resource_binding *binding_out);
 	int (*resource_info)(const struct kobox_module_context *context,
@@ -72,16 +71,16 @@ struct kobox_module_runtime_operations {
 };
 
 struct kobox_module_context {
-	uint32_t size;
-	uint8_t identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
-	uint64_t generation;
-	uint32_t node_id;
-	uint32_t reserved;
+	kobox_abi_u32 size;
+	kobox_abi_u8 identity[KOBOX_MODULE_INTERFACE_IDENTITY_SIZE];
+	kobox_abi_u64 generation;
+	kobox_abi_u32 node_id;
+	kobox_abi_u32 reserved;
 	const void *resource_view;
 	const struct kobox_module_runtime_operations *runtime_operations;
 	const void *core_operations;
-	uint32_t logical_cpu_count;
-	uint32_t reserved2;
+	kobox_abi_u32 logical_cpu_count;
+	kobox_abi_u32 reserved2;
 };
 
 _Static_assert(sizeof(struct kobox_module_context) ==

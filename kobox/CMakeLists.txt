@@ -15,6 +15,150 @@ add_test(
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/provider/build_shared_providers_test.py"
 )
+add_test(
+	NAME kobox2.closure_link_plan
+	COMMAND
+		"${Python3_EXECUTABLE}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_link_plan_test.py"
+)
+
+add_library(
+	kobox_link_plan_loader STATIC
+	loader/link_plan_loader.c
+	loader/elf64_loader.c
+)
+target_compile_features(kobox_link_plan_loader PRIVATE c_std_11)
+target_compile_options(
+	kobox_link_plan_loader PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+target_include_directories(
+	kobox_link_plan_loader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/loader"
+)
+target_link_libraries(
+	kobox_link_plan_loader PUBLIC kobox2::protocol ${CMAKE_DL_LIBS}
+)
+
+set(KOBOX_VIRGL_LINUX_BUILD_DIR "" CACHE PATH
+	"Pinned Linux build directory for the real VirGL closure link gate")
+set(KOBOX_VIRGL_PROVIDER_DIR "" CACHE PATH
+	"Shared provider artifact directory for the real VirGL closure link gate")
+set(KOBOX_VIRGL_PROVIDER_INVENTORY "" CACHE FILEPATH
+	"Shared provider inventory for the real VirGL closure link gate")
+set(KOBOX_VIRGL_NM "llvm-nm-18" CACHE STRING
+	"nm command used to generate the real VirGL closure link plan")
+
+set(_kobox_virgl_gate_inputs
+	"${KOBOX_VIRGL_LINUX_BUILD_DIR}"
+	"${KOBOX_VIRGL_PROVIDER_DIR}"
+	"${KOBOX_VIRGL_PROVIDER_INVENTORY}"
+)
+set(_kobox_virgl_gate_input_count 0)
+foreach(input IN LISTS _kobox_virgl_gate_inputs)
+	if(input)
+		math(EXPR _kobox_virgl_gate_input_count
+			"${_kobox_virgl_gate_input_count} + 1")
+	endif()
+endforeach()
+if(_kobox_virgl_gate_input_count GREATER 0 AND
+	NOT _kobox_virgl_gate_input_count EQUAL 3)
+	message(FATAL_ERROR
+		"The real VirGL closure link gate requires all three KOBOX_VIRGL paths")
+endif()
+
+if(_kobox_virgl_gate_input_count EQUAL 3)
+	set(_kobox_virgl_closure_inventory
+		"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generated/virtio_gpu_virgl.json")
+	set(_kobox_virgl_link_plan
+		"${CMAKE_CURRENT_BINARY_DIR}/generated/virtio_gpu_virgl_link_plan.c")
+	set(_kobox_virgl_artifacts
+		"${KOBOX_VIRGL_PROVIDER_DIR}/core/primitive.so"
+		"${KOBOX_VIRGL_PROVIDER_DIR}/device-pci.so"
+		"${KOBOX_VIRGL_PROVIDER_DIR}/drm.so"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_kms_helper.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_panel_orientation_quirks.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/drm_shmem_helper.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/gpu/drm/virtio/virtio-gpu.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/i2c/i2c-core.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_dma_buf.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_pci.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_pci_modern_dev.ko"
+		"${KOBOX_VIRGL_LINUX_BUILD_DIR}/drivers/virtio/virtio_ring.ko"
+	)
+	add_custom_command(
+		OUTPUT "${_kobox_virgl_link_plan}"
+		COMMAND
+			"${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_link_plan.py"
+			--closure-inventory "${_kobox_virgl_closure_inventory}"
+			--provider-inventory "${KOBOX_VIRGL_PROVIDER_INVENTORY}"
+			--linux-build-dir "${KOBOX_VIRGL_LINUX_BUILD_DIR}"
+			--provider-dir "${KOBOX_VIRGL_PROVIDER_DIR}"
+			--nm "${KOBOX_VIRGL_NM}"
+			--output "${_kobox_virgl_link_plan}"
+		DEPENDS
+			"${CMAKE_CURRENT_SOURCE_DIR}/manifest/generate_link_plan.py"
+			"${_kobox_virgl_closure_inventory}"
+			"${KOBOX_VIRGL_PROVIDER_INVENTORY}"
+			${_kobox_virgl_artifacts}
+		VERBATIM
+	)
+	add_executable(
+		kobox_real_virgl_closure_link_test
+		loader/real_closure_link_test.c
+		"${_kobox_virgl_link_plan}"
+	)
+	target_compile_features(
+		kobox_real_virgl_closure_link_test PRIVATE c_std_11
+	)
+	target_compile_options(
+		kobox_real_virgl_closure_link_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror
+	)
+	target_link_libraries(
+		kobox_real_virgl_closure_link_test
+		PRIVATE kobox_link_plan_loader Threads::Threads
+	)
+	add_test(
+		NAME kobox2.real_virgl_closure_link
+		COMMAND
+			kobox_real_virgl_closure_link_test
+			"${KOBOX_VIRGL_PROVIDER_DIR}"
+			"${KOBOX_VIRGL_LINUX_BUILD_DIR}"
+	)
+	set_tests_properties(
+		kobox2.real_virgl_closure_link
+		PROPERTIES
+			ENVIRONMENT "LD_PREFER_MAP_32BIT_EXEC=1"
+			LABELS "virgl;integration"
+			TIMEOUT 30
+	)
+	add_executable(
+		kobox_linux_kernel_core_test
+		provider/linux_kernel_core_test.c
+	)
+	target_compile_features(kobox_linux_kernel_core_test PRIVATE c_std_11)
+	target_compile_options(
+		kobox_linux_kernel_core_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror
+	)
+	target_link_libraries(
+		kobox_linux_kernel_core_test
+		PRIVATE kobox2::protocol ${CMAKE_DL_LIBS}
+	)
+	add_test(
+		NAME kobox2.linux_kernel_core
+		COMMAND
+			kobox_linux_kernel_core_test
+			"${KOBOX_VIRGL_PROVIDER_DIR}/core/primitive.so"
+			"${KOBOX_VIRGL_PROVIDER_DIR}/device-pci.so"
+	)
+	set_tests_properties(
+		kobox2.linux_kernel_core
+		PROPERTIES LABELS "virgl;integration" TIMEOUT 30
+	)
+endif()
 
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)
 target_compile_features(kobox_provider_arena_test PRIVATE c_std_11)
@@ -34,6 +178,20 @@ target_compile_options(
 	kobox_provider_lifecycle_test PRIVATE -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME kobox2.provider_lifecycle COMMAND kobox_provider_lifecycle_test)
+
+add_executable(
+	kobox_device_pci_lifecycle_test
+	provider/device_pci_lifecycle.c
+	provider/device_pci_lifecycle_test.c
+)
+target_compile_features(kobox_device_pci_lifecycle_test PRIVATE c_std_11)
+target_compile_options(
+	kobox_device_pci_lifecycle_test PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(kobox_device_pci_lifecycle_test PRIVATE kobox2::protocol)
+add_test(
+	NAME kobox2.device_pci_lifecycle COMMAND kobox_device_pci_lifecycle_test
+)
 
 add_executable(
 	kobox_linux_memory_resource_test
@@ -206,6 +364,12 @@ set(KOBOX_FIXTURE_CONSUMER_MODULE
 set(KOBOX_FIXTURE_FAIL_CONSUMER_MODULE
 	"${KOBOX_FIXTURE_OUTPUT_DIRECTORY}/fixture_consumer_fail.ko"
 )
+set(KOBOX_FIXTURE_RAW_MODULE
+	"${KOBOX_FIXTURE_OUTPUT_DIRECTORY}/fixture_raw.ko"
+)
+set(KOBOX_FIXTURE_RAW_FAIL_MODULE
+	"${KOBOX_FIXTURE_OUTPUT_DIRECTORY}/fixture_raw_fail.ko"
+)
 set(KOBOX_FIXTURE_PROVIDER_MODULE
 	"${KOBOX_FIXTURE_PROVIDER_MODULE}" PARENT_SCOPE
 )
@@ -321,6 +485,46 @@ add_custom_command(
 add_custom_target(kobox_fixture_fail_consumer ALL
 	DEPENDS "${KOBOX_FIXTURE_FAIL_CONSUMER_MODULE}")
 
+function(kobox_add_raw_lifecycle_fixture target output status)
+	add_custom_command(
+		OUTPUT "${output}"
+		COMMAND "${CMAKE_COMMAND}" -E make_directory
+			"${KOBOX_FIXTURE_OUTPUT_DIRECTORY}"
+		COMMAND
+			"${CMAKE_C_COMPILER}"
+			-std=gnu11
+			-O2
+			-Wall
+			-Wextra
+			-Werror
+			-ffreestanding
+			-fno-builtin
+			-mcmodel=large
+			-fno-pic
+			-fno-pie
+			-fno-stack-protector
+			-fno-asynchronous-unwind-tables
+			-fno-unwind-tables
+			-DKOBOX_RAW_LIFECYCLE_STATUS=${status}
+			-c "${CMAKE_CURRENT_SOURCE_DIR}/fixture/raw_lifecycle.c"
+			-o "${output}"
+		DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fixture/raw_lifecycle.c"
+		VERBATIM
+	)
+	add_custom_target(${target} ALL DEPENDS "${output}")
+endfunction()
+
+kobox_add_raw_lifecycle_fixture(
+	kobox_fixture_raw
+	"${KOBOX_FIXTURE_RAW_MODULE}"
+	0
+)
+kobox_add_raw_lifecycle_fixture(
+	kobox_fixture_raw_fail
+	"${KOBOX_FIXTURE_RAW_FAIL_MODULE}"
+	-23
+)
+
 add_executable(
     kobox_fixture_sandbox
 	fixture/runtime.c
@@ -358,6 +562,36 @@ add_test(
 )
 
 add_executable(
+	kobox_link_plan_loader_test
+	loader/link_plan_loader_test.c
+)
+target_compile_features(kobox_link_plan_loader_test PRIVATE c_std_11)
+target_compile_options(
+	kobox_link_plan_loader_test PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(
+	kobox_link_plan_loader_test PRIVATE kobox_link_plan_loader
+)
+add_dependencies(
+	kobox_link_plan_loader_test
+	kobox_fixture_core
+	kobox_fixture_provider
+	kobox_fixture_consumer
+	kobox_fixture_raw
+	kobox_fixture_raw_fail
+)
+add_test(
+	NAME kobox2.link_plan_loader
+	COMMAND
+		kobox_link_plan_loader_test
+		$<TARGET_FILE:kobox_fixture_core>
+		"${KOBOX_FIXTURE_PROVIDER_MODULE}"
+		"${KOBOX_FIXTURE_CONSUMER_MODULE}"
+		"${KOBOX_FIXTURE_RAW_MODULE}"
+		"${KOBOX_FIXTURE_RAW_FAIL_MODULE}"
+)
+
+add_executable(
     kobox_closure_loader_test
     loader/closure_loader.c
 	loader/closure_loader_test.c
@@ -387,6 +621,20 @@ add_test(
 )
 
 if(KB2_ENABLE_SANITIZERS)
+	target_compile_options(
+		kobox_link_plan_loader
+		PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
+	)
+	if(TARGET kobox_real_virgl_closure_link_test)
+		target_compile_options(
+			kobox_real_virgl_closure_link_test
+			PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
+		)
+		target_link_options(
+			kobox_real_virgl_closure_link_test
+			PRIVATE -fsanitize=address,undefined
+		)
+	endif()
     foreach(
         target
         kobox_provider_arena_test
@@ -394,6 +642,7 @@ if(KB2_ENABLE_SANITIZERS)
         kobox_linux_memory_resource_test
         kobox_linux_core_lifecycle_test
 		kobox_core_closure_test
+		kobox_link_plan_loader_test
     )
         target_compile_options(
             ${target} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined

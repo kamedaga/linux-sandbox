@@ -2,6 +2,13 @@
 
 SECTIONS
 {
+	.kobox_pci_initcalls : ALIGN(4)
+	{
+		__kobox_pci_initcall2_start = .;
+		KEEP(*(.initcall2.init))
+		__kobox_pci_initcall2_end = .;
+	}
+
 	.kobox_pci_fixups : ALIGN(8)
 	{
 		__start_pci_fixups_early = .;

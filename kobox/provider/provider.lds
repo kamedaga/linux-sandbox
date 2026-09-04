@@ -69,6 +69,20 @@ SECTIONS
 		__stop_runtime_ptr_USER_PTR_MAX = .;
 	}
 
+	runtime_ptr_dentry_hashtable : ALIGN(8)
+	{
+		__start_runtime_ptr_dentry_hashtable = .;
+		KEEP(*(runtime_ptr_dentry_hashtable))
+		__stop_runtime_ptr_dentry_hashtable = .;
+	}
+
+	runtime_shift_d_hash_shift : ALIGN(8)
+	{
+		__start_runtime_shift_d_hash_shift = .;
+		KEEP(*(runtime_shift_d_hash_shift))
+		__stop_runtime_shift_d_hash_shift = .;
+	}
+
 	.brk : ALIGN(4096)
 	{
 		__brk_base = .;

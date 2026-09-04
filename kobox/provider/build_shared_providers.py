@@ -36,7 +36,10 @@ def collect_runtime_symbols(profile):
     result = {}
 
     for definition in profile["shared_providers"]:
-        for source in definition.get("runtime_sources", []):
+        for source in (
+            definition.get("runtime_sources", []) +
+            definition.get("linux_runtime_sources", [])
+        ):
             path = source.get("path")
             exports = source.get("exports")
             if not isinstance(path, str) or not path.startswith("kobox/provider/"):
@@ -58,6 +61,31 @@ def collect_runtime_symbols(profile):
                     )
                 result[symbol] = (definition["name"], path)
     return result
+
+
+def validate_link_exports(profile):
+    for definition in profile["shared_providers"]:
+        runtime_exports = {
+            symbol
+            for source in (
+                definition.get("runtime_sources", []) +
+                definition.get("linux_runtime_sources", [])
+            )
+            for symbol in source.get("exports", [])
+        }
+        link_exports = definition.get("link_exports", [])
+        if (not isinstance(link_exports, list) or
+                len(link_exports) != len(set(link_exports)) or
+                any(not isinstance(symbol, str) for symbol in link_exports)):
+            raise ProviderBuildError(
+                f"invalid provider link export list: {definition['name']}"
+            )
+        undeclared = set(link_exports) - runtime_exports
+        if undeclared:
+            raise ProviderBuildError(
+                f"provider link export is not a runtime export: "
+                f"{definition['name']}: {sorted(undeclared)[0]}"
+            )
 
 
 def run_command(arguments, cwd=None, env=None):
@@ -130,6 +158,7 @@ def transitive_dependencies(profile):
 
 def validate_inputs(profile, inventory):
     closure.validate_profile(profile)
+    validate_link_exports(profile)
     if inventory.get("format") != closure.INVENTORY_FORMAT:
         raise ProviderBuildError("unsupported closure inventory format")
     if inventory.get("profile") != profile.get("name"):
@@ -249,6 +278,33 @@ def parse_linked_symbols(build_dir, nm):
         build_dir / "vmlinux",
     ])
     return closure.parse_defined_symbols(output)
+
+
+def canonical_object_order(build_dir, ar):
+    output = run_command([ar, "t", build_dir / "vmlinux.a"])
+    order = {}
+    for index, line in enumerate(output.splitlines()):
+        path = pathlib.Path(line.strip())
+        if not line.strip():
+            continue
+        try:
+            name = path.relative_to(build_dir).as_posix()
+        except ValueError:
+            name = path.as_posix()
+        if name in order:
+            raise ProviderBuildError(
+                f"duplicate object in canonical archive: {name}"
+            )
+        order[name] = index
+    return order
+
+
+def ordered_source_objects(source_objects, object_order):
+    unknown_position = max(object_order.values(), default=-1) + 1
+    return sorted(
+        source_objects,
+        key=lambda item: (object_order.get(item, unknown_position), item),
+    )
 
 
 def dynamic_undefined(path, nm):
@@ -430,6 +486,7 @@ def compile_support_source(arguments, output_dir, source_name):
         "-fdata-sections",
         "-fno-stack-protector",
         "-fmacro-prefix-map=" + str(arguments.source_tree) + "=linux",
+        "-I" + str(arguments.protocol_include),
     ]
     if source.suffix == ".S":
         command.extend((
@@ -520,8 +577,10 @@ def response_argument(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def relocatable_gc_arguments(output, roots, objects):
+def relocatable_link_arguments(output, roots, objects, linker_script=None):
     arguments = ["-r", "--gc-sections", "-o", output]
+    if linker_script:
+        arguments.append(f"--script={linker_script}")
     for symbol in sorted(roots):
         arguments.extend(("-u", symbol))
     arguments.extend(objects)
@@ -537,6 +596,7 @@ def link_provider(
     support_objects,
     provider_paths,
     linux_object_paths,
+    object_order,
 ):
     relative = pathlib.Path(definition["name"])
     output = arguments.output_dir / relative
@@ -552,12 +612,16 @@ def link_provider(
 
     prelink_objects = [
         linux_object_paths[item]
-        for item in sorted(source_objects)
+        for item in ordered_source_objects(source_objects, object_order)
         if item != "vmlinux-linker-defined"
     ]
     prelink_objects.extend(support_objects)
-    prelink_arguments = relocatable_gc_arguments(
-        prelink_path, link_symbols, prelink_objects
+    prelink_arguments = relocatable_link_arguments(
+        prelink_path,
+        link_symbols,
+        prelink_objects,
+        (arguments.source_tree / definition["prelinker_script"]
+         if definition.get("prelinker_script") else None),
     )
     prelink_response_path.write_text(
         "\n".join(response_argument(item) for item in prelink_arguments) + "\n",
@@ -733,6 +797,9 @@ def build(arguments):
     linked_symbols = parse_linked_symbols(
         arguments.canonical_build_dir, arguments.nm
     )
+    object_order = canonical_object_order(
+        arguments.canonical_build_dir, arguments.ar
+    )
     definitions_by_name = {
         item["name"]: item for item in profile["shared_providers"]
     }
@@ -766,7 +833,10 @@ def build(arguments):
             item["name"] for item in inventory_by_name[name]["required_exports"]
         } | {
             symbol
-            for source in definitions_by_name[name].get("runtime_sources", [])
+            for source in (
+                definitions_by_name[name].get("runtime_sources", []) +
+                definitions_by_name[name].get("linux_runtime_sources", [])
+            )
             for symbol in source.get("exports", [])
         }
         for name in order
@@ -793,6 +863,17 @@ def build(arguments):
         ]
         for name in order
     }
+    linux_runtime_objects = {
+        name: [
+            compile_support_source(
+                arguments, arguments.output_dir, source["path"]
+            )
+            for source in definitions_by_name[name].get(
+                "linux_runtime_sources", []
+            )
+        ]
+        for name in order
+    }
     linux_support_objects = {
         name: [
             compile_support_source(arguments, arguments.output_dir, source)
@@ -801,7 +882,8 @@ def build(arguments):
         for name in order
     }
     support_objects = {
-        name: runtime_objects[name] + linux_support_objects[name]
+        name: (runtime_objects[name] + linux_runtime_objects[name] +
+               linux_support_objects[name])
         for name in order
     }
     support_object_by_source = {}
@@ -810,6 +892,11 @@ def build(arguments):
             (source["path"] for source in
              definitions_by_name[name].get("runtime_sources", [])),
             runtime_objects[name],
+        ))
+        support_object_by_source.update(zip(
+            (source["path"] for source in
+             definitions_by_name[name].get("linux_runtime_sources", [])),
+            linux_runtime_objects[name],
         ))
         support_object_by_source.update(zip(
             definitions_by_name[name].get("support_sources", []),
@@ -860,6 +947,7 @@ def build(arguments):
                     support_objects[name],
                     provider_paths,
                     linux_object_paths[name],
+                    object_order,
                 )
             except ProviderBuildError as error:
                 recovered = False
@@ -1005,8 +1093,16 @@ def build(arguments):
                 for source in definitions_by_name[name].get(
                     "runtime_sources", []
                 )
+            ) + sorted(
+                source["path"]
+                for source in definitions_by_name[name].get(
+                    "linux_runtime_sources", []
+                )
             ) + sorted(definitions_by_name[name].get("support_sources", [])),
             "exports": sorted(exports[name]),
+            "link_exports": sorted(
+                definitions_by_name[name].get("link_exports", [])
+            ),
             "imports": final_imports[name],
             "content_size": path.stat().st_size,
             "sha256": sha256_file(path),
@@ -1064,6 +1160,7 @@ def parse_arguments():
     parser.add_argument("--ld", default="ld.lld")
     parser.add_argument("--llvm", default="-18")
     parser.add_argument("--nm", default="nm")
+    parser.add_argument("--ar", default="llvm-ar-18")
     parser.add_argument("--readelf", default="readelf")
     parser.add_argument("--objcopy", default="objcopy")
     parser.add_argument("--make", default="make")

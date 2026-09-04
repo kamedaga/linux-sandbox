@@ -101,6 +101,55 @@ add_test(
 	COMMAND kobox_linux_process_lifecycle_test
 )
 
+add_library(
+	kobox_posix_host STATIC
+	host/posix/clock.c
+	host/posix/cpu.c
+	host/posix/memory.c
+	host/posix/permit.c
+	host/posix/thread.c
+	host/posix/timer.c
+)
+target_compile_features(kobox_posix_host PUBLIC c_std_11)
+set_target_properties(kobox_posix_host PROPERTIES C_EXTENSIONS OFF)
+target_compile_definitions(
+	kobox_posix_host PUBLIC _POSIX_C_SOURCE=200809L
+)
+target_compile_options(
+	kobox_posix_host PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+target_include_directories(
+	kobox_posix_host PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/host/posix"
+)
+target_link_libraries(kobox_posix_host PUBLIC Threads::Threads)
+
+add_executable(kobox_posix_host_test host/posix/host_test.c)
+target_compile_features(kobox_posix_host_test PRIVATE c_std_11)
+set_target_properties(kobox_posix_host_test PROPERTIES C_EXTENSIONS OFF)
+target_compile_options(
+	kobox_posix_host_test PRIVATE -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(kobox_posix_host_test PRIVATE kobox_posix_host)
+add_test(NAME kobox2.posix_host_gate COMMAND kobox_posix_host_test)
+add_test(
+	NAME kobox2.posix_host_surface_unit
+	COMMAND
+		"${Python3_EXECUTABLE}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/host/posix/verify_surface_test.py"
+)
+add_test(
+	NAME kobox2.posix_host_surface_gate
+	COMMAND
+		"${Python3_EXECUTABLE}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/host/posix/verify_surface.py"
+		--archive $<TARGET_FILE:kobox_posix_host>
+		--nm "${KOBOX_LINUX_NM}"
+)
+set_tests_properties(
+	kobox2.posix_host_gate kobox2.posix_host_surface_gate
+	PROPERTIES LABELS "linux-runtime;go-no-go" TIMEOUT 15
+)
+
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)
 target_compile_features(kobox_provider_arena_test PRIVATE c_std_11)
 target_compile_options(

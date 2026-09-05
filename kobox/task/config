@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+CONFIG_SMP=y
+CONFIG_NR_CPUS=2
+CONFIG_PREEMPT=y
+# CONFIG_PREEMPT_DYNAMIC is not set

@@ -40,6 +40,13 @@ struct parallel_case {
 	unsigned int bit;
 };
 
+struct handoff_case {
+	struct kobox_posix_cpu *cpu;
+	struct kobox_posix_task *main_task;
+	struct kobox_posix_task *worker_task;
+	atomic_uint entered;
+};
+
 struct tick_case {
 	struct kobox_posix_cpu *cpu;
 	struct notification_state *notifications;
@@ -172,6 +179,32 @@ static void *parallel_worker(void *argument)
 			status = ETIMEDOUT;
 	}
 	if (kobox_posix_cpu_leave(test->cpu) && !status)
+		status = EIO;
+	return (void *)(uintptr_t)status;
+}
+
+static void *handoff_worker(void *argument)
+{
+	struct handoff_case *test = argument;
+	int status;
+
+	status = kobox_posix_cpu_enter_task(test->cpu, test->worker_task);
+	if (!status)
+		atomic_fetch_add_explicit(
+			&test->entered, 1, memory_order_release);
+	if (!status)
+		status = kobox_posix_cpu_switch(
+			test->cpu, test->worker_task, test->main_task, false);
+	if (!status)
+		status = kobox_posix_cpu_enter_task(
+			test->cpu, test->worker_task);
+	if (!status)
+		atomic_fetch_add_explicit(
+			&test->entered, 1, memory_order_release);
+	if (!status)
+		status = kobox_posix_cpu_switch(
+			test->cpu, test->worker_task, test->main_task, true);
+	if (!status)
 		status = EIO;
 	return (void *)(uintptr_t)status;
 }
@@ -439,6 +472,35 @@ static int test_different_cpu_parallel(
 	return 0;
 }
 
+static int test_cpu_handoff(struct kobox_posix_cpu *cpu)
+{
+	struct kobox_posix_task *main_task = NULL;
+	struct kobox_posix_task *worker_task = NULL;
+	struct handoff_case test = {.cpu = cpu};
+
+	atomic_init(&test.entered, 0);
+	CHECK(kobox_posix_task_bind_current(&main_task) == 0);
+	test.main_task = main_task;
+	CHECK(kobox_posix_task_start(
+		&worker_task, handoff_worker, &test) == 0);
+	test.worker_task = worker_task;
+	CHECK(kobox_posix_cpu_enter_task(cpu, main_task) == 0);
+	CHECK(kobox_posix_cpu_switch(
+		cpu, main_task, worker_task, false) == 0);
+	CHECK(kobox_posix_cpu_enter_task(cpu, main_task) == 0);
+	CHECK(atomic_load_explicit(
+		&test.entered, memory_order_acquire) == 1);
+	CHECK(kobox_posix_cpu_switch(
+		cpu, main_task, worker_task, false) == 0);
+	CHECK(kobox_posix_cpu_enter_task(cpu, main_task) == 0);
+	CHECK(atomic_load_explicit(
+		&test.entered, memory_order_acquire) == 2);
+	CHECK(kobox_posix_task_join_destroy(worker_task) == 0);
+	CHECK(kobox_posix_cpu_leave(cpu) == 0);
+	CHECK(kobox_posix_task_destroy_current(main_task) == 0);
+	return 0;
+}
+
 static int test_cpu_bound_notification(
 	struct kobox_posix_cpu *cpu,
 	struct notification_state *notifications,
@@ -516,6 +578,33 @@ static int test_irq_disable_pending(
 	return 0;
 }
 
+static int test_idle_pending_before_sequence(
+	struct kobox_posix_cpu *cpu,
+	struct notification_state *notifications)
+{
+	uint64_t sequence;
+	uint64_t observed;
+	uint64_t delivered;
+
+	delivered = atomic_load_explicit(
+		&notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ],
+		memory_order_acquire);
+	CHECK(kobox_posix_cpu_enter(cpu) == 0);
+	CHECK(kobox_posix_cpu_irq_disable(cpu) == 0);
+	CHECK(kobox_posix_cpu_notify(cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+	observed = kobox_posix_cpu_notification_sequence(cpu);
+	/* The notification is pending, although the sequence is already seen. */
+	CHECK(kobox_posix_cpu_wait(cpu, observed, &sequence) == 0);
+	CHECK(sequence == observed);
+	CHECK(kobox_posix_cpu_pending(cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 1);
+	CHECK(kobox_posix_cpu_irq_enable(cpu) == 0);
+	CHECK(atomic_load_explicit(
+		&notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ],
+		memory_order_acquire) == delivered + 1);
+	CHECK(kobox_posix_cpu_leave(cpu) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	struct kobox_posix_cpu cpus[2] = {{0}};
@@ -532,11 +621,13 @@ int main(void)
 		&cpus[1], 1, notification_callback, &notifications) == 0);
 	CHECK(test_same_cpu_serialization(&cpus[0]) == 0);
 	CHECK(test_different_cpu_parallel(&cpus[0], &cpus[1]) == 0);
+	CHECK(test_cpu_handoff(&cpus[0]) == 0);
 	CHECK(test_cpu_bound_notification(
 		&cpus[0], &notifications, KOBOX_POSIX_NOTIFICATION_TICK) == 0);
 	CHECK(test_cpu_bound_notification(
 		&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
 	CHECK(test_irq_disable_pending(&cpus[1], &notifications) == 0);
+	CHECK(test_idle_pending_before_sequence(&cpus[0], &notifications) == 0);
 	CHECK(atomic_load_explicit(
 		&notifications.cpu_mismatch, memory_order_acquire) == 0);
 	CHECK(kobox_posix_cpu_destroy(&cpus[1]) == 0);

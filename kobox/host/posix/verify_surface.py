@@ -15,6 +15,8 @@ ALLOWED_SYMBOLS = {
     "__libc_current_sigrtmin",
     "clock_gettime",
     "close",
+    "calloc",
+    "free",
     "ftruncate",
     "getpid",
     "memset",
@@ -25,7 +27,9 @@ ALLOWED_SYMBOLS = {
     "shm_unlink",
     "sigaction",
     "sigaddset",
+    "sigdelset",
     "sigemptyset",
+    "sigismember",
     "snprintf",
     "sysconf",
 }

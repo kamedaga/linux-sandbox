@@ -495,13 +495,32 @@ def compile_linux_objects(arguments, source_objects):
     )
     if not targets:
         return
+    architecture_include = getattr(arguments, "architecture_include", None)
+    overlay_identity = None
+    if architecture_include:
+        digest = hashlib.sha256()
+        for header in sorted(architecture_include.rglob("*.h")):
+            digest.update(str(header.relative_to(architecture_include)).encode())
+            digest.update(b"\0")
+            digest.update(header.read_bytes())
+        overlay_identity = digest.hexdigest()
     command = provider.make_arguments(namespace, tuple(targets), include_overlay=True)
     for index, item in enumerate(command):
+        if str(item).startswith("LINUXINCLUDE=") and getattr(
+            arguments, "architecture_include", None
+        ):
+            command[index] = str(item).replace(
+                "LINUXINCLUDE=",
+                f"LINUXINCLUDE=-I{arguments.architecture_include} ", 1
+            )
         if str(item).startswith("KCFLAGS="):
             command[index] = (
                 str(item) + " -DKOBOX_PROVIDER_FUNCTION_SECTIONS=1"
                 " -fvisibility=hidden"
             )
+            # A newly added overlay has no dependency in an older .o.cmd yet.
+            if overlay_identity:
+                command[index] += f" -DKOBOX_ARCH_OVERLAY_ID=kobox_{overlay_identity}"
     objtool_command = (
         arguments.canonical_build_dir / "tools/objtool/.weak.o.cmd"
     )

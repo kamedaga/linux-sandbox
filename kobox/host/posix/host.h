@@ -25,6 +25,15 @@ struct kobox_posix_permit {
 	bool initialized;
 };
 
+struct kobox_posix_task {
+	struct kobox_posix_thread thread;
+	struct kobox_posix_permit dispatch;
+	void *(*entry)(void *);
+	void *argument;
+	bool current;
+	bool initialized;
+};
+
 struct kobox_posix_memory_backing {
 	int descriptor;
 	size_t size;
@@ -72,16 +81,19 @@ typedef void (*kobox_posix_notification_fn)(
 	uint64_t count);
 
 struct kobox_posix_cpu {
-	pthread_mutex_t execution_lock;
 	pthread_mutex_t owner_lock;
+	pthread_cond_t execution_condition;
 	pthread_t owner;
+	struct kobox_posix_task *owner_task;
 	struct sigaction previous_action;
 	kobox_posix_notification_fn notification;
 	void *notification_context;
 	atomic_uint irq_disable_depth;
+	atomic_uint_fast64_t notification_sequence;
 	atomic_uint_fast64_t pending[KOBOX_POSIX_NOTIFICATION_COUNT];
 	uint32_t logical_cpu;
 	int signal_number;
+	bool handoff_released;
 	bool owner_valid;
 	bool accepting_notifications;
 	bool initialized;
@@ -95,6 +107,17 @@ int kobox_posix_thread_join(
 	struct kobox_posix_thread *thread,
 	void **result_out);
 
+int kobox_posix_task_bind_current(struct kobox_posix_task **task_out);
+int kobox_posix_task_start(
+	struct kobox_posix_task **task_out,
+	void *(*entry)(void *),
+	void *argument);
+int kobox_posix_task_wake(struct kobox_posix_task *task);
+int kobox_posix_task_park(struct kobox_posix_task *task);
+int kobox_posix_task_join_destroy(struct kobox_posix_task *task);
+int kobox_posix_task_destroy_current(struct kobox_posix_task *task);
+_Noreturn void kobox_posix_task_exit(void);
+
 int kobox_posix_permit_init(
 	struct kobox_posix_permit *permit,
 	uint64_t initial_count);
@@ -107,6 +130,7 @@ int kobox_posix_permit_wait(
 int kobox_posix_permit_destroy(struct kobox_posix_permit *permit);
 
 int kobox_posix_monotonic_ns(uint64_t *time_out);
+int kobox_posix_realtime_ns(uint64_t *time_out);
 
 int kobox_posix_oneshot_timer_init(
 	struct kobox_posix_oneshot_timer *timer,
@@ -159,14 +183,31 @@ int kobox_posix_cpu_init(
 	void *context);
 int kobox_posix_cpu_destroy(struct kobox_posix_cpu *cpu);
 int kobox_posix_cpu_enter(struct kobox_posix_cpu *cpu);
+int kobox_posix_cpu_enter_task(
+	struct kobox_posix_cpu *cpu,
+	struct kobox_posix_task *task);
 int kobox_posix_cpu_leave(struct kobox_posix_cpu *cpu);
+int kobox_posix_cpu_switch(
+	struct kobox_posix_cpu *cpu,
+	struct kobox_posix_task *previous,
+	struct kobox_posix_task *next,
+	bool exiting);
+int kobox_posix_cpu_wait(
+	struct kobox_posix_cpu *cpu,
+	uint64_t observed_sequence,
+	uint64_t *sequence_out);
 int kobox_posix_cpu_irq_disable(struct kobox_posix_cpu *cpu);
 int kobox_posix_cpu_irq_enable(struct kobox_posix_cpu *cpu);
+int kobox_posix_notifications_save(uint64_t *mask_out);
+int kobox_posix_notifications_restore(uint64_t mask);
 int kobox_posix_cpu_notify(
 	struct kobox_posix_cpu *cpu,
 	enum kobox_posix_notification notification);
 uint64_t kobox_posix_cpu_pending(
 	const struct kobox_posix_cpu *cpu,
 	enum kobox_posix_notification notification);
+bool kobox_posix_cpu_irq_disabled(const struct kobox_posix_cpu *cpu);
+uint64_t kobox_posix_cpu_notification_sequence(
+	const struct kobox_posix_cpu *cpu);
 
 #endif

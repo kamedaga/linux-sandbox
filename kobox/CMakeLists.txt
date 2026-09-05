@@ -107,6 +107,7 @@ add_library(
 	host/posix/cpu.c
 	host/posix/memory.c
 	host/posix/permit.c
+	host/posix/task.c
 	host/posix/thread.c
 	host/posix/timer.c
 )
@@ -215,6 +216,85 @@ if(KOBOX_LINUX_BOOT_BUILD_DIR)
 	)
 	set_tests_properties(kobox2.linux_early_memory_gate PROPERTIES
 		LABELS "linux-runtime;go-no-go" TIMEOUT 30)
+endif()
+
+set(KOBOX_LINUX_TASK_BUILD_DIR "" CACHE PATH
+	"Canonical Linux build with the task/config preemption and SMP profile")
+if(KOBOX_LINUX_TASK_BUILD_DIR)
+	set(_kobox_task_output "${CMAKE_CURRENT_BINARY_DIR}/linux-task")
+	set(_kobox_task_provider_build
+		"${CMAKE_CURRENT_BINARY_DIR}/linux-task-provider")
+	set(_kobox_task_core "${_kobox_task_output}/linux-task-smp-gate.so")
+	set(_kobox_task_boundary
+		"${_kobox_task_output}/linux-task-smp-boundary.so")
+	set(_kobox_task_inventory "${_kobox_task_output}/inventory.json")
+	add_custom_command(
+		OUTPUT
+			"${_kobox_task_core}"
+			"${_kobox_task_boundary}"
+			"${_kobox_task_inventory}"
+		COMMAND "${CMAKE_COMMAND}" -E make_directory
+			"${_kobox_task_output}"
+		COMMAND
+			"${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/build_task_smp.py"
+			--source-tree "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--canonical-build-dir "${KOBOX_LINUX_TASK_BUILD_DIR}"
+			--provider-build-dir "${_kobox_task_provider_build}"
+			--output-dir "${_kobox_task_output}"
+			--protocol-include
+				"${PROJECT_SOURCE_DIR}/protocol/generated/include"
+			--inventory "${_kobox_task_inventory}"
+		DEPENDS
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/build_task_smp.py"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/port.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/current.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/irq_stack.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/mmu_context.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/preempt.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/smp.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/switch_to.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/build_shared_providers.py"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/provider.lds"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/cacheflush.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/irqflags.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/percpu.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/linux/init.h"
+			"${KOBOX_LINUX_TASK_BUILD_DIR}/.config"
+			"${KOBOX_LINUX_TASK_BUILD_DIR}/vmlinux"
+			"${KOBOX_LINUX_TASK_BUILD_DIR}/vmlinux.a"
+		VERBATIM
+	)
+	add_custom_target(kobox_linux_task_smp_artifact ALL DEPENDS
+		"${_kobox_task_core}"
+		"${_kobox_task_boundary}"
+		"${_kobox_task_inventory}"
+	)
+	add_executable(kobox_linux_task_smp_test task/task_smp_test.c)
+	target_compile_features(kobox_linux_task_smp_test PRIVATE c_std_11)
+	set_target_properties(kobox_linux_task_smp_test PROPERTIES C_EXTENSIONS OFF)
+	target_compile_options(kobox_linux_task_smp_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_include_directories(kobox_linux_task_smp_test
+		PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/task")
+	target_link_libraries(kobox_linux_task_smp_test
+		PRIVATE kobox_posix_host ${CMAKE_DL_LIBS})
+	add_dependencies(kobox_linux_task_smp_test kobox_linux_task_smp_artifact)
+	add_test(
+		NAME kobox2.linux_task_smp_gate
+		COMMAND kobox_linux_task_smp_test
+			"${_kobox_task_boundary}"
+			"${_kobox_task_core}"
+	)
+	set_tests_properties(kobox2.linux_task_smp_gate PROPERTIES
+		LABELS "linux-runtime;go-no-go" TIMEOUT 30)
+	add_test(NAME kobox2.linux_task_smp_build_unit
+		COMMAND "${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/build_task_smp_test.py")
 endif()
 
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)

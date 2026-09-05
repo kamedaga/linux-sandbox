@@ -46,7 +46,9 @@ pud_t level3_kernel_pgt[PTRS_PER_PUD] __aligned(PAGE_SIZE);
 pmd_t level2_kernel_pgt[PTRS_PER_PMD] __aligned(PAGE_SIZE);
 unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)]
 	__aligned(PAGE_SIZE);
+#ifndef KOBOX_TASK_PORT_PHASE
 struct task_struct init_task;
+#endif
 struct cpuinfo_x86 boot_cpu_data = {
 	.x86_virt_bits = 48,
 	.x86_phys_bits = 52,
@@ -83,10 +85,17 @@ unsigned long totalcma_pages;
 unsigned long max_pfn_mapped;
 DEFINE_SPINLOCK(pgd_lock);
 
+#ifdef KOBOX_TASK_PORT_PHASE
+__thread unsigned long kobox_percpu_offset;
+#else
 static __thread unsigned long kobox_percpu_offset;
+#endif
+#ifndef KOBOX_TASK_PORT_PHASE
 static __thread unsigned int kobox_irq_disable_depth = 1;
+#endif
 static const struct kobox_linux_memory_layout *memory_layout;
 static DEFINE_PER_CPU(unsigned long, kobox_memory_static_percpu);
+#ifndef KOBOX_TASK_PORT_PHASE
 static struct {
 	enum cpuhp_state state;
 	const char *name;
@@ -94,17 +103,28 @@ static struct {
 	int (*teardown)(unsigned int cpu);
 } early_cpuhp_registrations[KOBOX_MEMORY_MAX_EARLY_CPUHP_REGISTRATIONS];
 static unsigned int early_cpuhp_registration_count;
+#endif
 
 unsigned long kobox_provider_current_percpu_offset(void)
 {
-	return kobox_percpu_offset;
+	return READ_ONCE(kobox_percpu_offset);
 }
+
+#ifdef KOBOX_TASK_PORT_PHASE
+void kobox_linux_memory_set_cpu(unsigned int cpu)
+{
+	if (cpu >= nr_cpu_ids)
+		BUG();
+	kobox_percpu_offset = __per_cpu_offset[cpu];
+}
+#endif
 
 unsigned long kobox_provider_get_task_size_limit(void)
 {
 	return (1UL << 47) - PAGE_SIZE;
 }
 
+#ifndef KOBOX_TASK_PORT_PHASE
 unsigned long kobox_provider_irq_save_flags(void)
 {
 	return kobox_irq_disable_depth != 0;
@@ -145,6 +165,7 @@ int __cond_resched(void)
 		BUG();
 	return 0;
 }
+#endif
 
 static int mapped_range(unsigned long start, unsigned long end,
 			void *window, unsigned long window_base)
@@ -230,6 +251,7 @@ void alternatives_enable_smp(void)
 {
 }
 
+#ifndef KOBOX_TASK_PORT_PHASE
 int __cpuhp_setup_state(enum cpuhp_state state, const char *name, bool invoke,
 			int (*startup)(unsigned int cpu),
 			int (*teardown)(unsigned int cpu), bool multi_instance)
@@ -254,6 +276,7 @@ int __cpuhp_setup_state(enum cpuhp_state state, const char *name, bool invoke,
 		};
 	return 0;
 }
+#endif
 
 bool pfn_range_is_mapped(unsigned long start_pfn, unsigned long end_pfn)
 {
@@ -528,9 +551,11 @@ int kobox_linux_memory_early_boot(
 	const struct kobox_linux_memory_layout *layout,
 	struct kobox_linux_memory_report *report)
 {
+#ifndef KOBOX_TASK_PORT_PHASE
 	bool page_alloc_cpuhp = false;
 	bool radix_cpuhp = false;
 	unsigned int index;
+#endif
 	int status;
 
 	if (!report || report->size != sizeof(*report) ||
@@ -545,6 +570,9 @@ int kobox_linux_memory_early_boot(
 	status = prepare_percpu();
 	if (status)
 		return status;
+#ifdef KOBOX_TASK_PORT_PHASE
+	boot_cpu_hotplug_init();
+#endif
 	setup_memory_zones();
 	mm_core_init();
 	radix_tree_init();
@@ -554,6 +582,7 @@ int kobox_linux_memory_early_boot(
 	report->vmalloc_base = vmalloc_base;
 	report->phys_base = phys_base;
 	report->logical_cpu_count = nr_cpu_ids;
+#ifndef KOBOX_TASK_PORT_PHASE
 	report->early_cpuhp_registration_count =
 		early_cpuhp_registration_count;
 	for (index = 0; index < early_cpuhp_registration_count; index++) {
@@ -564,12 +593,14 @@ int kobox_linux_memory_early_boot(
 	}
 	report->early_cpuhp_registrations_ready =
 		page_alloc_cpuhp && radix_cpuhp;
+	if (!report->early_cpuhp_registrations_ready)
+		return -EINVAL;
+#endif
 	report->kernel_image_translation_ready =
 		__pa_symbol(_text) == layout->kernel_image_physical_base;
 	report->mm_core_initialized = slab_is_available();
 	if (!report->mm_core_initialized ||
-	    !report->kernel_image_translation_ready ||
-	    !report->early_cpuhp_registrations_ready)
+	    !report->kernel_image_translation_ready)
 		return -EINVAL;
 	return run_gate(report);
 }

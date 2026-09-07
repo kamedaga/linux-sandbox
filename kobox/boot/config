@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Merge after the canonical base configuration and kobox/task/config.
+# Real shmem/tmpfs, not the ramfs-backed tiny implementation.
+CONFIG_MMU=y
+CONFIG_SHMEM=y
+CONFIG_TMPFS=y
+CONFIG_MEMFD_CREATE=y

@@ -1,18 +1,25 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include "host.h"
+#include "boot.h"
+#include "time_port.h"
+#include "../memory/port.h"
 
 #include <linux/cpu.h>
+#include <linux/cpuidle.h>
 #include <linux/clocksource.h>
 #include <linux/completion.h>
+#include <linux/context_tracking.h>
 #include <linux/err.h>
 #include <linux/gfp.h>
 #include <linux/interrupt.h>
+#include <linux/irq_work.h>
 #include <linux/hrtimer.h>
 #include <linux/kthread.h>
 #include <linux/mm_types.h>
 #include <linux/preempt.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/idle.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/signal.h>
@@ -21,10 +28,18 @@
 #include <linux/smp.h>
 #include <linux/smpboot.h>
 #include <linux/stop_machine.h>
+#include <linux/tick.h>
 #include <linux/workqueue.h>
+#include <trace/events/ipi.h>
 
 #include <asm/smp.h>
+#include <asm/irq_regs.h>
 #include <asm/topology.h>
+#ifdef KOBOX_BOOT_RUNTIME
+#include <asm/fpu/sched.h>
+#include <asm/tlbflush.h>
+#include "../mm/port.h"
+#endif
 
 /* Hosted invariant failures must terminate even with CONFIG_BUG=n. */
 #undef BUG
@@ -64,14 +79,23 @@ struct kobox_task_port {
 };
 
 static const struct kobox_linux_task_host_operations *task_host;
+
+const struct kobox_linux_task_host_operations *kobox_task_host(void)
+{
+	return task_host;
+}
 static __thread struct task_struct *hosted_current;
 static __thread unsigned int hosted_cpu;
 static u64 clock_origin;
 static struct kobox_linux_task_report *task_report;
+#ifndef KOBOX_BOOT_RUNTIME
 static struct kobox_task_port *secondary_idle_port;
 static int gate_status;
 static bool gate_done;
 static bool secondary_cpu_ready;
+#endif
+static void (*boot_secondary_entry)(void);
+static struct kobox_task_port boot_task_port;
 static DEFINE_PER_CPU(unsigned long, gate_cpu_marker);
 static DEFINE_PER_CPU(u64, port_switch_count);
 static DEFINE_PER_CPU(u64, port_ipi_count);
@@ -111,24 +135,35 @@ struct kobox_gate_worker {
 
 void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *task)
 {
-	/* Host pthreads share one address space; there is no hardware mm switch. */
+	/* Kernel tasks borrow an active mm; external process translations stay
+	 * owned by the host address-space binding, not the native pthread's CR3.
+	 */
 	if (task->mm || !mm)
 		BUG();
+#ifdef KOBOX_BOOT_RUNTIME
+	this_cpu_write(cpu_tlbstate_shared.is_lazy, true);
+#endif
 }
 
 void kobox_provider_deactivate_mm(struct task_struct *task, struct mm_struct *mm)
 {
 	/* Clearing native FS/GS here would destroy the host pthread's TLS. */
-	if (task != current || task->mm || mm)
+	if (task != current || task->mm)
 		BUG();
+#ifndef KOBOX_BOOT_RUNTIME
+	if (mm)
+		BUG();
+#endif
 }
 
+#ifndef KOBOX_BOOT_RUNTIME
 void fpu_thread_struct_whitelist(unsigned long *offset, unsigned long *size)
 {
 	/* Hosted kernel tasks never save host FPU state into task_struct. */
 	*offset = 0;
 	*size = 0;
 }
+#endif
 
 static struct kobox_task_port *task_port(const struct task_struct *task)
 {
@@ -229,8 +264,14 @@ u64 sched_clock(void)
 	return host_clock_read(NULL) - clock_origin;
 }
 
+noinstr u64 sched_clock_noinstr(void)
+{
+	return host_clock_read(NULL) - clock_origin;
+}
+
 static struct clocksource host_clocksource = {
 	.name = "kobox-monotonic",
+	.rating = 400,
 	.read = host_clock_read,
 	.mask = CLOCKSOURCE_MASK(64),
 	.mult = 1,
@@ -240,9 +281,16 @@ static struct clocksource host_clocksource = {
 	.flags = CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
+#ifndef KOBOX_BOOT_RUNTIME
 struct clocksource *clocksource_default_clock(void)
 {
 	return &host_clocksource;
+}
+#endif
+
+int kobox_linux_task_register_clocksource(void)
+{
+	return clocksource_register_hz(&host_clocksource, NSEC_PER_SEC);
 }
 
 void read_persistent_wall_and_boot_offset(struct timespec64 *wall_time,
@@ -280,6 +328,16 @@ static void send_call_function_mask(const struct cpumask *mask)
 		send_call_function_single((int)cpu);
 }
 
+#ifdef KOBOX_BOOT_RUNTIME
+void arch_irq_work_raise(void)
+{
+	/* The same transport interrupt drains both upstream queues. Remote
+	 * irq_work already uses Linux's call-single queue; local work does not.
+	 */
+	send_call_function_single(raw_smp_processor_id());
+}
+#endif
+
 struct smp_ops smp_ops = {
 	.smp_send_reschedule = send_reschedule,
 	.send_call_func_ipi = send_call_function_mask,
@@ -291,10 +349,24 @@ void kobox_linux_task_dispatch(
 	enum kobox_linux_task_notification notification,
 	uint64_t count)
 {
+	struct pt_regs regs = {.cs = __KERNEL_CS};
+	struct pt_regs *previous_regs;
+	unsigned int previous_count;
+	bool watching;
+
 	if (!task_host || cpu != port_cpu() || !count)
 		BUG();
 	local_irq_disable();
-	irq_enter_rcu();
+	previous_count = preempt_count();
+	watching = rcu_is_watching_curr_cpu();
+	previous_regs = set_irq_regs(&regs);
+	irq_enter();
+	if (!in_hardirq() || !rcu_is_watching_curr_cpu() ||
+	    current != raw_cpu_read(current_task) || task_cpu(current) != cpu)
+		BUG();
+	task_report->hardirq_entries[cpu]++;
+	if (!watching)
+		task_report->idle_irq_entries[cpu]++;
 	switch (notification) {
 	case KOBOX_LINUX_TASK_RESCHEDULE:
 		raw_cpu_add(port_ipi_count, count);
@@ -305,21 +377,37 @@ void kobox_linux_task_dispatch(
 	case KOBOX_LINUX_TASK_CALL_FUNCTION:
 		while (count--)
 			generic_smp_call_function_single_interrupt();
+#ifdef KOBOX_BOOT_RUNTIME
+		irq_work_run();
+#endif
 		break;
+	case KOBOX_LINUX_TASK_CLOCKEVENT:
+		kobox_task_clock_interrupt();
+		break;
+#ifdef KOBOX_BOOT_RUNTIME
+	case KOBOX_LINUX_TASK_VM_EVENT:
+		kobox_vm_interrupt();
+		break;
+#endif
 	default:
 		BUG();
 	}
-	irq_exit_rcu();
+	irq_exit();
+	set_irq_regs(previous_regs);
+	if (preempt_count() != previous_count ||
+	    rcu_is_watching_curr_cpu() != watching)
+		BUG();
 	/* The architecture interrupt-return boundary; Linux chooses the task. */
 	if (!preempt_count() && need_resched())
 		preempt_schedule_irq();
-	local_irq_enable();
+	/* The host restores the interrupted IRQ state after this return. */
+	if (!irqs_disabled())
+		BUG();
 }
 
 static void *task_bootstrap(void *argument)
 {
 	struct kobox_task_port *port = argument;
-	uint64_t sequence;
 
 	if (READ_ONCE(port->aborted))
 		return NULL;
@@ -329,6 +417,14 @@ static void *task_bootstrap(void *argument)
 	if (task_host->cpu_enter(port->resume_cpu, port->host_task))
 		BUG();
 	if (port->idle) {
+		if (boot_secondary_entry) {
+			boot_secondary_entry();
+			BUG();
+		}
+#ifdef KOBOX_BOOT_RUNTIME
+		BUG();
+#else
+		current->flags |= PF_IDLE;
 		local_irq_disable();
 		mmgrab(&init_mm);
 		current->active_mm = &init_mm;
@@ -337,11 +433,12 @@ static void *task_bootstrap(void *argument)
 		    hrtimers_cpu_starting(port->resume_cpu) ||
 		    rcutree_online_cpu(port->resume_cpu))
 			BUG();
+		kobox_task_clock_init();
 		smp_store_release(&secondary_cpu_ready, true);
 		local_irq_enable();
-		sequence = task_host->cpu_notification_sequence(port->resume_cpu);
 		for (;;) {
 			if (READ_ONCE(port->shutdown)) {
+				kobox_task_clock_stop();
 				if (task_host->cpu_leave(port->resume_cpu))
 					BUG();
 				return NULL;
@@ -350,15 +447,21 @@ static void *task_bootstrap(void *argument)
 				schedule_idle();
 				continue;
 			}
-			if (task_host->cpu_wait(port->resume_cpu, sequence,
-						&sequence))
+			local_irq_disable();
+			default_idle_call();
+			if (!rcu_is_watching_curr_cpu())
 				BUG();
+			task_report->idle_exits[port_cpu()]++;
 		}
+#endif
 	}
 	if (!port->previous)
 		BUG();
 	schedule_tail(port->previous);
 	port->function(port->argument);
+	/* PID 1 begins in kernel_init(), but a userspace return needs a port. */
+	if (!(current->flags & PF_KTHREAD))
+		BUG();
 	do_exit(0);
 }
 
@@ -369,8 +472,19 @@ int copy_thread(struct task_struct *task,
 	unsigned long flags;
 	int status;
 
-	if (!task_host || !arguments->fn || !(task->flags & PF_KTHREAD))
+	if (!task_host || !arguments->fn)
 		return -EINVAL;
+	/* user_mode_thread(kernel_init) has a kernel entry and no user mm. */
+	if (task->mm)
+		return -EOPNOTSUPP;
+#ifdef KOBOX_BOOT_RUNTIME
+	/* Upstream CPU initialization sized this storage. Kernel-start tasks,
+	 * including PID 1, use Linux's minimal FP-state initialization.
+	 */
+	status = fpu_clone(task, arguments->flags, true, 0);
+	if (status)
+		return -EINVAL;
+#endif
 	port = kzalloc(sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return -ENOMEM;
@@ -397,6 +511,9 @@ void exit_thread(struct task_struct *task)
 	struct kobox_task_port *port = task_port(task);
 	unsigned long mask;
 
+#ifdef KOBOX_BOOT_RUNTIME
+	fpu__drop(task);
+#endif
 	/* copy_process() can fail after copy_thread() created a parked pthread. */
 	if (!port || READ_ONCE(task->__state) != TASK_NEW)
 		return;
@@ -493,6 +610,33 @@ void kobox_provider_cpu_idle(void)
 	sequence = task_host->cpu_notification_sequence(port_cpu());
 	if (task_host->cpu_wait(port_cpu(), sequence, &sequence))
 		BUG();
+}
+
+void arch_cpu_idle(void)
+{
+	unsigned int cpu = port_cpu();
+	uint64_t sequence;
+
+	/* default_idle_call() owns the upstream RCU idle transitions. */
+	if (!is_idle_task(current) || !irqs_disabled() ||
+	    rcu_is_watching_curr_cpu())
+		BUG();
+	task_report->idle_entries[cpu]++;
+	/* Observe before enabling: an IRQ delivered by enable must skip wait. */
+	sequence = task_host->cpu_notification_sequence(cpu);
+	local_irq_enable();
+	if (task_host->cpu_wait(cpu, sequence, &sequence))
+		BUG();
+	local_irq_disable();
+	if (rcu_is_watching_curr_cpu())
+		BUG();
+}
+
+void kobox_linux_task_idle_exit(void)
+{
+	if (!rcu_is_watching_curr_cpu())
+		BUG();
+	task_report->idle_exits[port_cpu()]++;
 }
 
 static void gate_publish_phase(
@@ -596,7 +740,7 @@ static int primary_gate_worker(void *argument)
 		cpu_relax();
 	if (raw_cpu_read(port_ipi_count) == ipis) {
 		local_irq_enable();
-		if (raw_cpu_read(port_ipi_count) > ipis)
+		if (!gate_wait_counter(&per_cpu(port_ipi_count, 1), ipis + 1))
 			task_report->irq_disable_ready = 1;
 	} else {
 		local_irq_enable();
@@ -709,6 +853,7 @@ static int gate_running_migration(void)
 	return gate_join_task(worker.task);
 }
 
+#ifndef KOBOX_BOOT_RUNTIME
 static int init_scheduler_threads(void)
 {
 	pid_t pid;
@@ -728,6 +873,36 @@ static int init_scheduler_threads(void)
 		stop_machine_unpark(1);
 	return status;
 }
+#endif
+
+static int user_mode_kernel_entry(void *argument)
+{
+	struct kobox_gate_worker *worker = argument;
+
+	worker->task = current;
+	worker->current_percpu_valid = gate_current_matches() &&
+		!(current->flags & PF_KTHREAD) && !current->mm;
+	gate_sleep(worker, KOBOX_GATE_FIRST_SLEEP);
+	/* No user instruction context is claimed by this kernel-entry test. */
+	do_exit(0);
+}
+
+static int test_user_mode_kernel_entry(void)
+{
+	struct kobox_gate_worker worker = {.controller = current};
+	pid_t pid;
+	int status;
+
+	pid = user_mode_thread(user_mode_kernel_entry, &worker,
+			       SIGCHLD | CLONE_FS | CLONE_FILES);
+	if (pid < 0)
+		return pid;
+	status = gate_wait_phase(&worker, KOBOX_GATE_FIRST_SLEEP);
+	if (status || !worker.current_percpu_valid)
+		BUG();
+	wake_up_process(worker.task);
+	return gate_join_task(worker.task);
+}
 
 static int run_task_smp_gate(void)
 {
@@ -741,8 +916,12 @@ static int run_task_smp_gate(void)
 	cpumask_clear(&mask);
 	cpumask_set_cpu(0, &mask);
 	status = set_cpus_allowed_ptr(current, &mask);
+#ifndef KOBOX_BOOT_RUNTIME
 	if (!status)
 		status = init_scheduler_threads();
+#endif
+	if (!status)
+		status = test_user_mode_kernel_entry();
 	if (status)
 		return status;
 	pid = kernel_thread(primary_gate_worker, &primary, "kobox-gate-a",
@@ -795,6 +974,11 @@ static int run_task_smp_gate(void)
 	sched_set_fifo(secondary.task);
 	if (!wake_up_process(secondary.task))
 		return -EINVAL;
+	/* resched_curr() may coalesce the wake with an earlier tick request.
+	 * Still exercise a delivered reschedule interrupt while preemption is
+	 * disabled, without choosing or switching tasks in the machine port.
+	 */
+	smp_send_reschedule(1);
 	status = gate_wait_counter(
 		&per_cpu(port_ipi_count, 1), ipis + 1);
 	if (status)
@@ -809,6 +993,11 @@ static int run_task_smp_gate(void)
 		return status;
 	if (!wake_up_process(secondary.task))
 		return -EINVAL;
+	/* With real tick/kworkers, NEED_RESCHED may already be set and Linux
+	 * correctly coalesces the wake's IPI. Explicitly send one to test the
+	 * masked-delivery contract, independently of scheduler coalescing.
+	 */
+	smp_send_reschedule(1);
 	if (READ_ONCE(per_cpu(port_ipi_count, 1)) != primary.irq_ipis)
 		return -EINVAL;
 	smp_store_release(&primary.command,
@@ -833,12 +1022,26 @@ static int run_task_smp_gate(void)
 	return 0;
 }
 
+static bool task_smp_report_ready(void)
+{
+	return task_report->upstream_schedule_ready &&
+		task_report->upstream_try_to_wake_up_ready &&
+		task_report->current_percpu_ready && task_report->local_switch_ready &&
+		task_report->remote_switch_ready && task_report->migration_ready &&
+		task_report->affinity_ready && task_report->remote_reschedule_ipis &&
+		task_report->preempt_disable_ready && task_report->irq_disable_ready &&
+		task_report->exit_join_ready;
+}
+
+#ifndef KOBOX_BOOT_RUNTIME
 static int gate_init(void *argument)
 {
 	int status;
 
 	(void)argument;
 	status = run_task_smp_gate();
+	if (!status)
+		status = kobox_task_time_gate(task_report);
 	WRITE_ONCE(gate_status, status);
 	/* PID 1, like the idle tasks, lives until the sandbox process exits. */
 	set_current_state(TASK_UNINTERRUPTIBLE);
@@ -846,6 +1049,32 @@ static int gate_init(void *argument)
 	schedule();
 	BUG();
 }
+#endif
+
+#ifdef KOBOX_BOOT_RUNTIME
+int kobox_linux_task_verify_boot(void)
+{
+	int status;
+
+	/* Verification must not initialize any scheduler or runtime service. */
+	if (!boot_secondary_entry || system_state != SYSTEM_RUNNING ||
+	    num_online_cpus() != KOBOX_LINUX_MEMORY_LOGICAL_CPUS ||
+	    !kthreadd_task || !rcu_inkernel_boot_has_ended())
+		return -EINVAL;
+	per_cpu(gate_cpu_marker, 0) = 0xabc000UL;
+	per_cpu(gate_cpu_marker, 1) = 0xabc001UL;
+	task_report->logical_cpu_count = nr_cpu_ids;
+	status = run_task_smp_gate();
+	if (!status)
+		status = kobox_task_time_gate(task_report);
+	if (status)
+		return status;
+	task_report->upstream_schedule_ready = task_report->context_switches != 0;
+	task_report->upstream_try_to_wake_up_ready =
+		task_report->local_switch_ready && task_report->remote_switch_ready;
+	return task_smp_report_ready() ? 0 : -EINVAL;
+}
+#endif
 
 static int validate_layout(const struct kobox_linux_task_layout *layout)
 {
@@ -868,7 +1097,9 @@ static int validate_layout(const struct kobox_linux_task_layout *layout)
 	    !operations->notifications_save ||
 	    !operations->notifications_restore ||
 	    !operations->cpu_notification_sequence ||
-	    !operations->monotonic_ns || !operations->realtime_ns)
+	    !operations->monotonic_ns || !operations->realtime_ns ||
+	    !operations->clockevent_arm || !operations->clockevent_cancel ||
+	    !operations->clockevent_stop)
 		return -EINVAL;
 	return 0;
 }
@@ -901,6 +1132,61 @@ static int init_hosted_cpu_topology(void)
 	return 0;
 }
 
+int kobox_linux_task_prepare_cpus(void)
+{
+	return init_hosted_cpu_topology();
+}
+
+int kobox_linux_task_kick_cpu(unsigned int cpu, struct task_struct *idle)
+{
+	struct kobox_task_port *port;
+
+	if (!boot_secondary_entry || !cpu || cpu >= nr_cpu_ids || !idle)
+		return -EINVAL;
+	port = task_port(idle);
+	if (!port || !port->idle || !port->host_task)
+		return -EINVAL;
+	port->resume_cpu = cpu;
+	per_cpu(current_task, cpu) = idle;
+	/* CPUHP owns the online transition and callback execution. */
+	return -task_host->task_wake(port->host_task);
+}
+
+int kobox_linux_task_install_secondary_entry(void (*entry)(void))
+{
+	if (!task_host || !entry || boot_secondary_entry ||
+	    num_online_cpus() != 1 || raw_smp_processor_id())
+		return -EINVAL;
+	boot_secondary_entry = entry;
+	return 0;
+}
+
+int kobox_linux_task_bind_boot(const struct kobox_linux_task_layout *layout,
+			       struct kobox_linux_task_report *report)
+{
+	int status;
+
+	if (task_host || !report ||
+	    report->size != sizeof(*report) ||
+	    report->identity != KOBOX_LINUX_TASK_HOST_IDENTITY)
+		return -EINVAL;
+	status = validate_layout(layout);
+	if (status)
+		return status;
+	task_host = layout->operations;
+	task_report = report;
+	hosted_current = &init_task;
+	hosted_cpu = 0;
+	boot_task_port.task = &init_task;
+	boot_task_port.host_task = layout->boot_task;
+	boot_task_port.idle = true;
+	init_task.thread.sp = (unsigned long)&boot_task_port;
+	if (task_host->monotonic_ns(&clock_origin))
+		return -EIO;
+	return kobox_linux_memory_bind(&layout->memory);
+}
+
+#ifndef KOBOX_BOOT_RUNTIME
 __attribute__((visibility("default")))
 int kobox_linux_task_smp_boot(
 	const struct kobox_linux_task_layout *layout,
@@ -925,6 +1211,7 @@ int kobox_linux_task_smp_boot(
 	if (task_host->monotonic_ns(&clock_origin))
 		return -EIO;
 	task_report = report;
+	jump_label_init();
 	status = kobox_linux_memory_early_boot(&layout->memory, &memory_report);
 	if (status)
 		return status;
@@ -939,12 +1226,19 @@ int kobox_linux_task_smp_boot(
 	if (status)
 		return status;
 	sched_init();
+	init_task.flags |= PF_IDLE;
 	workqueue_init_early();
 	rcu_init();
+	tick_init();
 	timers_init();
 	hrtimers_init();
 	softirq_init();
+	status = clocksource_register_hz(&host_clocksource, NSEC_PER_SEC);
+	if (status)
+		return status;
 	timekeeping_init();
+	sched_clock_init();
+	local_irq_disable();
 	call_function_init();
 	pid_idr_init();
 	cred_init();
@@ -978,8 +1272,12 @@ int kobox_linux_task_smp_boot(
 	status = sched_cpu_activate(0);
 	if (!status)
 		status = sched_cpu_activate(1);
+	/* CPU activation runs with IRQs enabled; CPU-starting/device setup do not. */
+	local_irq_disable();
 	if (!status)
 		status = sched_cpu_starting(0);
+	if (!status)
+		kobox_task_clock_init();
 	if (!status)
 		status = task_host->task_wake(secondary_idle_port->host_task);
 	if (status)
@@ -993,13 +1291,15 @@ int kobox_linux_task_smp_boot(
 	if (status < 0)
 		return status;
 	while (!smp_load_acquire(&gate_done)) {
-		uint64_t sequence = task_host->cpu_notification_sequence(0);
-
 		if (need_resched())
 			schedule_idle();
-		else if (!smp_load_acquire(&gate_done) &&
-			 task_host->cpu_wait(0, sequence, &sequence))
-			BUG();
+		else if (!smp_load_acquire(&gate_done)) {
+			local_irq_disable();
+			default_idle_call();
+			if (!rcu_is_watching_curr_cpu())
+				BUG();
+			task_report->idle_exits[0]++;
+		}
 	}
 	status = READ_ONCE(gate_status);
 	if (status)
@@ -1007,6 +1307,7 @@ int kobox_linux_task_smp_boot(
 	report->upstream_schedule_ready = report->context_switches != 0;
 	report->upstream_try_to_wake_up_ready =
 		report->local_switch_ready && report->remote_switch_ready;
+	kobox_task_clock_stop();
 	WRITE_ONCE(secondary_idle_port->shutdown, true);
 	status = task_host->cpu_notify(1, KOBOX_LINUX_TASK_RESCHEDULE);
 	if (!status)
@@ -1017,11 +1318,6 @@ int kobox_linux_task_smp_boot(
 	secondary_idle_port->host_task = NULL;
 	set_cpu_active(1, false);
 	set_cpu_online(1, false);
-	return report->upstream_schedule_ready &&
-		report->upstream_try_to_wake_up_ready &&
-		report->current_percpu_ready && report->local_switch_ready &&
-		report->remote_switch_ready && report->migration_ready &&
-		report->affinity_ready && report->remote_reschedule_ipis &&
-		report->preempt_disable_ready && report->irq_disable_ready &&
-		report->exit_join_ready ? 0 : -EINVAL;
+	return task_smp_report_ready() ? 0 : -EINVAL;
 }
+#endif

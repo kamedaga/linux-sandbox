@@ -16,6 +16,8 @@
 enum kobox_linux_task_notification {
 	KOBOX_LINUX_TASK_RESCHEDULE = 0,
 	KOBOX_LINUX_TASK_CALL_FUNCTION,
+	KOBOX_LINUX_TASK_VM_EVENT,
+	KOBOX_LINUX_TASK_CLOCKEVENT,
 };
 
 struct kobox_linux_task_host_operations {
@@ -45,6 +47,9 @@ struct kobox_linux_task_host_operations {
 	uint64_t (*cpu_notification_sequence)(uint32_t cpu);
 	int (*monotonic_ns)(uint64_t *time_out);
 	int (*realtime_ns)(uint64_t *time_out);
+	int (*clockevent_arm)(uint32_t cpu, uint64_t monotonic_deadline_ns);
+	int (*clockevent_cancel)(uint32_t cpu);
+	int (*clockevent_stop)(uint32_t cpu);
 };
 
 struct kobox_linux_task_layout {
@@ -60,6 +65,12 @@ struct kobox_linux_task_report {
 	uint64_t identity;
 	uint64_t context_switches;
 	uint64_t remote_reschedule_ipis;
+	uint64_t hardirq_entries[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
+	uint64_t idle_irq_entries[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
+	uint64_t idle_entries[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
+	uint64_t idle_exits[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
+	uint64_t tick_progress[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
+	uint8_t high_resolution_ready[KOBOX_LINUX_MEMORY_LOGICAL_CPUS];
 	uint32_t logical_cpu_count;
 	uint8_t upstream_schedule_ready;
 	uint8_t upstream_try_to_wake_up_ready;
@@ -77,6 +88,7 @@ typedef int (*kobox_linux_task_boot_fn)(
 	const struct kobox_linux_task_layout *layout,
 	struct kobox_linux_task_report *report);
 
+/* Machine IRQ entry/return: host masks IRQs on entry and restores on return. */
 typedef void (*kobox_linux_task_notification_fn)(
 	uint32_t cpu,
 	enum kobox_linux_task_notification notification,

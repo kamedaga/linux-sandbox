@@ -111,6 +111,28 @@ add_library(
 	host/posix/thread.c
 	host/posix/timer.c
 )
+enable_language(ASM)
+add_library(kobox_posix_vm STATIC host/posix/vm.c host/posix/vm_service.c)
+target_compile_features(kobox_posix_vm PRIVATE c_std_11)
+target_compile_options(kobox_posix_vm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(kobox_posix_vm PUBLIC kobox_posix_host)
+add_executable(kobox_posix_vm_client host/posix/vm_client.c host/posix/vm_syscall.S)
+target_compile_features(kobox_posix_vm_client PRIVATE c_std_11)
+target_compile_options(kobox_posix_vm_client PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_executable(kobox_posix_vm_test host/posix/vm_test.c)
+target_compile_features(kobox_posix_vm_test PRIVATE c_std_11)
+target_compile_options(kobox_posix_vm_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(kobox_posix_vm_test PRIVATE kobox_posix_vm)
+add_test(NAME kobox2.posix_vm_transport
+	COMMAND kobox_posix_vm_test $<TARGET_FILE:kobox_posix_vm_client>)
+set_tests_properties(kobox2.posix_vm_transport PROPERTIES TIMEOUT 30)
+add_executable(kobox_posix_vm_service_test host/posix/vm_service_test.c)
+target_compile_features(kobox_posix_vm_service_test PRIVATE c_std_11)
+target_compile_options(kobox_posix_vm_service_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(kobox_posix_vm_service_test PRIVATE kobox_posix_vm)
+add_test(NAME kobox2.posix_vm_service
+	COMMAND kobox_posix_vm_service_test $<TARGET_FILE:kobox_posix_vm_client>)
+set_tests_properties(kobox2.posix_vm_service PROPERTIES TIMEOUT 30)
 target_compile_features(kobox_posix_host PUBLIC c_std_11)
 set_target_properties(kobox_posix_host PROPERTIES C_EXTENSIONS OFF)
 target_compile_definitions(
@@ -181,10 +203,14 @@ if(KOBOX_LINUX_BOOT_BUILD_DIR)
 		DEPENDS
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/patches/ancestor-rw.patch"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../arch/x86/mm/pat/set_memory.c"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/port.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/build_shared_providers.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/provider.lds"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/cacheflush.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/pgtable_64_types.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/linux/init.h"
 			"${KOBOX_LINUX_BOOT_BUILD_DIR}/.config"
 			"${KOBOX_LINUX_BOOT_BUILD_DIR}/vmlinux"
@@ -220,6 +246,18 @@ endif()
 
 set(KOBOX_LINUX_TASK_BUILD_DIR "" CACHE PATH
 	"Canonical Linux build with the task/config preemption and SMP profile")
+set(KOBOX_LINUX_BOOT_RUNTIME_CORE "" CACHE FILEPATH
+	"Full core built by boot/build_boot_runtime.py --link, for the integrated Gate")
+set(KOBOX_LINUX_GEM_MODULE_DIR "" CACHE PATH
+	"Native modules built by boot/build_gem_modules.py for the same full core")
+option(KOBOX_LINUX_MEMORY_PRESSURE_GATES
+	"Run RAM/reclaim and allocator failure gates (core requires boot/pressure.config)" OFF)
+if(KOBOX_LINUX_GEM_MODULE_DIR AND NOT KOBOX_LINUX_BOOT_RUNTIME_CORE)
+	message(FATAL_ERROR "Native module tests require KOBOX_LINUX_BOOT_RUNTIME_CORE")
+endif()
+if(KOBOX_LINUX_BOOT_RUNTIME_CORE AND NOT KOBOX_LINUX_TASK_BUILD_DIR)
+	message(FATAL_ERROR "The boot runtime Gate requires KOBOX_LINUX_TASK_BUILD_DIR")
+endif()
 if(KOBOX_LINUX_TASK_BUILD_DIR)
 	set(_kobox_task_output "${CMAKE_CURRENT_BINARY_DIR}/linux-task")
 	set(_kobox_task_provider_build
@@ -248,7 +286,11 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 		DEPENDS
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/build_task_smp.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/port.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/time_port.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/time_gate.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/time_port.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/task/boot.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/current.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/irq_stack.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/mmu_context.h"
@@ -257,12 +299,16 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/switch_to.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/patches/ancestor-rw.patch"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../arch/x86/mm/pat/set_memory.c"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/memory/port.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/build_shared_providers.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/provider.lds"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/cacheflush.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/irqflags.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/percpu.h"
+			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/asm/pgtable_64_types.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/provider/include/linux/init.h"
 			"${KOBOX_LINUX_TASK_BUILD_DIR}/.config"
 			"${KOBOX_LINUX_TASK_BUILD_DIR}/vmlinux"
@@ -274,6 +320,185 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 		"${_kobox_task_boundary}"
 		"${_kobox_task_inventory}"
 	)
+	add_library(kobox_linux_posix_machine STATIC task/posix_machine.c)
+	target_compile_features(kobox_linux_posix_machine PRIVATE c_std_11)
+	target_compile_options(kobox_linux_posix_machine
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_link_libraries(kobox_linux_posix_machine PUBLIC kobox_posix_host)
+	add_executable(kobox_linux_boot_test
+		boot/boot_test.c boot/image.c boot/exception_posix.c mm/posix.c)
+	target_compile_features(kobox_linux_boot_test PRIVATE c_std_11)
+	target_compile_options(kobox_linux_boot_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_link_libraries(kobox_linux_boot_test
+		PRIVATE kobox_linux_posix_machine kobox_posix_vm ${CMAKE_DL_LIBS})
+	if(KOBOX_LINUX_BOOT_RUNTIME_CORE)
+		get_filename_component(_kobox_boot_runtime_dir
+			"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" DIRECTORY)
+		add_test(NAME kobox2.linux_boot_runtime_load
+			COMMAND "${Python3_EXECUTABLE}"
+				"${CMAKE_CURRENT_SOURCE_DIR}/boot/load_test.py"
+				--core "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+				--inputs "${_kobox_boot_runtime_dir}/linux-boot-inputs.json")
+		set_tests_properties(kobox2.linux_boot_runtime_load PROPERTIES
+			FIXTURES_SETUP kobox_full_boot_core TIMEOUT 30)
+		add_test(NAME kobox2.linux_boot_service_gate
+			COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}")
+		set_tests_properties(kobox2.linux_boot_service_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 30)
+		if(KOBOX_LINUX_GEM_MODULE_DIR)
+			set(_kobox_gem_modules)
+			foreach(_module IN ITEMS drivers/i2c/i2c-core.ko
+					drivers/gpu/drm/drm_panel_orientation_quirks.ko
+					drivers/gpu/drm/drm.ko drivers/gpu/drm/drm_shmem_helper.ko)
+				if(NOT EXISTS "${KOBOX_LINUX_GEM_MODULE_DIR}/${_module}")
+					message(FATAL_ERROR "Missing native module: ${_module}")
+				endif()
+				list(APPEND _kobox_gem_modules "${KOBOX_LINUX_GEM_MODULE_DIR}/${_module}")
+			endforeach()
+			add_test(NAME kobox2.linux_gem_module_prerequisite
+				COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+					--modules ${_kobox_gem_modules})
+			set_tests_properties(kobox2.linux_gem_module_prerequisite PROPERTIES
+				FIXTURES_REQUIRED kobox_full_boot_core
+				LABELS "linux-runtime;integration;linux-gem-prerequisite" TIMEOUT 30)
+			if(NOT EXISTS "${KOBOX_LINUX_GEM_MODULE_DIR}/kobox/gem/lifetime_test.ko")
+				message(FATAL_ERROR "Missing native GEM lifetime test module")
+			endif()
+			if(KOBOX_LINUX_MEMORY_PRESSURE_GATES)
+				foreach(_cleanup_case IN ITEMS vma object death_vma death_object)
+					set(_cleanup_argument --gem-cleanup)
+					if(_cleanup_case MATCHES "^death_")
+						string(APPEND _cleanup_argument "-death")
+					endif()
+					if(_cleanup_case MATCHES "object$")
+						string(APPEND _cleanup_argument "-object-last")
+					endif()
+					add_test(NAME "kobox2.linux_gem_cleanup_${_cleanup_case}"
+						COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+							${_cleanup_argument} $<TARGET_FILE:kobox_posix_vm_client>
+							${_kobox_gem_modules}
+							"${KOBOX_LINUX_GEM_MODULE_DIR}/kobox/gem/lifetime_test.ko")
+					set_tests_properties("kobox2.linux_gem_cleanup_${_cleanup_case}" PROPERTIES
+						FIXTURES_REQUIRED kobox_full_boot_core
+						LABELS "linux-runtime;integration;linux-buffer-cleanup" TIMEOUT 60)
+				endforeach()
+				foreach(_failure_case IN ITEMS vma object)
+					if(_failure_case STREQUAL "vma")
+						set(_failure_argument --gem-failure)
+					else()
+						set(_failure_argument --gem-failure-object-last)
+					endif()
+					add_test(NAME "kobox2.linux_gem_failure_${_failure_case}"
+						COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+							${_failure_argument} $<TARGET_FILE:kobox_posix_vm_client>
+							${_kobox_gem_modules}
+							"${KOBOX_LINUX_GEM_MODULE_DIR}/kobox/gem/lifetime_test.ko")
+					set_tests_properties("kobox2.linux_gem_failure_${_failure_case}" PROPERTIES
+						FIXTURES_REQUIRED kobox_full_boot_core
+						LABELS "linux-runtime;integration;linux-gem-pressure" TIMEOUT 60)
+				endforeach()
+			endif()
+			foreach(_case IN ITEMS vma_last object_last)
+				if(_case STREQUAL "vma_last")
+					set(_argument --gem)
+				else()
+					set(_argument --gem-object-last)
+				endif()
+				add_test(NAME kobox2.linux_gem_lifetime_${_case}
+					COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+						${_argument} $<TARGET_FILE:kobox_posix_vm_client> ${_kobox_gem_modules}
+						"${KOBOX_LINUX_GEM_MODULE_DIR}/kobox/gem/lifetime_test.ko")
+				set_tests_properties(kobox2.linux_gem_lifetime_${_case} PROPERTIES
+					FIXTURES_REQUIRED kobox_full_boot_core
+					LABELS "linux-runtime;integration;linux-gem-lifetime" TIMEOUT 30)
+			endforeach()
+		endif()
+		add_test(NAME kobox2.linux_timed_wait_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --timed-wait)
+		set_tests_properties(kobox2.linux_timed_wait_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 60)
+		add_test(NAME kobox2.linux_rcu_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --rcu)
+		set_tests_properties(kobox2.linux_rcu_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 60)
+		add_test(NAME kobox2.linux_workqueue_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --workqueue)
+		set_tests_properties(kobox2.linux_workqueue_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 90)
+		add_test(NAME kobox2.linux_cleanup_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --cleanup)
+		set_tests_properties(kobox2.linux_cleanup_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 90)
+		add_test(NAME kobox2.linux_full_foundation_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --all)
+		set_tests_properties(kobox2.linux_full_foundation_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 120)
+		add_test(NAME kobox2.linux_vfs_lifetime_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --vfs)
+		set_tests_properties(kobox2.linux_vfs_lifetime_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 90)
+		add_test(NAME kobox2.linux_shmem_pagecache_gate
+			COMMAND kobox_linux_boot_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" --shmem)
+		set_tests_properties(kobox2.linux_shmem_pagecache_gate PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core
+			LABELS "linux-runtime;integration;go-no-go" TIMEOUT 90)
+		if(KOBOX_LINUX_MEMORY_PRESSURE_GATES)
+			foreach(_pressure_case IN ITEMS pressure alloc-failure)
+				add_test(NAME "kobox2.linux_memory_${_pressure_case}"
+					COMMAND kobox_linux_boot_test
+						"${KOBOX_LINUX_BOOT_RUNTIME_CORE}" "--${_pressure_case}")
+				set_tests_properties("kobox2.linux_memory_${_pressure_case}" PROPERTIES
+					FIXTURES_REQUIRED kobox_full_boot_core
+					LABELS "linux-runtime;integration;linux-memory-pressure" TIMEOUT 60)
+			endforeach()
+			add_test(NAME kobox2.linux_mm_vma_probe_pressure_fault
+				COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+					--vm-probe-pressure-fault $<TARGET_FILE:kobox_posix_vm_client>)
+			set_tests_properties(kobox2.linux_mm_vma_probe_pressure_fault PROPERTIES
+				FIXTURES_REQUIRED kobox_full_boot_core
+				LABELS "linux-runtime;integration;linux-buffer-cleanup" TIMEOUT 60)
+		endif()
+		foreach(_vm_case IN ITEMS probe probe_ro probe_reuse probe_irq probe_truncate
+					  probe_late_fault probe_exit_publish probe_exit probe_lifetime
+					  probe_death probe_rollback)
+			string(REPLACE "_" "-" _vm_option "${_vm_case}")
+			add_test(NAME "kobox2.linux_mm_vma_${_vm_case}"
+				COMMAND kobox_linux_boot_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}"
+					"--vm-${_vm_option}" $<TARGET_FILE:kobox_posix_vm_client>)
+			set_tests_properties("kobox2.linux_mm_vma_${_vm_case}" PROPERTIES
+				FIXTURES_REQUIRED kobox_full_boot_core
+				LABELS "linux-runtime;integration;go-no-go;linux-mm-vma" TIMEOUT 30)
+		endforeach()
+	endif()
+	add_executable(kobox_linux_exception_test
+		boot/exception_test.c boot/exception_posix.c)
+	target_compile_features(kobox_linux_exception_test PRIVATE c_std_11)
+	target_compile_options(kobox_linux_exception_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_link_libraries(kobox_linux_exception_test PRIVATE kobox_posix_host)
+	add_test(NAME kobox2.linux_exception_transport COMMAND kobox_linux_exception_test)
+	set_tests_properties(kobox2.linux_exception_transport PROPERTIES TIMEOUT 30)
+	add_executable(kobox_linux_boot_image_test boot/image_test.c boot/image.c)
+	target_compile_features(kobox_linux_boot_image_test PRIVATE c_std_11)
+	target_compile_options(kobox_linux_boot_image_test
+		PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_link_libraries(kobox_linux_boot_image_test
+		PRIVATE kobox_posix_host ${CMAKE_DL_LIBS})
 	add_executable(kobox_linux_task_smp_test task/task_smp_test.c)
 	target_compile_features(kobox_linux_task_smp_test PRIVATE c_std_11)
 	set_target_properties(kobox_linux_task_smp_test PROPERTIES C_EXTENSIONS OFF)
@@ -282,7 +507,7 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 	target_include_directories(kobox_linux_task_smp_test
 		PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/task")
 	target_link_libraries(kobox_linux_task_smp_test
-		PRIVATE kobox_posix_host ${CMAKE_DL_LIBS})
+		PRIVATE kobox_linux_posix_machine ${CMAKE_DL_LIBS})
 	add_dependencies(kobox_linux_task_smp_test kobox_linux_task_smp_artifact)
 	add_test(
 		NAME kobox2.linux_task_smp_gate
@@ -295,6 +520,26 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 	add_test(NAME kobox2.linux_task_smp_build_unit
 		COMMAND "${Python3_EXECUTABLE}"
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/build_task_smp_test.py")
+	add_test(NAME kobox2.linux_boot_runtime_build_unit
+		COMMAND "${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/boot/build_boot_runtime_test.py")
+	add_test(NAME kobox2.linux_gem_module_build_unit
+		COMMAND "${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/boot/build_gem_modules_test.py")
+	add_test(NAME kobox2.linux_boot_elf_layout
+		COMMAND "${Python3_EXECUTABLE}"
+			"${CMAKE_CURRENT_SOURCE_DIR}/boot/layout_test.py"
+			--source-tree "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--provider-build-dir "${KOBOX_LINUX_TASK_BUILD_DIR}"
+			--output-dir "${CMAKE_CURRENT_BINARY_DIR}/linux-boot-layout-test")
+	set_tests_properties(kobox2.linux_boot_elf_layout PROPERTIES TIMEOUT 30)
+	add_test(NAME kobox2.linux_boot_image_alias
+		COMMAND kobox_linux_boot_image_test
+			"${CMAKE_CURRENT_BINARY_DIR}/linux-boot-layout-test/layout-fixture.so")
+	set_tests_properties(kobox2.linux_boot_elf_layout PROPERTIES
+		FIXTURES_SETUP kobox_boot_layout)
+	set_tests_properties(kobox2.linux_boot_image_alias PROPERTIES
+		FIXTURES_REQUIRED kobox_boot_layout TIMEOUT 30)
 endif()
 
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)

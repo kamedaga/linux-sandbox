@@ -2,6 +2,10 @@
 #ifndef KOBOX_PROVIDER_LINUX_STATIC_CALL_TYPES_H
 #define KOBOX_PROVIDER_LINUX_STATIC_CALL_TYPES_H
 
+#ifdef KOBOX_BOOT_RUNTIME
+#include_next <linux/static_call_types.h>
+#else
+
 /* Provider text is immutable; select Linux's indirect static-call form. */
 #ifdef CONFIG_HAVE_STATIC_CALL_INLINE
 #define KOBOX_RESTORE_HAVE_STATIC_CALL_INLINE
@@ -25,5 +29,7 @@
 #define CONFIG_HAVE_STATIC_CALL_INLINE 1
 #undef KOBOX_RESTORE_HAVE_STATIC_CALL_INLINE
 #endif
+
+#endif /* KOBOX_BOOT_RUNTIME */
 
 #endif /* KOBOX_PROVIDER_LINUX_STATIC_CALL_TYPES_H */

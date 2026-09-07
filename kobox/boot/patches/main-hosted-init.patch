@@ -1,0 +1,25 @@
+--- a/init/main.c
++++ b/init/main.c
+@@ -109,6 +109,10 @@
+ #include <linux/time_namespace.h>
+ #include <net/net_namespace.h>
+ 
++#ifdef KOBOX_BOOT_RUNTIME
++#include <linux/kobox_boot.h>
++#endif
++
+ #include <asm/io.h>
+ #include <asm/setup.h>
+ #include <asm/sections.h>
+@@ -1462,6 +1466,11 @@
+ 
+ 	do_sysctl_args();
+ 
++#ifdef KOBOX_BOOT_RUNTIME
++	if (kobox_linux_boot_host_init())
++		kobox_linux_boot_run_init();
++#endif
++
+ 	if (ramdisk_execute_command) {
+ 		ret = run_init_process(ramdisk_execute_command);
+ 		if (!ret)

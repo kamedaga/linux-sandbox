@@ -16,6 +16,8 @@ class TaskBuildTest(unittest.TestCase):
     config = "\n".join((
         "CONFIG_SMP=y", "CONFIG_NR_CPUS=2", "CONFIG_PREEMPT=y",
         "CONFIG_PREEMPT_COUNT=y",
+        "CONFIG_HIGH_RES_TIMERS=y", "CONFIG_CONTEXT_TRACKING_IDLE=y",
+        "CONFIG_BUG=y", "CONFIG_RCU_EQS_DEBUG=y",
     ))
 
     def test_static_preempt_smp_required(self):

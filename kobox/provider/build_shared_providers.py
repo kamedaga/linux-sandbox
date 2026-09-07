@@ -219,7 +219,7 @@ def make_arguments(arguments, targets, include_overlay=False):
         "-C",
         arguments.source_tree,
         f"O={arguments.provider_build_dir}",
-        "ARCH=x86_64",
+        f"ARCH={getattr(arguments, 'architecture', 'x86_64')}",
         f"LLVM={arguments.llvm}",
         f"CC={arguments.cc}",
         f"LD={arguments.ld}",

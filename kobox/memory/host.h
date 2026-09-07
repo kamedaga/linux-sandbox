@@ -16,15 +16,21 @@
 enum kobox_linux_memory_protection {
 	KOBOX_LINUX_MEMORY_READ = 1U << 0,
 	KOBOX_LINUX_MEMORY_WRITE = 1U << 1,
+	KOBOX_LINUX_MEMORY_EXECUTE = 1U << 2,
 };
 
 struct kobox_linux_memory_host_operations {
 	size_t size;
 	uint64_t identity;
+	/* Leaf host memory operations: may execute with guest IRQs/preemption
+	 * disabled. Must not reenter or wait for work in the hosted Linux core.
+	 */
 	int (*map)(void *window, size_t window_offset, void *backing,
 		   size_t backing_offset, size_t size, unsigned int protection,
 		   void **address_out);
 	int (*reset)(void *window, size_t window_offset, size_t size);
+	int (*protect)(void *window, size_t window_offset, size_t size,
+		       unsigned int protection);
 };
 
 struct kobox_linux_memory_layout {
@@ -32,6 +38,7 @@ struct kobox_linux_memory_layout {
 	uint64_t identity;
 	const struct kobox_linux_memory_host_operations *operations;
 	void *ram_backing;
+	void *direct_window;
 	void *vmemmap_window;
 	void *vmalloc_window;
 	void *direct_map;

@@ -1,0 +1,26 @@
+--- a/arch/x86/kernel/head_64.S
++++ b/arch/x86/kernel/head_64.S
+@@ -138,3 +138,3 @@
+-	__INITRODATA
++	__INITDATA
+ SYM_DATA_LOCAL(.Lcommon_startup_64, .quad common_startup_64)
+ 
+@@ -182,2 +182,4 @@
+-	movq	phys_base(%rip), %rax
+-	addq	$(init_top_pgt - __START_KERNEL_map), %rax
++	leaq	init_top_pgt(%rip), %rax
++	movabsq	$__START_KERNEL_map, %rdx
++	subq	%rdx, %rax
++	addq	phys_base(%rip), %rax
+@@ -314,1 +316,2 @@
+-	movq	__per_cpu_offset(,%rcx,8), %rdx
++	leaq	__per_cpu_offset(%rip), %rdx
++	movq	(%rdx,%rcx,8), %rdx
+@@ -325,1 +328,2 @@
+-	movq	current_task(%rdx), %rax
++	leaq	current_task(%rip), %rax
++	movq	(%rax,%rdx), %rax
+@@ -346,1 +350,2 @@
+-	leaq	gdt_page(%rdx), %rax
++	leaq	gdt_page(%rip), %rax
++	addq	%rdx, %rax

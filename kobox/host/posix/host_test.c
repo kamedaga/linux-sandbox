@@ -24,6 +24,13 @@ struct notification_state {
 	atomic_uint cpu_mismatch;
 };
 
+struct nested_irq_case {
+	struct kobox_posix_cpu cpu;
+	atomic_uint phase;
+	atomic_uint nested;
+	atomic_uint errors;
+};
+
 struct same_cpu_case {
 	struct kobox_posix_cpu *cpu;
 	atomic_uint *active;
@@ -65,11 +72,13 @@ struct irq_case {
 	struct notification_state *notifications;
 	struct kobox_posix_permit ready;
 	atomic_bool enable;
+	enum kobox_posix_notification notification;
 };
 
 struct timer_case {
 	struct kobox_posix_permit fired;
 	atomic_uint fire_count;
+	atomic_uint_fast64_t fired_ns;
 };
 
 static int deadline_after(uint64_t interval_ns, uint64_t *deadline_out)
@@ -277,15 +286,15 @@ static void *irq_disabled_worker(void *argument)
 	if (!status)
 		status = kobox_posix_cpu_irq_enable(test->cpu);
 	if (!status && (atomic_load_explicit(
-		    &test->notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ],
+		    &test->notifications->count[test->notification],
 		    memory_order_acquire) != 0 ||
 		    kobox_posix_cpu_pending(
-			    test->cpu, KOBOX_POSIX_NOTIFICATION_IRQ) != 3))
+			    test->cpu, test->notification) != 3))
 		status = EIO;
 	if (!status)
 		status = kobox_posix_cpu_irq_enable(test->cpu);
 	if (!status && atomic_load_explicit(
-		    &test->notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ],
+		    &test->notifications->count[test->notification],
 		    memory_order_acquire) != 3)
 		status = EIO;
 	if (kobox_posix_cpu_leave(test->cpu) && !status)
@@ -296,7 +305,11 @@ static void *irq_disabled_worker(void *argument)
 static void timer_fire(void *argument)
 {
 	struct timer_case *test = argument;
+	uint64_t now;
 
+	if (kobox_posix_monotonic_ns(&now))
+		__builtin_trap();
+	atomic_store_explicit(&test->fired_ns, now, memory_order_relaxed);
 	atomic_fetch_add_explicit(&test->fire_count, 1, memory_order_relaxed);
 	(void)kobox_posix_permit_post(&test->fired, 1);
 }
@@ -380,6 +393,7 @@ static int test_basic_primitives(void)
 
 	CHECK(kobox_posix_permit_init(&timer_test.fired, 0) == 0);
 	atomic_init(&timer_test.fire_count, 0);
+	atomic_init(&timer_test.fired_ns, 0);
 	CHECK(kobox_posix_oneshot_timer_init(
 		&timer, timer_fire, &timer_test) == 0);
 	CHECK(deadline_after(SHORT_DELAY_NS, &deadline) == 0);
@@ -395,6 +409,22 @@ static int test_basic_primitives(void)
 	CHECK(deadline_after(SHORT_DELAY_NS * 2, &deadline) == 0);
 	CHECK(kobox_posix_permit_wait(
 		&timer_test.fired, deadline) == ETIMEDOUT);
+	/* Cancel must leave the device usable; reprogram in both directions. */
+	CHECK(deadline_after(SHORT_DELAY_NS, &before) == 0);
+	CHECK(kobox_posix_oneshot_timer_arm(&timer, before) == 0);
+	CHECK(deadline_after(SHORT_DELAY_NS * 4, &after) == 0);
+	CHECK(kobox_posix_oneshot_timer_arm(&timer, after) == 0);
+	CHECK(kobox_posix_permit_wait(&timer_test.fired, before) == ETIMEDOUT);
+	CHECK(deadline_after(TEST_TIMEOUT_NS, &deadline) == 0);
+	CHECK(kobox_posix_permit_wait(&timer_test.fired, deadline) == 0);
+	CHECK(atomic_load_explicit(&timer_test.fired_ns, memory_order_acquire) >= after);
+	CHECK(deadline_after(TEST_TIMEOUT_NS, &after) == 0);
+	CHECK(kobox_posix_oneshot_timer_arm(&timer, after) == 0);
+	CHECK(deadline_after(SHORT_DELAY_NS, &before) == 0);
+	CHECK(kobox_posix_oneshot_timer_arm(&timer, before) == 0);
+	CHECK(kobox_posix_permit_wait(&timer_test.fired, after) == 0);
+	CHECK(atomic_load_explicit(&timer_test.fired_ns, memory_order_acquire) >= before);
+	CHECK(atomic_load_explicit(&timer_test.fire_count, memory_order_acquire) == 3);
 	CHECK(kobox_posix_oneshot_timer_destroy(&timer) == 0);
 	CHECK(kobox_posix_permit_destroy(&timer_test.fired) == 0);
 	return 0;
@@ -543,14 +573,15 @@ static int test_cpu_bound_notification(
 
 static int test_irq_disable_pending(
 	struct kobox_posix_cpu *cpu,
-	struct notification_state *notifications)
+	struct notification_state *notifications,
+	enum kobox_posix_notification notification)
 {
 	struct kobox_posix_thread thread = {0};
-	struct irq_case test = {.cpu = cpu, .notifications = notifications};
+	struct irq_case test = {.cpu = cpu, .notifications = notifications, .notification = notification};
 	uint64_t deadline;
 
 	atomic_store_explicit(
-		&notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ], 0,
+		&notifications->count[notification], 0,
 		memory_order_release);
 	atomic_init(&test.enable, false);
 	CHECK(kobox_posix_permit_init(&test.ready, 0) == 0);
@@ -559,21 +590,21 @@ static int test_irq_disable_pending(
 	CHECK(deadline_after(TEST_TIMEOUT_NS, &deadline) == 0);
 	CHECK(kobox_posix_permit_wait(&test.ready, deadline) == 0);
 	CHECK(kobox_posix_cpu_notify(
-		cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+		cpu, notification) == 0);
 	CHECK(kobox_posix_cpu_notify(
-		cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+		cpu, notification) == 0);
 	CHECK(kobox_posix_cpu_notify(
-		cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+		cpu, notification) == 0);
 	delay_ns(SHORT_DELAY_NS);
 	CHECK(atomic_load_explicit(
-		&notifications->count[KOBOX_POSIX_NOTIFICATION_IRQ],
+		&notifications->count[notification],
 		memory_order_acquire) == 0);
 	CHECK(kobox_posix_cpu_pending(
-		cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 3);
+		cpu, notification) == 3);
 	atomic_store_explicit(&test.enable, true, memory_order_release);
 	CHECK(join_success(&thread) == 0);
 	CHECK(kobox_posix_cpu_pending(
-		cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+		cpu, notification) == 0);
 	CHECK(kobox_posix_permit_destroy(&test.ready) == 0);
 	return 0;
 }
@@ -605,6 +636,96 @@ static int test_idle_pending_before_sequence(
 	return 0;
 }
 
+static void nested_irq_callback(void *context, uint32_t cpu,
+				enum kobox_posix_notification notification,
+				uint64_t count)
+{
+	struct nested_irq_case *test = context;
+	uint64_t deadline;
+	uint64_t now;
+
+	if (cpu != test->cpu.logical_cpu)
+		atomic_fetch_add(&test->errors, 1);
+	if (!kobox_posix_cpu_irq_disabled(&test->cpu))
+		atomic_fetch_add(&test->errors, 1);
+	if (notification == KOBOX_POSIX_NOTIFICATION_TICK) {
+		if (atomic_load_explicit(&test->phase, memory_order_acquire) >= 3)
+			atomic_fetch_add(&test->errors, 1);
+		atomic_fetch_add_explicit(&test->nested, count, memory_order_release);
+		return;
+	}
+	if (deadline_after(TEST_TIMEOUT_NS, &deadline))
+		__builtin_trap();
+	atomic_store_explicit(&test->phase, 1, memory_order_release);
+	while (atomic_load_explicit(&test->phase, memory_order_acquire) != 2) {
+		if (kobox_posix_monotonic_ns(&now) || now >= deadline)
+			__builtin_trap();
+	}
+	if (atomic_load_explicit(&test->nested, memory_order_acquire))
+		atomic_fetch_add(&test->errors, 1);
+	if (kobox_posix_cpu_irq_enable(&test->cpu) ||
+	    atomic_load_explicit(&test->nested, memory_order_acquire) != 1)
+		atomic_fetch_add(&test->errors, 1);
+	/* The second IRQ is produced later, after the synchronous drain ended. */
+	atomic_store_explicit(&test->phase, 0, memory_order_release);
+	while (atomic_load_explicit(&test->nested, memory_order_acquire) != 2) {
+		if (kobox_posix_monotonic_ns(&now) || now >= deadline) {
+			atomic_fetch_add(&test->errors, 1);
+			break;
+		}
+	}
+	if (kobox_posix_cpu_irq_disable(&test->cpu))
+		atomic_fetch_add(&test->errors, 1);
+	atomic_store_explicit(&test->phase, 3, memory_order_release);
+}
+
+static void *nested_irq_sender(void *argument)
+{
+	struct nested_irq_case *test = argument;
+	uint64_t deadline;
+	uint64_t now;
+
+	if (deadline_after(TEST_TIMEOUT_NS, &deadline))
+		return (void *)1;
+	while (atomic_load_explicit(&test->phase, memory_order_acquire) != 1) {
+		if (kobox_posix_monotonic_ns(&now) || now >= deadline)
+			return (void *)1;
+	}
+	if (kobox_posix_cpu_notify(&test->cpu, KOBOX_POSIX_NOTIFICATION_TICK))
+		return (void *)1;
+	atomic_store_explicit(&test->phase, 2, memory_order_release);
+	while (atomic_load_explicit(&test->phase, memory_order_acquire) != 0) {
+		if (kobox_posix_monotonic_ns(&now) || now >= deadline)
+			return (void *)1;
+	}
+	if (kobox_posix_cpu_notify(&test->cpu, KOBOX_POSIX_NOTIFICATION_TICK))
+		return (void *)1;
+	return NULL;
+}
+
+static int test_nested_irq(unsigned int cpu)
+{
+	struct nested_irq_case test = {0};
+	struct kobox_posix_thread sender = {0};
+	void *result;
+
+	atomic_init(&test.phase, 4);
+	atomic_init(&test.nested, 0);
+	atomic_init(&test.errors, 0);
+	CHECK(kobox_posix_cpu_init(&test.cpu, cpu, nested_irq_callback, &test) == 0);
+	CHECK(kobox_posix_thread_start(&sender, nested_irq_sender, &test) == 0);
+	CHECK(kobox_posix_cpu_enter(&test.cpu) == 0);
+	CHECK(kobox_posix_cpu_notify(&test.cpu, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+	CHECK(!kobox_posix_cpu_irq_disabled(&test.cpu));
+	CHECK(kobox_posix_cpu_leave(&test.cpu) == 0);
+	CHECK(kobox_posix_thread_join(&sender, &result) == 0);
+	CHECK(result == NULL);
+	CHECK(kobox_posix_cpu_destroy(&test.cpu) == 0);
+	CHECK(atomic_load(&test.nested) == 2);
+	CHECK(atomic_load(&test.errors) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	struct kobox_posix_cpu cpus[2] = {{0}};
@@ -626,11 +747,15 @@ int main(void)
 		&cpus[0], &notifications, KOBOX_POSIX_NOTIFICATION_TICK) == 0);
 	CHECK(test_cpu_bound_notification(
 		&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
-	CHECK(test_irq_disable_pending(&cpus[1], &notifications) == 0);
+	CHECK(test_irq_disable_pending(&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+	CHECK(test_irq_disable_pending(&cpus[0], &notifications, KOBOX_POSIX_NOTIFICATION_VM_EVENT) == 0);
+	CHECK(test_irq_disable_pending(&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_VM_EVENT) == 0);
 	CHECK(test_idle_pending_before_sequence(&cpus[0], &notifications) == 0);
 	CHECK(atomic_load_explicit(
 		&notifications.cpu_mismatch, memory_order_acquire) == 0);
 	CHECK(kobox_posix_cpu_destroy(&cpus[1]) == 0);
 	CHECK(kobox_posix_cpu_destroy(&cpus[0]) == 0);
+	CHECK(test_nested_irq(0) == 0);
+	CHECK(test_nested_irq(1) == 0);
 	return 0;
 }

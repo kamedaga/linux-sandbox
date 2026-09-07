@@ -9,6 +9,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -308,8 +309,62 @@ def selected_definition(symbol, definitions, linked_symbols):
         raise MemoryBuildError(str(error)) from error
 
 
-def prepare_object(arguments, source_object, support_defined):
+def kbuild_compile_commands(saved, owner, original, staged, output):
+    """Replay native compiler/objtool commands without shell evaluation."""
+    tokens = shlex.split(saved)
+    if tokens.count(";") != 1:
+        raise MemoryBuildError(f"unexpected Kbuild compiler recipe: {owner}")
+    separator = tokens.index(";")
+    compiler, objtool = tokens[:separator], tokens[separator + 1:]
+    if (compiler.count(str(original)) != 1 or compiler.count(owner) != 1 or
+            not objtool or objtool[0] != "./tools/objtool/objtool" or
+            objtool[-1] != owner):
+        raise MemoryBuildError(f"unexpected Kbuild compiler inputs: {owner}")
+    return [[str(output) if item == owner else
+             str(staged) if item == str(original) else
+             "-Wp,-MMD," + str(output.with_suffix(".d")) if item.startswith("-Wp,-MMD,") else
+             item for item in command] for command in (compiler, objtool)]
+
+
+def stage_native_source(arguments, source_name):
+    original = arguments.source_tree / source_name
+    if source_name != "arch/x86/mm/pat/set_memory.c":
+        return original
+    patch = SCRIPT_DIR / "patches/ancestor-rw.patch"
+    staged = arguments.output_dir / ".native-sources" / source_name
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    run(["patch", "--batch", "--fuzz=0", "--no-backup-if-mismatch",
+         "--output", staged, original, patch])
+    if not hasattr(arguments, "native_source_patches"):
+        arguments.native_source_patches = {}
+    arguments.native_source_patches[source_name] = {
+        "source": source_name, "source_sha256": sha256(original),
+        "patch": "kobox/memory/patches/ancestor-rw.patch",
+        "patch_sha256": sha256(patch), "hosted_source_sha256": sha256(staged),
+    }
+    return staged
+
+
+def native_object(arguments, source_object):
     source = arguments.provider_build_dir / source_object
+    if source_object != "arch/x86/mm/pat/set_memory.o":
+        return source
+    source_name = str(pathlib.PurePosixPath(source_object).with_suffix(".c"))
+    staged = stage_native_source(arguments, source_name)
+    output = arguments.output_dir / ".native-objects" / source_object
+    output.parent.mkdir(parents=True, exist_ok=True)
+    saved = source.with_name("." + source.name + ".cmd").read_text().splitlines()[0]
+    for command in kbuild_compile_commands(saved.split(" := ", 1)[1], source_object,
+            arguments.source_tree / source_name, staged, output):
+        run(command, cwd=arguments.provider_build_dir)
+    if defined_symbols(source, arguments.nm) != defined_symbols(output, arguments.nm):
+        raise MemoryBuildError(f"native patch changed definitions: {source_object}")
+    arguments.native_source_patches[source_name]["object_sha256"] = sha256(output)
+    return output
+
+
+def prepare_object(arguments, source_object, support_defined):
+    source = native_object(arguments, source_object)
     overlaps = defined_symbols(source, arguments.nm) & support_defined
     destination = arguments.output_dir / ".objects" / source_object
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -480,7 +535,8 @@ def build_phase_boundary(arguments, definitions):
     return output
 
 
-def compile_linux_objects(arguments, source_objects):
+def compile_linux_objects(arguments, source_objects, *, build_targets=None,
+                          external_module=None):
     namespace = types.SimpleNamespace(
         make=arguments.make,
         source_tree=arguments.source_tree,
@@ -488,39 +544,52 @@ def compile_linux_objects(arguments, source_objects):
         llvm=arguments.llvm,
         cc=arguments.cc,
         ld=arguments.ld,
-        jobs=1,
+        jobs=getattr(arguments, "jobs", 1),
+        architecture=getattr(arguments, "architecture", "x86_64"),
     )
-    targets = sorted(
+    outputs = sorted(
         item for item in source_objects if item != "vmlinux-linker-defined"
     )
+    targets = list(build_targets) if build_targets is not None else outputs
     if not targets:
         return
     architecture_include = getattr(arguments, "architecture_include", None)
+    extra_includes = getattr(arguments, "extra_include_dirs", ())
     overlay_identity = None
     if architecture_include:
         digest = hashlib.sha256()
-        for header in sorted(architecture_include.rglob("*.h")):
-            digest.update(str(header.relative_to(architecture_include)).encode())
-            digest.update(b"\0")
-            digest.update(header.read_bytes())
+        for root in [*extra_includes, architecture_include]:
+            for header in sorted(root.rglob("*.h")):
+                digest.update(str(header.relative_to(root)).encode())
+                digest.update(b"\0")
+                digest.update(header.read_bytes())
         overlay_identity = digest.hexdigest()
     command = provider.make_arguments(namespace, tuple(targets), include_overlay=True)
+    if external_module is not None:
+        command.insert(-len(targets), f"M={arguments.source_tree / external_module}")
+        command.insert(-len(targets), f"MO={arguments.provider_build_dir / external_module}")
+    if getattr(arguments, "kernel_release", None):
+        command.insert(-len(targets), f"KERNELRELEASE={arguments.kernel_release}")
     for index, item in enumerate(command):
         if str(item).startswith("LINUXINCLUDE=") and getattr(
             arguments, "architecture_include", None
         ):
             command[index] = str(item).replace(
                 "LINUXINCLUDE=",
-                f"LINUXINCLUDE=-I{arguments.architecture_include} ", 1
+                "LINUXINCLUDE=" + " ".join(
+                    f"-I{path}" for path in [*extra_includes, arguments.architecture_include]
+                ) + " ", 1
             )
         if str(item).startswith("KCFLAGS="):
             command[index] = (
                 str(item) + " -DKOBOX_PROVIDER_FUNCTION_SECTIONS=1"
-                " -fvisibility=hidden"
+                " -fvisibility=hidden -DKOBOX_HOSTED_RAM=1"
             )
             # A newly added overlay has no dependency in an older .o.cmd yet.
             if overlay_identity:
                 command[index] += f" -DKOBOX_ARCH_OVERLAY_ID=kobox_{overlay_identity}"
+            if getattr(arguments, "extra_cflags", None):
+                command[index] += " " + " ".join(arguments.extra_cflags)
     objtool_command = (
         arguments.canonical_build_dir / "tools/objtool/.weak.o.cmd"
     )
@@ -549,7 +618,7 @@ def compile_linux_objects(arguments, source_objects):
     except provider.ProviderBuildError as error:
         raise MemoryBuildError(str(error)) from error
     missing = [
-        item for item in targets
+        item for item in outputs
         if not (arguments.provider_build_dir / item).is_file()
     ]
     if missing:
@@ -767,6 +836,7 @@ def build(arguments):
         "gate_symbols": GATE_SYMBOLS,
         "host_imports": sorted(HOST_IMPORTS),
         "hosted_architecture_symbols": sorted(support_defined),
+        "source_patches": getattr(arguments, "native_source_patches", {}),
     }
     arguments.inventory.write_text(
         json.dumps(inventory, indent=2, sort_keys=True) + "\n",

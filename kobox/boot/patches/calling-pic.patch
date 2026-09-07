@@ -1,0 +1,12 @@
+--- a/arch/x86/entry/calling.h
++++ b/arch/x86/entry/calling.h
+@@ -419,1 +419,8 @@
+-	movq	__per_cpu_offset(, \reg, 8), \reg
++	.ifc \reg,%rdx
++	.error "GET_PERCPU_BASE requires a result register other than rdx"
++	.endif
++	pushq	%rdx
++	leaq	__per_cpu_offset(%rip), %rdx
++	movq	(%rdx, \reg, 8), \reg
++	popq	%rdx
++

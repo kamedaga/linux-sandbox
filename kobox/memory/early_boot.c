@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+#define KOBOX_HOSTED_RAM 1
+
 #include "host.h"
+#include "port.h"
+#ifdef KOBOX_BOOT_RUNTIME
+#include "../mm/port.h"
+#endif
 
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
@@ -18,8 +24,16 @@
 #include <linux/vmalloc.h>
 
 #include <asm/page.h>
+#include <asm/pgalloc.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
+
+#ifndef KOBOX_BOOT_RUNTIME
+/* Isolated pre-boot fixtures have no panic console. Mapping failure is
+ * nevertheless fatal; it must never be reported as a completed operation.
+ */
+#define panic(...) __builtin_trap()
+#endif
 
 #define KOBOX_MEMORY_MINIMUM_RAM_SIZE (128UL << 20)
 #define KOBOX_MEMORY_TEST_SLAB_SIZE 173U
@@ -34,6 +48,7 @@ extern void sparse_init(void);
 
 unsigned long page_offset_base;
 unsigned long vmalloc_base;
+unsigned long kobox_memory_vmalloc_end;
 unsigned long vmemmap_base;
 unsigned long phys_base;
 pteval_t __default_kernel_pte_mask = ~0UL;
@@ -66,6 +81,7 @@ unsigned int smpboot_control;
 unsigned int __max_threads_per_core = 1;
 int __max_smt_threads = 1;
 struct cpumask __cpu_primary_thread_mask;
+#ifndef KOBOX_BOOT_RUNTIME
 struct cpumask __cpu_possible_mask;
 struct cpumask __cpu_online_mask;
 struct cpumask __cpu_enabled_mask;
@@ -75,13 +91,20 @@ struct cpumask __cpu_dying_mask;
 atomic_t __num_online_cpus = ATOMIC_INIT(1);
 unsigned int nr_cpu_ids = KOBOX_LINUX_MEMORY_LOGICAL_CPUS;
 int __boot_cpu_id;
+#endif
 int after_bootmem;
 int kernel_set_to_readonly;
+#ifndef KOBOX_BOOT_RUNTIME
 enum system_states system_state = SYSTEM_BOOTING;
+#endif
+#ifndef KOBOX_TASK_PORT_PHASE
 u64 jiffies_64 __cacheline_aligned_in_smp = INITIAL_JIFFIES;
+#endif
+#ifndef KOBOX_BOOT_RUNTIME
 atomic_long_t _totalram_pages;
 unsigned long totalreserve_pages;
 unsigned long totalcma_pages;
+#endif
 unsigned long max_pfn_mapped;
 DEFINE_SPINLOCK(pgd_lock);
 
@@ -94,7 +117,11 @@ static __thread unsigned long kobox_percpu_offset;
 static __thread unsigned int kobox_irq_disable_depth = 1;
 #endif
 static const struct kobox_linux_memory_layout *memory_layout;
+static DEFINE_RAW_SPINLOCK(kernel_alias_lock);
+static bool direct_tables_ready;
+#ifndef KOBOX_BOOT_RUNTIME
 static DEFINE_PER_CPU(unsigned long, kobox_memory_static_percpu);
+#endif
 #ifndef KOBOX_TASK_PORT_PHASE
 static struct {
 	enum cpuhp_state state;
@@ -167,26 +194,89 @@ int __cond_resched(void)
 }
 #endif
 
+static pte_t kernel_pte(unsigned long address)
+{
+	unsigned int level;
+	bool nx, rw;
+	pte_t *entry, pte;
+
+	entry = lookup_address_in_pgd_attr(pgd_offset_k(address), address,
+					   &level, &nx, &rw);
+	if (!entry)
+		return __pte(0);
+	switch (level) {
+	case PG_LEVEL_4K:
+		pte = ptep_get(entry);
+		break;
+	case PG_LEVEL_2M: {
+		pmd_t pmd = pmdp_get((pmd_t *)entry);
+
+		pte = pfn_pte(pmd_pfn(pmd) + ((address & ~PMD_MASK) >> PAGE_SHIFT),
+			      pgprot_large_2_4k(__pgprot(pmd_flags(pmd))));
+		break;
+	}
+	case PG_LEVEL_1G: {
+		pud_t pud = pudp_get((pud_t *)entry);
+
+		pte = pfn_pte(pud_pfn(pud) + ((address & ~PUD_MASK) >> PAGE_SHIFT),
+			      pgprot_large_2_4k(__pgprot(pud_flags(pud))));
+		break;
+	}
+	default:
+		if (pte_flags(ptep_get(entry)) & _PAGE_PRESENT)
+			panic("unsupported hosted kernel page-table level %u", level);
+		return __pte(0);
+	}
+	/* Normalize only the host's translation view, not Linux's page tables.
+	 * Native huge-leaf PFN/PAT decoding and ancestor permissions both apply.
+	 */
+	if (nx)
+		pte = pte_set_flags(pte, _PAGE_NX);
+	if (!rw)
+		pte = pte_clear_flags(pte, _PAGE_RW);
+
+	return pte;
+}
+
+static unsigned int host_pte_protection(pte_t pte)
+{
+	unsigned int protection = 0;
+
+	if (pte_flags(pte) & _PAGE_PRESENT) {
+		protection |= KOBOX_LINUX_MEMORY_READ;
+		if (pte_write(pte))
+			protection |= KOBOX_LINUX_MEMORY_WRITE;
+		if (pte_exec(pte))
+			protection |= KOBOX_LINUX_MEMORY_EXECUTE;
+	}
+	return protection;
+}
+
 static int mapped_range(unsigned long start, unsigned long end,
 			void *window, unsigned long window_base)
 {
 	unsigned long address;
 
 	if (!memory_layout || start > end || start < window_base ||
-	    end - window_base > memory_layout->vmalloc_size)
+	    end - window_base > memory_layout->vmalloc_size ||
+	    offset_in_page(start) || offset_in_page(end))
 		return -EINVAL;
 	for (address = start; address < end; address += PAGE_SIZE) {
-		unsigned long pfn = vmalloc_to_pfn((void *)address);
+		pte_t pte = kernel_pte(address);
+		unsigned long pfn;
 		void *mapped;
 		int status;
 
+		/* per-CPU flushes span units and their unpopulated gaps. */
+		if (!host_pte_protection(pte))
+			continue;
+		pfn = pte_pfn(pte);
 		if (pfn >= max_pfn)
 			return -ERANGE;
 		status = memory_layout->operations->map(
 			window, address - window_base,
 			memory_layout->ram_backing, pfn << PAGE_SHIFT,
-			PAGE_SIZE, KOBOX_LINUX_MEMORY_READ |
-			KOBOX_LINUX_MEMORY_WRITE, &mapped);
+			PAGE_SIZE, host_pte_protection(pte), &mapped);
 		if (status || mapped != (void *)address)
 			return -EIO;
 	}
@@ -195,17 +285,28 @@ static int mapped_range(unsigned long start, unsigned long end,
 
 void kobox_provider_flush_cache_vmap(unsigned long start, unsigned long end)
 {
-	if (mapped_range(start, end, memory_layout->vmalloc_window,
-			 vmalloc_base))
-		BUG();
+	unsigned long flags;
+	int status;
+
+	/* Serialize host publication with invalidation of overlapping flush spans.
+	 * Host map/reset are leaf memory operations, never guest callbacks.
+	 */
+	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
+	status = mapped_range(start, end, memory_layout->vmalloc_window, vmalloc_base);
+	raw_spin_unlock_irqrestore(&kernel_alias_lock, flags);
+	if (status)
+		panic("hosted vmap publication failed: %lx-%lx window %lx error %d",
+		      start, end, vmalloc_base, status);
 }
 
 void kobox_provider_flush_cache_vunmap(unsigned long start, unsigned long end)
 {
+	/* Coherent x86 needs no pre-unmap cache operation. Linux has not cleared
+	 * PTEs yet, and a per-CPU span can include live pages between its units.
+	 * Revoke host aliases at the post-clear TLB boundary instead.
+	 */
 	if (!memory_layout || start > end || start < vmalloc_base ||
-	    end - vmalloc_base > memory_layout->vmalloc_size ||
-	    memory_layout->operations->reset(memory_layout->vmalloc_window,
-		start - vmalloc_base, end - start))
+	    end - vmalloc_base > memory_layout->vmalloc_size)
 		BUG();
 }
 
@@ -217,22 +318,131 @@ void arch_sync_kernel_mappings(unsigned long start, unsigned long end)
 
 void __flush_tlb_all(void)
 {
+#ifdef KOBOX_BOOT_RUNTIME
+	kobox_vm_flush_all();
+#endif
+	flush_tlb_kernel_range(0, ULONG_MAX);
+}
+
+static void protect_direct_range(unsigned long start, unsigned long end)
+{
+	unsigned long address, begin;
+	unsigned int protection;
+
+	if (!direct_tables_ready)
+		return;
+	start = max(start, page_offset_base);
+	end = min(end, page_offset_base + memory_layout->ram_size);
+	for (address = start; address < end; ) {
+		begin = address;
+		protection = host_pte_protection(kernel_pte(address));
+		do {
+			address += PAGE_SIZE;
+		} while (address < end &&
+			 host_pte_protection(kernel_pte(address)) == protection);
+		if (memory_layout->operations->protect(memory_layout->direct_window,
+			begin - page_offset_base, address - begin, protection))
+			panic("hosted direct-map protection failed");
+	}
 }
 
 void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
-	(void)start;
-	(void)end;
+	unsigned long address, unmapped, flags;
+
+	if (!memory_layout)
+		BUG();
+	if (start >= end)
+		return;
+	if (offset_in_page(start) || (end != ULONG_MAX && offset_in_page(end)))
+		BUG();
+	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
+	protect_direct_range(start, end);
+	/* The host owns translations for the direct map and core image. This
+	 * boundary reconciles Linux's dynamic kernel aliases with its real PTEs.
+	 * Lazy vmalloc invalidation is safe only if still-present pages inside
+	 * a coalesced flush span retain their mappings.
+	 */
+	start = max(start, vmalloc_base);
+	/* VMALLOC_END is inclusive; cache/TLB ranges exclude their end. */
+	end = min(end, kobox_memory_vmalloc_end + 1);
+	if (start >= end)
+		goto out_unlock;
+	/* A concurrent publisher must not map a page between this PTE snapshot
+	 * and host reset. Its PTE may change, but its host map follows this reset.
+	 */
+	for (address = start; address < end; ) {
+		if (host_pte_protection(kernel_pte(address))) {
+			if (mapped_range(address, address + PAGE_SIZE,
+					 memory_layout->vmalloc_window, vmalloc_base))
+				panic("hosted kernel PTE protection failed");
+			address += PAGE_SIZE;
+			continue;
+		}
+		unmapped = address;
+		do {
+			address += PAGE_SIZE;
+		} while (address < end && !host_pte_protection(kernel_pte(address)));
+		if (memory_layout->operations->reset(memory_layout->vmalloc_window,
+			unmapped - vmalloc_base, address - unmapped))
+			BUG();
+	}
+out_unlock:
+	raw_spin_unlock_irqrestore(&kernel_alias_lock, flags);
 }
+
+#ifdef KOBOX_BOOT_RUNTIME
+void kobox_linux_memory_image_permissions(unsigned long offset,
+					 unsigned long length, bool writable)
+{
+	unsigned long start, end, address, flags;
+
+	if (!memory_layout || !direct_tables_ready || offset_in_page(offset) ||
+	    !length || offset_in_page(length) ||
+	    offset >= (unsigned long)(__bss_stop - _text) ||
+	    length > (unsigned long)(__bss_stop - _text) - offset)
+		panic("invalid hosted core direct-map protection");
+	start = page_offset_base + memory_layout->kernel_image_physical_base + offset;
+	end = start + length;
+	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
+	for (address = start; address < end; address += PAGE_SIZE) {
+		unsigned int level;
+		pte_t *pte = lookup_address(address, &level);
+
+		/* Boot creates this writable direct-map view with 4K PTEs. */
+		if (!pte || level != PG_LEVEL_4K || !pte_present(ptep_get(pte)))
+			panic("missing hosted core direct-map PTE");
+		set_pte(pte, pfn_pte(pte_pfn(ptep_get(pte)),
+				    writable ? PAGE_KERNEL : PAGE_KERNEL_RO));
+	}
+	protect_direct_range(start, end);
+	raw_spin_unlock_irqrestore(&kernel_alias_lock, flags);
+}
+
+void kobox_linux_memory_sync_direct(struct page *page, unsigned int nr)
+{
+	unsigned long start = (unsigned long)page_address(page);
+	unsigned long pfn = page_to_pfn(page);
+
+	if (!nr || pfn >= max_pfn || nr > max_pfn - pfn)
+		panic("invalid hosted direct-map publication");
+	/* Native noflush permission restoration is visible on the next hardware
+	 * page-table walk. The host must publish it before Linux reuses the page.
+	 */
+	flush_tlb_kernel_range(start, start + (unsigned long)nr * PAGE_SIZE);
+}
+#endif
 
 void pcpu_populate_pte(unsigned long address)
 {
 	(void)address;
 }
 
+#ifndef KOBOX_BOOT_RUNTIME
 void pgtable_cache_init(void)
 {
 }
+#endif
 
 void arch_mm_preinit(void)
 {
@@ -247,9 +457,11 @@ void pti_init(void)
 {
 }
 
+#ifndef KOBOX_BOOT_RUNTIME
 void alternatives_enable_smp(void)
 {
 }
+#endif
 
 #ifndef KOBOX_TASK_PORT_PHASE
 int __cpuhp_setup_state(enum cpuhp_state state, const char *name, bool invoke,
@@ -313,6 +525,8 @@ void __init setup_per_cpu_areas(void)
 		__per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
 		per_cpu(cpu_number, cpu) = cpu;
 	}
+	/* start_kernel() invokes this hook before its boot-CPU setup hook. */
+	kobox_percpu_offset = __per_cpu_offset[0];
 }
 
 static void __init setup_memory_zones(void)
@@ -371,6 +585,7 @@ static int validate_layout(const struct kobox_linux_memory_layout *layout)
 	    layout->operations->size != sizeof(*layout->operations) ||
 	    layout->operations->identity != KOBOX_LINUX_MEMORY_HOST_IDENTITY ||
 	    !layout->operations->map || !layout->operations->reset ||
+	    !layout->operations->protect || !layout->direct_window ||
 	    !layout->ram_backing || !layout->vmemmap_window ||
 	    !layout->vmalloc_window || !layout->direct_map ||
 	    !layout->vmemmap_base || !layout->vmalloc_base ||
@@ -381,6 +596,10 @@ static int validate_layout(const struct kobox_linux_memory_layout *layout)
 	    !PAGE_ALIGNED(layout->vmemmap_size) ||
 	    !PAGE_ALIGNED((unsigned long)layout->vmalloc_base) ||
 	    !PAGE_ALIGNED(layout->vmalloc_size) ||
+	    !layout->vmalloc_size || !layout->vmemmap_size ||
+	    layout->ram_size > ULONG_MAX - (unsigned long)layout->direct_map ||
+	    layout->vmemmap_size > ULONG_MAX - (unsigned long)layout->vmemmap_base ||
+	    layout->vmalloc_size > ULONG_MAX - (unsigned long)layout->vmalloc_base ||
 	    !PAGE_ALIGNED(layout->kernel_image_physical_base) ||
 	    layout->kernel_image_physical_base > layout->ram_size ||
 	    image_size > layout->ram_size - layout->kernel_image_physical_base)
@@ -388,17 +607,74 @@ static int validate_layout(const struct kobox_linux_memory_layout *layout)
 	return 0;
 }
 
+int kobox_linux_memory_bind(const struct kobox_linux_memory_layout *layout)
+{
+	int status;
+
+	status = validate_layout(layout);
+	if (status)
+		return status;
+	if (memory_layout)
+		return -EBUSY;
+	memory_layout = layout;
+	page_offset_base = (unsigned long)layout->direct_map;
+	vmemmap_base = (unsigned long)layout->vmemmap_base;
+	vmalloc_base = (unsigned long)layout->vmalloc_base;
+	kobox_memory_vmalloc_end = vmalloc_base + layout->vmalloc_size - 1;
+	phys_base = __START_KERNEL_map - (unsigned long)_text +
+		layout->kernel_image_physical_base;
+	return 0;
+}
+
+static void __init prepare_direct_tables(void)
+{
+	unsigned long address, pfn;
+
+	/* Machine page tables for the RAM mapping already owned by the host.
+	 * memblock reserves these tables before struct page and buddy startup.
+	 * Native CPA owns subsequent permission changes and alias decisions.
+	 */
+	for (pfn = 0; pfn < max_pfn; pfn++) {
+		pgd_t *pgd;
+		p4d_t *p4d;
+		pud_t *pud;
+		pmd_t *pmd;
+		pte_t *pte;
+
+		address = page_offset_base + (pfn << PAGE_SHIFT);
+		pgd = pgd_offset_k(address);
+		p4d = p4d_offset(pgd, address);
+		if (p4d_none(*p4d))
+			p4d_populate(&init_mm, p4d,
+				     memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE));
+		pud = pud_offset(p4d, address);
+		if (pud_none(*pud))
+			pud_populate(&init_mm, pud,
+				     memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE));
+		pmd = pmd_offset(pud, address);
+		if (pmd_none(*pmd))
+			pmd_populate_kernel(&init_mm, pmd,
+				memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE));
+		pte = pte_offset_kernel(pmd, address);
+		if (!pte_none(*pte))
+			panic("hosted RAM overlaps an existing kernel PTE");
+		set_pte(pte, pfn_pte(pfn, PAGE_KERNEL));
+	}
+	direct_tables_ready = true;
+}
+
 static int prepare_memory(const struct kobox_linux_memory_layout *layout)
 {
 	unsigned long image_size = PAGE_ALIGN(__bss_stop - _text);
 	int status;
 
-	memory_layout = layout;
-	page_offset_base = (unsigned long)layout->direct_map;
-	vmemmap_base = (unsigned long)layout->vmemmap_base;
-	vmalloc_base = (unsigned long)layout->vmalloc_base;
-	phys_base = __START_KERNEL_map - (unsigned long)_text +
-		layout->kernel_image_physical_base;
+	if (!memory_layout) {
+		status = kobox_linux_memory_bind(layout);
+		if (status)
+			return status;
+	}
+	if (memory_layout != layout)
+		return -EINVAL;
 
 	status = memblock_add(0, layout->ram_size);
 	if (status)
@@ -421,11 +697,12 @@ static int prepare_memory(const struct kobox_linux_memory_layout *layout)
 	max_pfn_mapped = max_pfn;
 	high_memory = (void *)(page_offset_base + layout->ram_size);
 
+	prepare_direct_tables();
 	sparse_init();
 	return 0;
 }
 
-static int prepare_percpu(void)
+static void prepare_cpu_masks(void)
 {
 	cpumask_clear(&__cpu_possible_mask);
 	cpumask_clear(&__cpu_online_mask);
@@ -442,13 +719,36 @@ static int prepare_percpu(void)
 	set_cpu_enabled(1, true);
 	set_cpu_present(1, true);
 	cpumask_copy(&__cpu_primary_thread_mask, cpu_possible_mask);
+}
+
+#ifndef KOBOX_BOOT_RUNTIME
+static int prepare_percpu(void)
+{
+	prepare_cpu_masks();
 	if (nr_cpu_ids != KOBOX_LINUX_MEMORY_LOGICAL_CPUS)
 		return -EINVAL;
 	setup_per_cpu_areas();
 	kobox_percpu_offset = __per_cpu_offset[0];
 	return 0;
 }
+#endif
 
+int __init kobox_linux_memory_setup_arch(void)
+{
+	int status;
+
+	if (!memory_layout)
+		return -EINVAL;
+	prepare_cpu_masks();
+	status = prepare_memory(memory_layout);
+	if (status)
+		return status;
+	setup_memory_zones();
+	/* start_kernel() owns setup_per_cpu_areas() and mm_core_init(). */
+	return 0;
+}
+
+#ifndef KOBOX_BOOT_RUNTIME
 static int run_gate(struct kobox_linux_memory_report *report)
 {
 	struct page *pages[2] = { NULL, NULL };
@@ -528,6 +828,8 @@ static int run_gate(struct kobox_linux_memory_report *report)
 	if (!alias)
 		goto out_pages;
 	report->vmap_alias_ready =
+		is_vmalloc_addr(alias) && !is_vmalloc_addr(direct[0]) &&
+		!is_vmalloc_addr(direct[1]) && !is_vmalloc_addr(&_text[0]) &&
 		alias[0] == direct[0][0] &&
 		alias[PAGE_SIZE / sizeof(*alias)] == direct[1][0];
 	alias[1] = 0xdeadbeefUL;
@@ -604,3 +906,4 @@ int kobox_linux_memory_early_boot(
 		return -EINVAL;
 	return run_gate(report);
 }
+#endif

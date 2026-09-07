@@ -6,6 +6,7 @@
 #include "../host/posix/host.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <stdint.h>
@@ -33,10 +34,15 @@ static int host_map(void *window, size_t window_offset, void *backing,
 {
 	unsigned int native = 0;
 
+	if (protection & ~(KOBOX_LINUX_MEMORY_READ | KOBOX_LINUX_MEMORY_WRITE |
+			   KOBOX_LINUX_MEMORY_EXECUTE))
+		return EINVAL;
 	if (protection & KOBOX_LINUX_MEMORY_READ)
 		native |= KOBOX_POSIX_MEMORY_READ;
 	if (protection & KOBOX_LINUX_MEMORY_WRITE)
 		native |= KOBOX_POSIX_MEMORY_WRITE;
+	if (protection & KOBOX_LINUX_MEMORY_EXECUTE)
+		native |= KOBOX_POSIX_MEMORY_EXECUTE;
 	return kobox_posix_memory_window_map(window, window_offset, backing,
 		backing_offset, size, native, address_out);
 }
@@ -44,6 +50,28 @@ static int host_map(void *window, size_t window_offset, void *backing,
 static int host_reset(void *window, size_t window_offset, size_t size)
 {
 	return kobox_posix_memory_window_reset(window, window_offset, size);
+}
+
+static int host_protect(void *opaque, size_t offset, size_t size,
+			unsigned int protection)
+{
+	struct kobox_posix_memory_window *window = opaque;
+	unsigned int native = 0;
+
+	if (!window || !window->initialized || offset > window->size ||
+	    size > window->size - offset || !size ||
+	    offset % KOBOX_LINUX_MEMORY_PAGE_SIZE || size % KOBOX_LINUX_MEMORY_PAGE_SIZE ||
+	    protection & ~(KOBOX_LINUX_MEMORY_READ | KOBOX_LINUX_MEMORY_WRITE |
+			   KOBOX_LINUX_MEMORY_EXECUTE))
+		return EINVAL;
+	if (protection & KOBOX_LINUX_MEMORY_READ)
+		native |= KOBOX_POSIX_MEMORY_READ;
+	if (protection & KOBOX_LINUX_MEMORY_WRITE)
+		native |= KOBOX_POSIX_MEMORY_WRITE;
+	if (protection & KOBOX_LINUX_MEMORY_EXECUTE)
+		native |= KOBOX_POSIX_MEMORY_EXECUTE;
+	return kobox_posix_memory_protect((char *)window->address + offset,
+					 size, native);
 }
 
 static int load_entry(void *handle, kobox_linux_memory_boot_fn *entry_out)
@@ -111,6 +139,7 @@ int main(int argument_count, char **arguments)
 		.identity = KOBOX_LINUX_MEMORY_HOST_IDENTITY,
 		.map = host_map,
 		.reset = host_reset,
+		.protect = host_protect,
 	};
 	struct kobox_posix_memory_backing backing = {0};
 	struct kobox_posix_memory_window direct = {0};
@@ -155,6 +184,7 @@ int main(int argument_count, char **arguments)
 		.identity = KOBOX_LINUX_MEMORY_HOST_IDENTITY,
 		.operations = &operations,
 		.ram_backing = &backing,
+		.direct_window = &direct,
 		.vmemmap_window = &vmemmap,
 		.vmalloc_window = &vmalloc,
 		.direct_map = direct_address,

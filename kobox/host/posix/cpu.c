@@ -10,7 +10,19 @@ static _Atomic(struct kobox_posix_cpu *)
 static _Thread_local _Atomic(struct kobox_posix_cpu *) active_cpu;
 static _Thread_local sigset_t saved_signal_mask;
 static _Thread_local bool saved_signal_mask_valid;
-static _Thread_local bool dispatching;
+
+int kobox_posix_current_cpu(uint32_t *cpu_out)
+{
+	struct kobox_posix_cpu *cpu;
+
+	if (!cpu_out)
+		return EINVAL;
+	cpu = atomic_load_explicit(&active_cpu, memory_order_acquire);
+	if (!cpu)
+		return ENXIO;
+	*cpu_out = cpu->logical_cpu;
+	return 0;
+}
 
 int kobox_posix_notifications_save(uint64_t *mask_out)
 {
@@ -50,18 +62,16 @@ int kobox_posix_notifications_restore(uint64_t mask)
 	return pthread_sigmask(SIG_UNBLOCK, &unblocked, NULL);
 }
 
-static void dispatch_pending(struct kobox_posix_cpu *cpu)
+static void dispatch_pending(void)
 {
+	struct kobox_posix_cpu *cpu;
 	unsigned int index;
 	uint64_t mask;
+	uint64_t callback_mask;
 	bool delivered;
 
-	if (dispatching || atomic_load_explicit(
-		    &cpu->irq_disable_depth, memory_order_acquire) != 0)
-		return;
 	if (kobox_posix_notifications_save(&mask))
 		__builtin_trap();
-	dispatching = true;
 	do {
 		delivered = false;
 		cpu = atomic_load_explicit(&active_cpu, memory_order_acquire);
@@ -73,16 +83,37 @@ static void dispatch_pending(struct kobox_posix_cpu *cpu)
 				&cpu->pending[index], 0, memory_order_acq_rel);
 
 			if (count) {
+				/*
+				 * Machine IRQ entry masks logical IRQs, not native
+				 * signals throughout Linux's IRQ/softirq execution.
+				 * Linux may enable IRQs there and accept a nested
+				 * interrupt, including another clockevent.
+				 */
+				atomic_store_explicit(&cpu->irq_disable_depth, 1,
+						      memory_order_release);
+				if (kobox_posix_notifications_restore(0))
+					__builtin_trap();
 				cpu->notification(cpu->notification_context,
 					cpu->logical_cpu,
 					(enum kobox_posix_notification)index, count);
+				if (kobox_posix_notifications_save(&callback_mask))
+					__builtin_trap();
+				/* Interrupt return can follow a task migration. */
+				cpu = atomic_load_explicit(&active_cpu,
+							   memory_order_acquire);
+				if (!cpu || atomic_load_explicit(
+					    &cpu->irq_disable_depth,
+					    memory_order_acquire) != 1)
+					__builtin_trap();
+				/* Restore the interrupted IRQ state without recursion. */
+				atomic_store_explicit(&cpu->irq_disable_depth, 0,
+						      memory_order_release);
 				delivered = true;
 				/* Recheck ownership and IRQ state after a possible switch. */
 				break;
 			}
 		}
 	} while (delivered);
-	dispatching = false;
 	if (kobox_posix_notifications_restore(mask))
 		__builtin_trap();
 }
@@ -102,7 +133,7 @@ static void notification_handler(int signal_number, siginfo_t *info, void *arg)
 		if (cpu && cpu->signal_number == signal_number) {
 			if (atomic_load_explicit(
 				    &active_cpu, memory_order_acquire) == cpu)
-				dispatch_pending(cpu);
+				dispatch_pending();
 			/* A task may return from the IPI on a different logical CPU. */
 			if (atomic_load_explicit(&active_cpu, memory_order_acquire)) {
 				for (index = 0; index < KOBOX_POSIX_MAX_LOGICAL_CPUS;
@@ -542,7 +573,7 @@ int kobox_posix_cpu_irq_enable(struct kobox_posix_cpu *cpu)
 		return EINVAL;
 	if (atomic_fetch_sub_explicit(
 		    &cpu->irq_disable_depth, 1, memory_order_acq_rel) == 1)
-		dispatch_pending(cpu);
+		dispatch_pending();
 	return 0;
 }
 

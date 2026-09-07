@@ -9,7 +9,7 @@
  * does.  Let -ffunction-sections split it so closure linking does not retain
  * unrelated boot paths from the same translation unit.
  */
-#ifdef KOBOX_PROVIDER_FUNCTION_SECTIONS
+#if defined(KOBOX_PROVIDER_FUNCTION_SECTIONS) && !defined(KOBOX_BOOT_RUNTIME)
 #undef __init
 #define __init __cold __latent_entropy __no_kstack_erase
 #undef __ref

@@ -42,9 +42,25 @@ static void *timer_thread(void *argument)
 		}
 		status = pthread_cond_timedwait(
 			&timer->condition, &timer->lock, &deadline);
-		if (status == ETIMEDOUT && timer->armed) {
+		if (status == ETIMEDOUT) {
 			kobox_posix_timer_fn function = timer->function;
 			void *context = timer->context;
+			uint64_t now;
+
+			/*
+			 * The mutex can be reacquired after a concurrent cancel or
+			 * rearm. The expired wait belongs to the old deadline, not
+			 * necessarily the device's current programming.
+			 */
+			if (!timer->armed)
+				continue;
+			status = kobox_posix_monotonic_ns(&now);
+			if (status) {
+				pthread_mutex_unlock(&timer->lock);
+				return (void *)(uintptr_t)status;
+			}
+			if (now < timer->deadline_ns)
+				continue;
 
 			timer->armed = false;
 			pthread_mutex_unlock(&timer->lock);

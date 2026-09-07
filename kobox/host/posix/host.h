@@ -69,11 +69,18 @@ enum kobox_posix_memory_protection {
 enum kobox_posix_notification {
 	KOBOX_POSIX_NOTIFICATION_TICK = 0,
 	KOBOX_POSIX_NOTIFICATION_IRQ,
+	KOBOX_POSIX_NOTIFICATION_CALL_FUNCTION,
+	KOBOX_POSIX_NOTIFICATION_VM_EVENT,
 	KOBOX_POSIX_NOTIFICATION_COUNT,
 };
 
 struct kobox_posix_cpu;
 
+/*
+ * Runs on the owning CPU thread, with logical IRQs masked on entry and return.
+ * Enabling IRQs inside the callback permits both queued and future nested IRQs.
+ * The host restores the interrupted IRQ state after the callback returns.
+ */
 typedef void (*kobox_posix_notification_fn)(
 	void *context,
 	uint32_t logical_cpu,
@@ -183,6 +190,7 @@ int kobox_posix_cpu_init(
 	void *context);
 int kobox_posix_cpu_destroy(struct kobox_posix_cpu *cpu);
 int kobox_posix_cpu_enter(struct kobox_posix_cpu *cpu);
+int kobox_posix_current_cpu(uint32_t *cpu_out);
 int kobox_posix_cpu_enter_task(
 	struct kobox_posix_cpu *cpu,
 	struct kobox_posix_task *task);

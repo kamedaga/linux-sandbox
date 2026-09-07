@@ -1,0 +1,17 @@
+--- a/arch/x86/entry/entry_64.S
++++ b/arch/x86/entry/entry_64.S
+@@ -1049,2 +1049,3 @@
+-	cmpq	$.Lgs_change, RIP+8(%rsp)
++	leaq	.Lgs_change(%rip), %rax
++	cmpq	%rax, RIP+8(%rsp)
+ 	jne	.Lerror_entry_done_lfence
+@@ -1260,1 +1261,1 @@
+-	movq	$repeat_nmi, %rdx
++	leaq	repeat_nmi(%rip), %rdx
+@@ -1263,1 +1264,1 @@
+-	movq	$end_repeat_nmi, %rdx
++	leaq	end_repeat_nmi(%rip), %rdx
+@@ -1317,1 +1318,2 @@
+-	pushq	$repeat_nmi
++	leaq	repeat_nmi(%rip), %rdx
++	pushq	%rdx

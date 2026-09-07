@@ -26,6 +26,8 @@ DISPATCH_SYMBOL = "kobox_linux_task_dispatch"
 SUPPORT_SOURCES = (
     "kobox/memory/early_boot.c",
     "kobox/task/port.c",
+    "kobox/task/time_port.c",
+    "kobox/task/time_gate.c",
 )
 HOST_IMPORTS = {"_GLOBAL_OFFSET_TABLE_", "__tls_get_addr"}
 PERCPU_DATA_IMPORTS = {
@@ -45,6 +47,7 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "arch/x86/kernel/hw_breakpoint.o",
     "arch/x86/kernel/smpboot.o",
     "arch/x86/kernel/step.o",
+    "arch/x86/kernel/time.o",
     "drivers/char/random.o",
     "drivers/cpufreq/cpufreq.o",
     "fs/file.o",
@@ -55,6 +58,7 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "fs/namespace.o",
     "fs/pidfs.o",
     "init/init_task.o",
+    "init/main.o",
     "kernel/cpu.o",
     "kernel/context_tracking.o",
     "kernel/cred.o",
@@ -63,6 +67,8 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "kernel/exit.o",
     "kernel/fork.o",
     "kernel/kthread.o",
+    "kernel/module/main.o",
+    "kernel/panic.o",
     "kernel/ksysfs.o",
     "kernel/irq/manage.o",
     "kernel/nsproxy.o",
@@ -83,6 +89,14 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "kernel/stop_machine.o",
     "kernel/task_work.o",
     "kernel/time/hrtimer.o",
+    "kernel/time/jiffies.o",
+    "kernel/time/clockevents.o",
+    "kernel/time/clocksource.o",
+    "kernel/time/tick-common.o",
+    "kernel/time/tick-broadcast.o",
+    "kernel/time/tick-oneshot.o",
+    "kernel/time/tick-sched.o",
+    "kernel/irq_work.o",
     "kernel/time/sleep_timeout.o",
     "kernel/time/timer.o",
     "kernel/time/ntp.o",
@@ -128,6 +142,22 @@ GATE_SYMBOLS = {
     "do_task_dead": "kernel/sched/core.o",
     "do_exit": "kernel/exit.o",
     "kernel_thread": "kernel/fork.o",
+    "user_mode_thread": "kernel/fork.o",
+    "irq_enter": "kernel/softirq.o",
+    "irq_exit": "kernel/softirq.o",
+    "ct_idle_enter": "kernel/context_tracking.o",
+    "ct_idle_exit": "kernel/context_tracking.o",
+    "default_idle_call": "kernel/sched/build_policy.o",
+    "clockevents_config_and_register": "kernel/time/clockevents.o",
+    "__clocksource_register_scale": "kernel/time/clocksource.o",
+    "hrtimer_interrupt": "kernel/time/hrtimer.o",
+    "hrtimer_start_range_ns": "kernel/time/hrtimer.o",
+    "hrtimer_cancel": "kernel/time/hrtimer.o",
+    "mod_timer": "kernel/time/timer.o",
+    "jiffies_64": "kernel/time/timer.o",
+    "jiffies_seq": "kernel/time/jiffies.o",
+    "tick_handle_periodic": "kernel/time/tick-common.o",
+    "sched_tick": "kernel/sched/core.o",
 }
 
 
@@ -167,6 +197,7 @@ def compile_support(arguments, source_name):
         "-fno-stack-protector",
         "-fmacro-prefix-map=" + str(arguments.source_tree) + "=linux",
         "-I" + str(arguments.protocol_include),
+        *("-I" + str(path) for path in getattr(arguments, "extra_include_dirs", ())),
         "-I" + str(arguments.architecture_include),
         "-nostdinc",
         *provider.provider_include_flags(
@@ -176,6 +207,8 @@ def compile_support(arguments, source_name):
         str(arguments.source_tree / "include/linux/compiler_types.h"),
         "-D__KERNEL__",
         "-DKOBOX_TASK_PORT_PHASE=1",
+        "-DKOBOX_HOSTED_RAM=1",
+        *getattr(arguments, "extra_cflags", ()),
         "--target=x86_64-linux-gnu",
         "-std=gnu11",
         "-O2",
@@ -186,6 +219,8 @@ def compile_support(arguments, source_name):
         "-Wno-address-of-packed-member",
         "-Wno-gnu-variable-sized-type-not-at-end",
         "-Wno-sign-compare",
+        # Match upstream Kbuild: VFS QSTR accepts char and unsigned-char names.
+        "-Wno-pointer-sign",
         "-Wno-unused-parameter",
         "-fshort-wchar",
         "-funsigned-char",
@@ -202,7 +237,7 @@ def compile_support(arguments, source_name):
 
 
 def prepare_object(arguments, source_object, support_defined):
-    source = arguments.provider_build_dir / source_object
+    source = memory.native_object(arguments, source_object)
     overlaps = memory.defined_symbols(source, arguments.nm) & support_defined
     destination = arguments.output_dir / ".objects" / source_object
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -377,7 +412,9 @@ def build_boundary(arguments, definitions):
 
 def validate_config(config):
     for required in ("CONFIG_SMP=y", "CONFIG_NR_CPUS=2", "CONFIG_PREEMPT=y",
-                     "CONFIG_PREEMPT_COUNT=y"):
+                     "CONFIG_PREEMPT_COUNT=y", "CONFIG_HIGH_RES_TIMERS=y",
+                     "CONFIG_CONTEXT_TRACKING_IDLE=y", "CONFIG_BUG=y",
+                     "CONFIG_RCU_EQS_DEBUG=y"):
         if required not in config.splitlines():
             raise TaskBuildError(f"task gate requires {required}")
     if "CONFIG_PREEMPT_DYNAMIC=y" in config.splitlines():
@@ -605,6 +642,7 @@ def build(arguments):
         "gate_symbols": GATE_SYMBOLS,
         "host_imports": sorted(HOST_IMPORTS),
         "hosted_architecture_symbols": sorted(support_defined),
+        "source_patches": getattr(arguments, "native_source_patches", {}),
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

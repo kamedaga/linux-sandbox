@@ -1,0 +1,47 @@
+--- a/arch/x86/mm/pat/set_memory.c
++++ b/arch/x86/mm/pat/set_memory.c
+@@ -23,4 +23,5 @@
+ #include <linux/set_memory.h>
+ #include <linux/memregion.h>
++#include <linux/kobox_boot.h>
+ 
+ #include <asm/e820/api.h>
+@@ -2640,20 +2641,33 @@
+ 
+ int set_direct_map_invalid_noflush(struct page *page)
+ {
+-	return __set_pages_np(page, 1);
++	int ret = __set_pages_np(page, 1);
++
++	if (!ret)
++		kobox_linux_memory_sync_direct(page, 1);
++	return ret;
+ }
+ 
+ int set_direct_map_default_noflush(struct page *page)
+ {
+-	return __set_pages_p(page, 1);
++	int ret = __set_pages_p(page, 1);
++
++	if (!ret)
++		kobox_linux_memory_sync_direct(page, 1);
++	return ret;
+ }
+ 
+ int set_direct_map_valid_noflush(struct page *page, unsigned nr, bool valid)
+ {
++	int ret;
++
+ 	if (valid)
+-		return __set_pages_p(page, nr);
+-
+-	return __set_pages_np(page, nr);
++		ret = __set_pages_p(page, nr);
++	else
++		ret = __set_pages_np(page, nr);
++	if (!ret)
++		kobox_linux_memory_sync_direct(page, nr);
++	return ret;
+ }
+ 
+ #ifdef CONFIG_DEBUG_PAGEALLOC

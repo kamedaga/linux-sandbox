@@ -1,0 +1,15 @@
+--- a/arch/x86/kernel/process_64.c
++++ b/arch/x86/kernel/process_64.c
+@@ -75,6 +75,12 @@
+ 	unsigned int fsindex, gsindex;
+ 	unsigned int ds, es;
+ 
++#ifdef KOBOX_BOOT_RUNTIME
++	/* Only the saved exception registers belong to this execution domain;
++	 * host CR/MSR/debug registers are not guest kernel state to read.
++	 */
++	mode = SHOW_REGS_SHORT;
++#endif
+ 	show_iret_regs(regs, log_lvl);
+ 
+ 	if (regs->orig_ax != -1)

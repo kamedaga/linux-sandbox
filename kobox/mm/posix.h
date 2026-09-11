@@ -8,5 +8,7 @@ extern const struct kobox_linux_vm_host_operations kobox_vm_posix_operations;
 void kobox_vm_posix_notify(void *context);
 int kobox_vm_posix_probe(void *space, uint64_t address, unsigned int write,
 	uint64_t value, uint64_t sequence);
+int kobox_vm_posix_syscall_probe(void *space, uint64_t number,
+	const uint64_t arguments[6], uint64_t sequence);
 
 #endif

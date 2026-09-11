@@ -16,6 +16,17 @@ struct kobox_linux_cleanup_report {
 	uint32_t cpu;
 	uint32_t phase;
 	uint32_t line;
+	/* Atomic callback/probe timeout snapshots; UINT32_MAX means no snapshot.
+	 * Sleeping callback timeouts are recorded only in errors.
+	 */
+	uint32_t hold_phase;
+	uint32_t hold_work_active;
+	uint32_t hold_delayed_active;
+	uint32_t probe_timeout_phase;
+	uint32_t probe_calls;
+	uint32_t probe_phase;
+	uint32_t probe_cleaner;
+	uint32_t probe_active;
 	uint32_t cases;
 	uint32_t callbacks;
 	uint32_t rejected;

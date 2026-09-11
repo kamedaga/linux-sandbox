@@ -14,14 +14,22 @@ extern unsigned long vmalloc_base;
 extern unsigned long vmemmap_base;
 extern unsigned long direct_map_physmem_end;
 unsigned long kobox_provider_get_task_size_limit(void);
+#ifdef KOBOX_HOSTED_RAM
+unsigned long kobox_linux_memory_phys_addr(unsigned long address);
+bool kobox_linux_memory_address_is_ram(unsigned long address);
+#endif
 
 static __always_inline unsigned long __phys_addr_nodebug(unsigned long address)
 {
+#ifdef KOBOX_HOSTED_RAM
+	return kobox_linux_memory_phys_addr(address);
+#else
 	unsigned long relative = address - __START_KERNEL_map;
 
 	address = relative + ((address > relative) ? phys_base :
 			      (__START_KERNEL_map - PAGE_OFFSET));
 	return address;
+#endif
 }
 
 #ifdef CONFIG_DEBUG_VIRTUAL

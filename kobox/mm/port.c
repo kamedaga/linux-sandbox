@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "port.h"
+#include "../arch/x86_64/host_call.h"
 
 #include <linux/err.h>
 #include <linux/mm.h>
@@ -22,6 +23,28 @@
 
 static LIST_HEAD(vm_spaces);
 static DEFINE_RAW_SPINLOCK(vm_spaces_lock);
+
+struct vm_context {
+	struct list_head entry;
+	void *host;
+};
+
+/* Caller holds vm_spaces_lock across ownership validation/publication. */
+static bool context_bound(const struct kobox_linux_vm_host_operations *operations,
+			  void *host)
+{
+	struct kobox_vm_space *space;
+	struct vm_context *context;
+
+	list_for_each_entry(space, &vm_spaces, entry) {
+		if (space->operations != operations)
+			continue;
+		list_for_each_entry(context, &space->contexts, entry)
+			if (context->host == host)
+				return true;
+	}
+	return false;
+}
 
 void kobox_vm_interrupt(void)
 {
@@ -78,7 +101,7 @@ static void invalidate(struct kobox_vm_space *space, unsigned long start, unsign
 	if (start >= end)
 		return;
 	raw_spin_lock(&space->translation_lock);
-	result = space->operations->reset(space->host_space, start, end - start);
+	result = kobox_host_call(space->operations->reset(space->host_space, start, end - start));
 	/* Only a completed unmap, including verified process death implemented
 	 * by the host binding, can permit upstream to release the old pages.
 	 */
@@ -127,14 +150,17 @@ void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch)
 	batch->unmapped_pages = false;
 }
 
-struct kobox_vm_space *kobox_vm_space_create(void *host_space,
+struct kobox_vm_space *kobox_vm_space_bind(struct mm_struct *mm, void *host_space,
 	const struct kobox_linux_vm_host_operations *operations,
 	unsigned long start, unsigned long size)
 {
-	struct kobox_vm_space *space;
+	struct kobox_vm_space *space, *existing;
+	struct vm_context *context;
 	unsigned long flags;
+	int result = 0;
 
-	if (!host_space || !operations || operations->size != sizeof(*operations) ||
+	if (!mm || mm == &init_mm || !host_space || !operations ||
+	    operations->size != sizeof(*operations) ||
 	    !operations->map || !operations->reset || !operations->close ||
 	    !operations->resume || !operations->event ||
 	    !start || !size || !PAGE_ALIGNED(start) || !PAGE_ALIGNED(size) ||
@@ -143,13 +169,16 @@ struct kobox_vm_space *kobox_vm_space_create(void *host_space,
 	space = kzalloc(sizeof(*space), GFP_KERNEL);
 	if (!space)
 		return ERR_PTR(-ENOMEM);
-	space->mm = mm_alloc();
-	if (!space->mm) {
+	context = kzalloc(sizeof(*context), GFP_KERNEL);
+	if (!context) {
 		kfree(space);
 		return ERR_PTR(-ENOMEM);
 	}
-	space->mm->task_size = TASK_SIZE;
-	arch_pick_mmap_layout(space->mm, &current->signal->rlim[RLIMIT_STACK]);
+	context->host = host_space;
+	INIT_LIST_HEAD(&space->contexts);
+	list_add(&context->entry, &space->contexts);
+	mmget(mm);
+	space->mm = mm;
 	space->host_space = host_space;
 	space->operations = operations;
 	space->start = start;
@@ -157,32 +186,148 @@ struct kobox_vm_space *kobox_vm_space_create(void *host_space,
 	raw_spin_lock_init(&space->translation_lock);
 	init_waitqueue_head(&space->events);
 	raw_spin_lock_irqsave(&vm_spaces_lock, flags);
-	list_add_tail(&space->entry, &vm_spaces);
+	list_for_each_entry(existing, &vm_spaces, entry) {
+		if (existing->mm == mm) {
+			result = -EEXIST;
+			break;
+		}
+	}
+	if (!result && context_bound(operations, host_space))
+		result = -EEXIST;
+	/* A native fork can inherit stale writable mappings. Remove every
+	 * translation before publishing the binding; Linux's PTEs and real
+	 * faults will select permissions and perform any required COW.
+	 */
+	if (!result)
+		result = kobox_host_call(operations->reset(host_space, start, size));
+	if (!result)
+		list_add_tail(&space->entry, &vm_spaces);
 	raw_spin_unlock_irqrestore(&vm_spaces_lock, flags);
+	if (result) {
+		mmput(mm);
+		kfree(context);
+		kfree(space);
+		return ERR_PTR(result);
+	}
 	return space;
 }
 
-int kobox_vm_space_destroy(struct kobox_vm_space *space)
+struct kobox_vm_space *kobox_vm_space_create(void *host_space,
+	const struct kobox_linux_vm_host_operations *operations,
+	unsigned long start, unsigned long size)
 {
+	struct kobox_vm_space *space;
+	struct mm_struct *mm = mm_alloc();
+
+	if (!mm)
+		return ERR_PTR(-ENOMEM);
+	mm->task_size = TASK_SIZE;
+	arch_pick_mmap_layout(mm, &current->signal->rlim[RLIMIT_STACK]);
+	space = kobox_vm_space_bind(mm, host_space, operations, start, size);
+	mmput(mm);
+	return space;
+}
+
+int kobox_vm_space_share(struct kobox_vm_space *space, void *host_context)
+{
+	struct vm_context *context;
 	unsigned long flags;
+	int result = 0;
+
+	if (!space || !host_context)
+		return -EINVAL;
+	context = kzalloc(sizeof(*context), GFP_KERNEL);
+	if (!context)
+		return -ENOMEM;
+	context->host = host_context;
+	raw_spin_lock_irqsave(&vm_spaces_lock, flags);
+	if (context_bound(space->operations, host_context))
+		result = -EEXIST;
+	if (!result)
+		list_add_tail(&context->entry, &space->contexts);
+	raw_spin_unlock_irqrestore(&vm_spaces_lock, flags);
+	if (result)
+		kfree(context);
+	return result;
+}
+
+static int detach_space(struct kobox_vm_space *space, void *host_context)
+{
+	struct vm_context *context, *found = NULL;
+	unsigned long flags;
+	bool last;
 	int result;
 
-	if (!space || current->mm == space->mm || atomic_read(&space->mm->mm_users) != 1)
-		return -EBUSY;
 	/* Users are joined by the caller. Kill/reap is still required before
 	 * detaching the hardware context from Linux's page-release boundaries.
 	 */
 	raw_spin_lock_irqsave(&vm_spaces_lock, flags);
-	result = space->operations->close(space->host_space);
+	list_for_each_entry(context, &space->contexts, entry)
+		if (context->host == host_context) {
+			found = context;
+			break;
+		}
+	if (!found) {
+		raw_spin_unlock_irqrestore(&vm_spaces_lock, flags);
+		return -ENOENT;
+	}
+	raw_spin_lock(&space->translation_lock);
+	result = kobox_host_call(space->operations->close(host_context));
 	if (result) {
+		raw_spin_unlock(&space->translation_lock);
 		raw_spin_unlock_irqrestore(&vm_spaces_lock, flags);
 		return result;
 	}
-	list_del(&space->entry);
+	list_del(&found->entry);
+	last = list_empty(&space->contexts);
+	if (last)
+		list_del(&space->entry);
+	else if (space->host_space == host_context)
+		space->host_space = list_first_entry(&space->contexts, struct vm_context, entry)->host;
+	raw_spin_unlock(&space->translation_lock);
 	raw_spin_unlock_irqrestore(&vm_spaces_lock, flags);
-	mmput(space->mm);
-	kfree(space);
+	kfree(found);
+	if (last) {
+		mmput(space->mm);
+		kfree(space);
+	}
 	return 0;
+}
+
+int kobox_vm_space_destroy(struct kobox_vm_space *space)
+{
+	if (!space || current->mm == space->mm || atomic_read(&space->mm->mm_users) != 1 ||
+	    !list_is_singular(&space->contexts))
+		return -EBUSY;
+	return detach_space(space, space->host_space);
+}
+
+int kobox_vm_space_cancel(struct kobox_vm_space *space, void *host_context,
+			  struct task_struct *task)
+{
+	if (!space || !task || task == current || READ_ONCE(task->__state) != TASK_NEW ||
+	    task->mm != space->mm || atomic_read(&space->mm->mm_users) < 2)
+		return -EBUSY;
+	return detach_space(space, host_context);
+}
+
+int kobox_vm_space_exit(struct kobox_vm_space *space, void *host_context,
+			struct task_struct *task)
+{
+	if (!space || task != current || task->mm || !(task->flags & PF_EXITING))
+		return -EBUSY;
+	/* Linux, not the hardware binding, decides when the remaining mm
+	 * observers release the page tables. Drop only this binding's ref.
+	 */
+	return detach_space(space, host_context);
+}
+
+int kobox_vm_space_replaced(struct kobox_vm_space *space, void *host_context)
+{
+	if (!space || !current->mm || current->mm == space->mm ||
+	    current->active_mm != current->mm || current->flags & PF_EXITING)
+		return -EBUSY;
+	return detach_space(space, host_context);
 }
 
 static int publish_pte(struct kobox_vm_space *space, unsigned long address)
@@ -249,8 +394,8 @@ static int publish_pte(struct kobox_vm_space *space, unsigned long address)
 	 * must remain masked for the entire publication, not just the host call.
 	 */
 	raw_spin_lock_irqsave(&space->translation_lock, flags);
-	result = space->operations->map(space->host_space, address & PAGE_MASK,
-			PFN_PHYS(pte_pfn(pte)), PAGE_SIZE, protection);
+	result = kobox_host_call(space->operations->map(space->host_space, address & PAGE_MASK,
+			PFN_PHYS(pte_pfn(pte)), PAGE_SIZE, protection));
 	if (!result)
 		space->publications++;
 	raw_spin_unlock_irqrestore(&space->translation_lock, flags);

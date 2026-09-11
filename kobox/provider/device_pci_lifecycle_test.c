@@ -112,18 +112,21 @@ static int pci_config_write(void *object, uint32_t offset, uint32_t width,
 	return 0;
 }
 
-static int pci_bar_info(void *object, uint32_t bar, uint64_t *length_out,
+static int pci_bar_info(void *object, uint32_t bar, uint64_t *cpu_address_out,
+			uint64_t *length_out,
 			uint32_t *flags_out)
 {
-	if (!object || bar || !length_out || !flags_out)
+	if (!object || bar || !cpu_address_out || !length_out || !flags_out)
 		return -1;
+	*cpu_address_out = 0;
 	*length_out = sizeof(test_resources.bar);
 	*flags_out = KB2_PCI_FUNCTION_BAR_FLAG_MEMORY;
 	return 0;
 }
 
 static int pci_bar_map(void *object, uint32_t bar, uint64_t offset,
-		       size_t length, uint32_t protection, void **address_out)
+		       size_t length, uint32_t protection, uint32_t cache_type,
+		       void *requested_address, void **address_out)
 {
 	struct test_resources *resources = object;
 
@@ -132,7 +135,7 @@ static int pci_bar_map(void *object, uint32_t bar, uint64_t offset,
 	    !protection ||
 	    (protection & ~(KB2_PCI_FUNCTION_MAP_PROTECTION_READ |
 			    KB2_PCI_FUNCTION_MAP_PROTECTION_WRITE)) ||
-	    !address_out)
+	    !address_out || requested_address || cache_type != KB2_PCI_FUNCTION_CACHE_UC_MINUS)
 		return -1;
 	*address_out = resources->bar + offset;
 	return 0;
@@ -570,7 +573,7 @@ static int test_lifecycle(void)
 	void *mapping;
 	void *bar;
 	uint64_t device_address;
-	uint64_t bar_length;
+	uint64_t bar_address, bar_length;
 	uint32_t bar_flags;
 	uint32_t irq_count = 0;
 	uint32_t value;
@@ -594,13 +597,13 @@ static int test_lifecycle(void)
 	CHECK(!pci->config_write(resources.pci.object, 4, 2, 0x0006) &&
 	      !pci->config_read(resources.pci.object, 4, 2, &value) &&
 	      value == 0x0006 &&
-	      !pci->bar_info(resources.pci.object, 0, &bar_length, &bar_flags) &&
+	      !pci->bar_info(resources.pci.object, 0, &bar_address, &bar_length, &bar_flags) &&
 	      bar_length == sizeof(test_resources.bar) &&
 	      bar_flags == KB2_PCI_FUNCTION_BAR_FLAG_MEMORY &&
 	      !pci->bar_map(resources.pci.object, 0, 0, 4096,
 			    KB2_PCI_FUNCTION_MAP_PROTECTION_READ |
 				    KB2_PCI_FUNCTION_MAP_PROTECTION_WRITE,
-			    &bar) &&
+			    KB2_PCI_FUNCTION_CACHE_UC_MINUS, NULL, &bar) &&
 	      !pci->bar_unmap(resources.pci.object, bar, 4096));
 	CHECK(!dma->allocation_create(
 		      resources.dma.object, 4096, 4096,

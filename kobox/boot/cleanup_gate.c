@@ -81,6 +81,14 @@ struct cleanup_case {
 	atomic_t active[CALLBACK_KINDS];
 	atomic_t denied[CALLBACK_KINDS];
 	atomic_t errors;
+	atomic_t hold_phase;
+	atomic_t hold_work_active;
+	atomic_t hold_delayed_active;
+	atomic_t probe_timeout_phase;
+	atomic_t probe_calls;
+	atomic_t probe_phase;
+	atomic_t probe_cleaner;
+	atomic_t probe_active;
 	atomic_t rejected;
 	atomic_t attempts;
 	atomic_t acknowledged;
@@ -108,6 +116,14 @@ static int fail(struct cleanup_case *test, unsigned int line)
 	/* Acquire the cleanup task's diagnostic phase publication. */
 	test->report->phase = smp_load_acquire(&test->phase);
 	test->report->errors = atomic_read(&test->errors);
+	test->report->hold_phase = atomic_read(&test->hold_phase);
+	test->report->hold_work_active = atomic_read(&test->hold_work_active);
+	test->report->hold_delayed_active = atomic_read(&test->hold_delayed_active);
+	test->report->probe_timeout_phase = atomic_read(&test->probe_timeout_phase);
+	test->report->probe_calls = atomic_read(&test->probe_calls);
+	test->report->probe_phase = atomic_read(&test->probe_phase);
+	test->report->probe_cleaner = atomic_read(&test->probe_cleaner);
+	test->report->probe_active = atomic_read(&test->probe_active);
 	test->report->warnings = kobox_linux_exception_warnings();
 	return -EINVAL;
 }
@@ -162,8 +178,15 @@ static void enter_callback(struct gate_device *device, unsigned int kind)
 		while (!smp_load_acquire(&test->released) && ktime_get() < deadline)
 			cpu_relax();
 		/* Acquire the release even when the watchdog ends the loop. */
-		if (!smp_load_acquire(&test->released))
+		if (!smp_load_acquire(&test->released)) {
+			atomic_set(&test->hold_phase,
+				   smp_load_acquire(&test->phase));
+			atomic_set(&test->hold_work_active,
+				   atomic_read(&test->active[WORK]));
+			atomic_set(&test->hold_delayed_active,
+				   atomic_read(&test->active[DELAYED]));
 			atomic_or(HOLD_TIMEOUT, &test->errors);
+		}
 	} else if (!wait_for_completion_timeout(&test->release, GATE_WAIT)) {
 		atomic_or(HOLD_TIMEOUT, &test->errors);
 	}
@@ -538,17 +561,24 @@ static bool needs_atomic_probe(unsigned int target)
 static enum hrtimer_restart probe_cleanup(struct hrtimer *timer)
 {
 	struct cleanup_case *test = container_of(timer, struct cleanup_case, probe);
+	unsigned int phase = smp_load_acquire(&test->phase);
+	bool cleaner = current == test->cleaner;
+	int active = atomic_read(&test->active[test->target]);
+
+	atomic_inc(&test->probe_calls);
+	atomic_set(&test->probe_phase, phase);
+	atomic_set(&test->probe_cleaner, cleaner);
+	atomic_set(&test->probe_active, active);
 
 	/* Observe the cleaner inside its announced API, not just unscheduled. */
-	if (smp_load_acquire(&test->phase) == held_phase(test->target) &&
-	    current == test->cleaner &&
-	    atomic_read(&test->active[test->target])) {
+	if (phase == held_phase(test->target) && cleaner && active) {
 		/* Publish this interrupt's successful observation before releasing it. */
 		smp_store_release(&test->probed, true);
 		release_callback(test);
 		return HRTIMER_NORESTART;
 	}
 	if (ktime_get() >= test->probe_deadline) {
+		atomic_set(&test->probe_timeout_phase, phase);
 		atomic_or(HOLD_TIMEOUT, &test->errors);
 		release_callback(test);
 		return HRTIMER_NORESTART;
@@ -602,6 +632,8 @@ static struct cleanup_case *new_case(struct kobox_linux_cleanup_report *report,
 	test->device = device;
 	test->cpu = cpu;
 	test->target = target;
+	atomic_set(&test->hold_phase, -1);
+	atomic_set(&test->probe_timeout_phase, -1);
 	device->test = test;
 	device->stamp = STAMP;
 	if (read_alias(&device->stamp, &stamp) || stamp != STAMP)

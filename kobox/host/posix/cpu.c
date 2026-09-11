@@ -2,14 +2,33 @@
 #include "host.h"
 
 #include <errno.h>
-#include <limits.h>
 #include <ucontext.h>
 
 static _Atomic(struct kobox_posix_cpu *)
 	cpu_signal_slots[KOBOX_POSIX_MAX_LOGICAL_CPUS];
 static _Thread_local _Atomic(struct kobox_posix_cpu *) active_cpu;
+static _Thread_local unsigned char thread_identity;
 static _Thread_local sigset_t saved_signal_mask;
 static _Thread_local bool saved_signal_mask_valid;
+
+static int machine_status(enum kobox_machine_result result)
+{
+	switch (result) {
+	case KOBOX_MACHINE_OK:
+		return 0;
+	case KOBOX_MACHINE_INVALID:
+		return EINVAL;
+	case KOBOX_MACHINE_BUSY:
+		return EBUSY;
+	case KOBOX_MACHINE_OVERFLOW:
+		return EOVERFLOW;
+	case KOBOX_MACHINE_CLOSED:
+		return ECANCELED;
+	case KOBOX_MACHINE_NOT_LOCK_FREE:
+		return ENOTSUP;
+	}
+	__builtin_trap();
+}
 
 int kobox_posix_current_cpu(uint32_t *cpu_out)
 {
@@ -65,55 +84,43 @@ int kobox_posix_notifications_restore(uint64_t mask)
 static void dispatch_pending(void)
 {
 	struct kobox_posix_cpu *cpu;
-	unsigned int index;
-	uint64_t mask;
-	uint64_t callback_mask;
-	bool delivered;
+	enum kobox_machine_notification notification;
+	uint64_t mask, callback_mask, count;
 
 	if (kobox_posix_notifications_save(&mask))
 		__builtin_trap();
-	do {
-		delivered = false;
+	for (;;) {
 		cpu = atomic_load_explicit(&active_cpu, memory_order_acquire);
-		if (!cpu || atomic_load_explicit(
-			    &cpu->irq_disable_depth, memory_order_acquire))
-			break;
-		for (index = 0; index < KOBOX_POSIX_NOTIFICATION_COUNT; index++) {
-			uint64_t count = atomic_exchange_explicit(
-				&cpu->pending[index], 0, memory_order_acq_rel);
+		if (cpu && atomic_load_explicit(&cpu->domain.stop_requested,
+					       memory_order_acquire)) {
+			sigset_t blocked;
 
-			if (count) {
-				/*
-				 * Machine IRQ entry masks logical IRQs, not native
-				 * signals throughout Linux's IRQ/softirq execution.
-				 * Linux may enable IRQs there and accept a nested
-				 * interrupt, including another clockevent.
-				 */
-				atomic_store_explicit(&cpu->irq_disable_depth, 1,
-						      memory_order_release);
-				if (kobox_posix_notifications_restore(0))
-					__builtin_trap();
-				cpu->notification(cpu->notification_context,
-					cpu->logical_cpu,
-					(enum kobox_posix_notification)index, count);
-				if (kobox_posix_notifications_save(&callback_mask))
-					__builtin_trap();
-				/* Interrupt return can follow a task migration. */
-				cpu = atomic_load_explicit(&active_cpu,
-							   memory_order_acquire);
-				if (!cpu || atomic_load_explicit(
-					    &cpu->irq_disable_depth,
-					    memory_order_acquire) != 1)
-					__builtin_trap();
-				/* Restore the interrupted IRQ state without recursion. */
-				atomic_store_explicit(&cpu->irq_disable_depth, 0,
-						      memory_order_release);
-				delivered = true;
-				/* Recheck ownership and IRQ state after a possible switch. */
-				break;
-			}
+			/* Terminal stop is independent of logical IRQ masking.
+			 * Do not enter Linux or transfer execution ownership.
+			 */
+			sigfillset(&blocked);
+			if (pthread_sigmask(SIG_BLOCK, &blocked, NULL))
+				__builtin_trap();
+			atomic_store_explicit(&cpu->domain.stopped, true,
+					      memory_order_release);
+			for (;;)
+				sigsuspend(&blocked);
 		}
-	} while (delivered);
+		if (!cpu || !kobox_machine_domain_irq_take(
+				&cpu->domain, &notification, &count))
+			break;
+		/* Linux may enable logical IRQs and accept nested upcalls. */
+		if (kobox_posix_notifications_restore(0))
+			__builtin_trap();
+		cpu->notification(cpu->notification_context, cpu->logical_cpu,
+			(enum kobox_posix_notification)notification, count);
+		if (kobox_posix_notifications_save(&callback_mask))
+			__builtin_trap();
+		/* Interrupt return can follow a task migration. */
+		cpu = atomic_load_explicit(&active_cpu, memory_order_acquire);
+		if (!cpu || !kobox_machine_domain_irq_return(&cpu->domain))
+			__builtin_trap();
+	}
 	if (kobox_posix_notifications_restore(mask))
 		__builtin_trap();
 }
@@ -148,21 +155,6 @@ static void notification_handler(int signal_number, siginfo_t *info, void *arg)
 	errno = interrupted_errno;
 }
 
-static int increment_pending(atomic_uint_fast64_t *pending)
-{
-	uint_fast64_t current = atomic_load_explicit(
-		pending, memory_order_relaxed);
-
-	for (;;) {
-		if (current == UINT64_MAX)
-			return EOVERFLOW;
-		if (atomic_compare_exchange_weak_explicit(
-			    pending, &current, current + 1,
-			    memory_order_release, memory_order_relaxed))
-			return 0;
-	}
-}
-
 int kobox_posix_cpu_init(
 	struct kobox_posix_cpu *cpu,
 	uint32_t logical_cpu,
@@ -191,26 +183,12 @@ int kobox_posix_cpu_init(
 	cpu->signal_number = SIGRTMIN + (int)logical_cpu;
 	cpu->notification = notification;
 	cpu->notification_context = context;
-	cpu->handoff_released = true;
-	cpu->owner_valid = false;
-	cpu->accepting_notifications = true;
-	atomic_init(&cpu->irq_disable_depth, 0);
-	atomic_init(&cpu->notification_sequence, 0);
-	if (!atomic_is_lock_free(&cpu->irq_disable_depth) ||
-	    !atomic_is_lock_free(&cpu->notification_sequence) ||
-	    !atomic_is_lock_free(&active_cpu) ||
+	status = machine_status(kobox_machine_domain_init(&cpu->domain));
+	if (status || !atomic_is_lock_free(&active_cpu) ||
 	    !atomic_is_lock_free(&cpu_signal_slots[logical_cpu])) {
 		pthread_cond_destroy(&cpu->execution_condition);
 		pthread_mutex_destroy(&cpu->owner_lock);
-		return ENOTSUP;
-	}
-	for (index = 0; index < KOBOX_POSIX_NOTIFICATION_COUNT; index++) {
-		atomic_init(&cpu->pending[index], 0);
-		if (!atomic_is_lock_free(&cpu->pending[index])) {
-			pthread_cond_destroy(&cpu->execution_condition);
-			pthread_mutex_destroy(&cpu->owner_lock);
-			return ENOTSUP;
-		}
+		return status ? status : ENOTSUP;
 	}
 	index = logical_cpu;
 	if (!atomic_compare_exchange_strong_explicit(
@@ -238,7 +216,6 @@ int kobox_posix_cpu_init(
 
 int kobox_posix_cpu_destroy(struct kobox_posix_cpu *cpu)
 {
-	unsigned int index;
 	int status;
 
 	if (!cpu || !cpu->initialized)
@@ -246,16 +223,7 @@ int kobox_posix_cpu_destroy(struct kobox_posix_cpu *cpu)
 	status = pthread_mutex_lock(&cpu->owner_lock);
 	if (status)
 		return status;
-	if (cpu->owner_valid ||
-	    atomic_load_explicit(&cpu->irq_disable_depth, memory_order_acquire))
-		status = EBUSY;
-	for (index = 0; index < KOBOX_POSIX_NOTIFICATION_COUNT; index++) {
-		if (atomic_load_explicit(
-			    &cpu->pending[index], memory_order_acquire))
-			status = EBUSY;
-	}
-	if (!status)
-		cpu->accepting_notifications = false;
+	status = machine_status(kobox_machine_domain_close(&cpu->domain));
 	pthread_mutex_unlock(&cpu->owner_lock);
 	if (status) {
 		return status;
@@ -268,7 +236,7 @@ int kobox_posix_cpu_destroy(struct kobox_posix_cpu *cpu)
 			&cpu_signal_slots[cpu->logical_cpu], cpu,
 			memory_order_release);
 		pthread_mutex_lock(&cpu->owner_lock);
-		cpu->accepting_notifications = true;
+		kobox_machine_domain_reopen(&cpu->domain);
 		pthread_mutex_unlock(&cpu->owner_lock);
 		return status;
 	}
@@ -287,7 +255,7 @@ static int cpu_enter(
 	struct kobox_posix_task *task)
 {
 	sigset_t signal_set;
-	bool acquired_owner = false;
+	void *identity = task ? (void *)task : &thread_identity;
 	unsigned int cpu_index;
 	int status;
 
@@ -304,9 +272,7 @@ static int cpu_enter(
 	status = pthread_mutex_lock(&cpu->owner_lock);
 	if (status)
 		goto restore_mask;
-	while (cpu->owner_valid &&
-	       (!pthread_equal(cpu->owner, pthread_self()) ||
-		!cpu->handoff_released)) {
+	while (!kobox_machine_domain_can_enter(&cpu->domain, identity)) {
 		status = pthread_cond_wait(
 			&cpu->execution_condition, &cpu->owner_lock);
 		if (status) {
@@ -314,48 +280,34 @@ static int cpu_enter(
 			goto restore_mask;
 		}
 	}
-	if (!cpu->owner_valid) {
-		cpu->owner = pthread_self();
-		cpu->owner_valid = true;
-		cpu->owner_task = task;
-		acquired_owner = true;
-	}
-	if (!acquired_owner && task && cpu->owner_task != task) {
+	status = machine_status(kobox_machine_domain_enter(&cpu->domain,
+							  identity));
+	if (status) {
 		pthread_mutex_unlock(&cpu->owner_lock);
-		status = EPERM;
 		goto restore_mask;
 	}
+	cpu->owner = pthread_self();
 	atomic_store_explicit(&active_cpu, cpu, memory_order_release);
 	pthread_mutex_unlock(&cpu->owner_lock);
 	status = pthread_sigmask(SIG_UNBLOCK, &signal_set, NULL);
 	if (status) {
 		pthread_mutex_lock(&cpu->owner_lock);
-		if (cpu->owner_valid && pthread_equal(cpu->owner, pthread_self()))
-			cpu->owner_valid = false;
-		cpu->owner_task = NULL;
+		kobox_machine_domain_release(&cpu->domain);
 		atomic_store_explicit(&active_cpu, NULL, memory_order_release);
 		pthread_cond_broadcast(&cpu->execution_condition);
 		pthread_mutex_unlock(&cpu->owner_lock);
 		goto restore_mask;
 	}
-	for (unsigned int index = 0;
-	     index < KOBOX_POSIX_NOTIFICATION_COUNT; index++) {
-		if (atomic_load_explicit(
-			    &cpu->pending[index], memory_order_acquire)) {
-			status = pthread_kill(pthread_self(), cpu->signal_number);
-			if (status) {
-				pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
-				pthread_mutex_lock(&cpu->owner_lock);
-				cpu->owner_valid = false;
-				cpu->owner_task = NULL;
-				atomic_store_explicit(
-					&active_cpu, NULL, memory_order_release);
-				pthread_cond_broadcast(
-					&cpu->execution_condition);
-				pthread_mutex_unlock(&cpu->owner_lock);
-				goto restore_mask;
-			}
-			break;
+	if (kobox_machine_domain_pending(&cpu->domain)) {
+		status = pthread_kill(pthread_self(), cpu->signal_number);
+		if (status) {
+			pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
+			pthread_mutex_lock(&cpu->owner_lock);
+			kobox_machine_domain_release(&cpu->domain);
+			atomic_store_explicit(&active_cpu, NULL, memory_order_release);
+			pthread_cond_broadcast(&cpu->execution_condition);
+			pthread_mutex_unlock(&cpu->owner_lock);
+			goto restore_mask;
 		}
 	}
 	return 0;
@@ -391,7 +343,7 @@ int kobox_posix_cpu_leave(struct kobox_posix_cpu *cpu)
 	    !saved_signal_mask_valid)
 		return EINVAL;
 	if (atomic_load_explicit(
-		    &cpu->irq_disable_depth, memory_order_acquire) != 0)
+		    &cpu->domain.irq_depth, memory_order_acquire) != 0)
 		return EBUSY;
 	sigemptyset(&signal_set);
 	sigaddset(&signal_set, cpu->signal_number);
@@ -401,8 +353,7 @@ int kobox_posix_cpu_leave(struct kobox_posix_cpu *cpu)
 	status = pthread_mutex_lock(&cpu->owner_lock);
 	if (status)
 		return status;
-	cpu->owner_valid = false;
-	cpu->owner_task = NULL;
+	kobox_machine_domain_release(&cpu->domain);
 	atomic_store_explicit(&active_cpu, NULL, memory_order_release);
 	pthread_cond_broadcast(&cpu->execution_condition);
 	pthread_mutex_unlock(&cpu->owner_lock);
@@ -442,23 +393,21 @@ int kobox_posix_cpu_switch(
 	status = pthread_mutex_lock(&cpu->owner_lock);
 	if (status)
 		goto unlock_dispatch;
-	if (!cpu->owner_valid || !pthread_equal(cpu->owner, pthread_self()) ||
-	    cpu->owner_task != previous) {
+	status = machine_status(kobox_machine_domain_handoff(
+		&cpu->domain, previous, next));
+	if (status) {
 		status = EPERM;
 		goto unlock_owner;
 	}
-	cpu->handoff_released = false;
 	cpu->owner = next->thread.native;
-	cpu->owner_task = next;
 	status = kobox_posix_task_wake(next);
 	if (status) {
 		cpu->owner = previous->thread.native;
-		cpu->owner_task = previous;
-		cpu->handoff_released = true;
+		kobox_machine_domain_handoff_abort(&cpu->domain, previous);
 		goto unlock_owner;
 	}
 	atomic_store_explicit(&active_cpu, NULL, memory_order_release);
-	cpu->handoff_released = true;
+	kobox_machine_domain_handoff_finish(&cpu->domain);
 	pthread_cond_broadcast(&cpu->execution_condition);
 	pthread_mutex_unlock(&cpu->owner_lock);
 	status = pthread_sigmask(SIG_SETMASK, &saved_signal_mask, NULL);
@@ -500,7 +449,6 @@ int kobox_posix_cpu_wait(
 	int status;
 	int restore_status;
 	uint64_t mask;
-	unsigned int index;
 
 	if (!cpu || !sequence_out || atomic_load_explicit(
 		    &active_cpu, memory_order_acquire) != cpu)
@@ -513,21 +461,8 @@ int kobox_posix_cpu_wait(
 		(void)kobox_posix_notifications_restore(mask);
 		return status;
 	}
-	while (atomic_load_explicit(
-		       &cpu->notification_sequence, memory_order_acquire) ==
-	       observed_sequence) {
-		/*
-		 * The caller can observe the new sequence before its signal is
-		 * delivered. Never sleep over an interrupt already pending when
-		 * we mask signals to enter pthread_cond_wait().
-		 */
-		for (index = 0; index < KOBOX_POSIX_NOTIFICATION_COUNT; index++) {
-			if (atomic_load_explicit(&cpu->pending[index],
-						 memory_order_acquire))
-				break;
-		}
-		if (index != KOBOX_POSIX_NOTIFICATION_COUNT)
-			break;
+	while (kobox_machine_domain_should_wait(&cpu->domain,
+					      observed_sequence)) {
 		status = pthread_cond_wait(
 			&cpu->execution_condition, &cpu->owner_lock);
 		if (status)
@@ -535,7 +470,7 @@ int kobox_posix_cpu_wait(
 	}
 	if (!status)
 		*sequence_out = atomic_load_explicit(
-			&cpu->notification_sequence, memory_order_acquire);
+			&cpu->domain.sequence, memory_order_acquire);
 	pthread_mutex_unlock(&cpu->owner_lock);
 	restore_status = kobox_posix_notifications_restore(mask);
 	return status ? status : restore_status;
@@ -543,38 +478,25 @@ int kobox_posix_cpu_wait(
 
 int kobox_posix_cpu_irq_disable(struct kobox_posix_cpu *cpu)
 {
-	unsigned int depth;
-
 	if (!cpu || atomic_load_explicit(
 		    &active_cpu, memory_order_acquire) != cpu)
 		return EINVAL;
-	depth = atomic_load_explicit(
-		&cpu->irq_disable_depth, memory_order_acquire);
-	for (;;) {
-		if (depth == UINT_MAX)
-			return EOVERFLOW;
-		if (atomic_compare_exchange_weak_explicit(
-			    &cpu->irq_disable_depth, &depth, depth + 1,
-			    memory_order_acq_rel, memory_order_acquire))
-			return 0;
-	}
+	return machine_status(kobox_machine_domain_irq_disable(&cpu->domain));
 }
 
 int kobox_posix_cpu_irq_enable(struct kobox_posix_cpu *cpu)
 {
-	unsigned int depth;
+	bool dispatch;
+	int status;
 
 	if (!cpu || atomic_load_explicit(
 		    &active_cpu, memory_order_acquire) != cpu)
 		return EINVAL;
-	depth = atomic_load_explicit(
-		&cpu->irq_disable_depth, memory_order_acquire);
-	if (!depth)
-		return EINVAL;
-	if (atomic_fetch_sub_explicit(
-		    &cpu->irq_disable_depth, 1, memory_order_acq_rel) == 1)
+	status = machine_status(kobox_machine_domain_irq_enable(&cpu->domain,
+							      &dispatch));
+	if (!status && dispatch)
 		dispatch_pending();
-	return 0;
+	return status;
 }
 
 int kobox_posix_cpu_notify(
@@ -595,24 +517,13 @@ int kobox_posix_cpu_notify(
 	status = pthread_mutex_lock(&cpu->owner_lock);
 	if (status)
 		goto restore_mask;
-	if (!cpu->accepting_notifications) {
-		pthread_mutex_unlock(&cpu->owner_lock);
-		status = ECANCELED;
-		goto restore_mask;
-	}
-	status = increment_pending(&cpu->pending[notification]);
+	status = machine_status(kobox_machine_domain_notify(&cpu->domain,
+			(enum kobox_machine_notification)notification));
 	if (status) {
 		pthread_mutex_unlock(&cpu->owner_lock);
 		goto restore_mask;
 	}
-	status = increment_pending(&cpu->notification_sequence);
-	if (status) {
-		(void)atomic_fetch_sub_explicit(
-			&cpu->pending[notification], 1, memory_order_release);
-		pthread_mutex_unlock(&cpu->owner_lock);
-		goto restore_mask;
-	}
-	if (cpu->owner_valid) {
+	if (cpu->domain.owner) {
 		pthread_cond_broadcast(&cpu->execution_condition);
 		/* Ownership must keep pthread_t alive until delivery is issued. */
 		status = pthread_kill(cpu->owner, cpu->signal_number);
@@ -625,10 +536,36 @@ restore_mask:
 	return status ? status : restore_status;
 }
 
+int kobox_posix_cpu_stop(struct kobox_posix_cpu *cpu)
+{
+	uint64_t start, now;
+	int status;
+
+	if (!cpu || !cpu->initialized ||
+	    atomic_load_explicit(&active_cpu, memory_order_acquire) == cpu)
+		return EINVAL;
+	status = kobox_posix_monotonic_ns(&start);
+	if (status)
+		return status;
+	atomic_store_explicit(&cpu->domain.stop_requested, true, memory_order_release);
+	/* Reuse the ownership-safe doorbell, not its guest IRQ dispatch. */
+	status = kobox_posix_cpu_notify(cpu, KOBOX_POSIX_NOTIFICATION_IRQ);
+	if (status)
+		return status;
+	while (!atomic_load_explicit(&cpu->domain.stopped, memory_order_acquire)) {
+		status = kobox_posix_monotonic_ns(&now);
+		if (status)
+			return status;
+		if (now - start > UINT64_C(2000000000))
+			return ETIMEDOUT;
+	}
+	return 0;
+}
+
 bool kobox_posix_cpu_irq_disabled(const struct kobox_posix_cpu *cpu)
 {
 	return cpu && cpu->initialized && atomic_load_explicit(
-		&cpu->irq_disable_depth, memory_order_acquire) != 0;
+		&cpu->domain.irq_depth, memory_order_acquire) != 0;
 }
 
 uint64_t kobox_posix_cpu_notification_sequence(
@@ -637,7 +574,7 @@ uint64_t kobox_posix_cpu_notification_sequence(
 	if (!cpu || !cpu->initialized)
 		return 0;
 	return atomic_load_explicit(
-		&cpu->notification_sequence, memory_order_acquire);
+		&cpu->domain.sequence, memory_order_acquire);
 }
 
 uint64_t kobox_posix_cpu_pending(
@@ -648,5 +585,5 @@ uint64_t kobox_posix_cpu_pending(
 	    notification >= KOBOX_POSIX_NOTIFICATION_COUNT)
 		return 0;
 	return atomic_load_explicit(
-		&cpu->pending[notification], memory_order_acquire);
+		&cpu->domain.pending[notification], memory_order_acquire);
 }

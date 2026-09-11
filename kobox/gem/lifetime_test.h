@@ -9,6 +9,8 @@ struct vfsmount;
 struct mm_struct;
 struct task_struct;
 struct kobox_vm_lifetime;
+struct kobox_syscall_test;
+struct kobox_syscall_report;
 
 enum kobox_gem_cleanup {
 	KOBOX_GEM_CLEANUP_NONE,
@@ -61,5 +63,10 @@ int kobox_gem_failure_test(const struct kobox_linux_vm_test *host,
 	struct kobox_gem_lifetime_report *report,
 	const struct kobox_gem_failure_services *services,
 	enum kobox_gem_final_owner final_owner);
+
+int kobox_gem_syscall_test(const struct kobox_syscall_test *host,
+	struct kobox_syscall_report *report,
+	int (*run)(const struct kobox_syscall_test *, struct kobox_syscall_report *, struct vfsmount *),
+	void (*drain)(void));
 
 #endif

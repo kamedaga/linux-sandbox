@@ -16,6 +16,8 @@
 enum kobox_linux_task_notification {
 	KOBOX_LINUX_TASK_RESCHEDULE = 0,
 	KOBOX_LINUX_TASK_CALL_FUNCTION,
+	KOBOX_LINUX_TASK_DEVICE_IRQ,
+	KOBOX_LINUX_TASK_CONTROL_EVENT,
 	KOBOX_LINUX_TASK_VM_EVENT,
 	KOBOX_LINUX_TASK_CLOCKEVENT,
 };
@@ -37,6 +39,8 @@ struct kobox_linux_task_host_operations {
 			  void *next_task, uint8_t exiting);
 	int (*cpu_wait)(uint32_t cpu, uint64_t observed_sequence,
 			uint64_t *sequence_out);
+	/* Irreversible remote halt, acknowledged even with guest IRQs disabled. */
+	int (*cpu_stop)(uint32_t cpu);
 	int (*cpu_notify)(uint32_t cpu,
 			  enum kobox_linux_task_notification notification);
 	int (*cpu_irq_disable)(uint32_t cpu);

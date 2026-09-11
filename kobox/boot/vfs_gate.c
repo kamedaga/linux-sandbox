@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "host.h"
+#include "diagnostic.h"
 #include "vfs_gate.h"
 
 #include <linux/completion.h>
@@ -15,6 +16,7 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
+#include <linux/pageblock-flags.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/shmem_fs.h>
@@ -448,14 +450,115 @@ static int reuse_files_and_inodes(struct vfs_case *test)
 	return set_cpus_allowed_ptr(current, cpumask_of(test->report->cpu));
 }
 
+struct folio_reuse {
+	struct page **pages;
+	unsigned long pfns[3];
+	int released_refs[3];
+	unsigned int capacity;
+	unsigned int count;
+	/* Each bit records an actual fresh allocation, even after probes are freed. */
+	unsigned int seen;
+};
+
+static void release_folio_probes(struct folio_reuse *reuse)
+{
+	unsigned int index;
+
+	for (index = 0; index < reuse->count; index++)
+		__free_page(reuse->pages[index]);
+	reuse->count = 0;
+}
+
+static void allocate_folio_probes(struct folio_reuse *reuse, gfp_t gfp,
+				  unsigned int limit)
+{
+	unsigned int index, which;
+
+	for (index = 0; index < limit && reuse->count < reuse->capacity &&
+	     reuse->seen != GENMASK(2, 0); index++) {
+		struct page *page = alloc_page(gfp | __GFP_NORETRY | __GFP_NOWARN);
+
+		if (!page)
+			break;
+		reuse->pages[reuse->count++] = page;
+		for (which = 0; which < ARRAY_SIZE(reuse->pfns); which++)
+			if (page_to_pfn(page) == reuse->pfns[which])
+				reuse->seen |= BIT(which);
+	}
+}
+
+static int probe_folio_reuse(struct vfs_case *test, struct folio_reuse *reuse)
+{
+	gfp_t classes[] = { test->folio_gfp, test->folio_gfp,
+			    GFP_KERNEL, GFP_KERNEL | __GFP_MEMALLOC };
+	unsigned int kind, cpu;
+
+	/* Exercise both cached and drained buddy state. Reuse is required, but
+	 * Linux does not promise a retired PFN appears in a small PCP batch.
+	 */
+	if (test->report->deferred)
+		drain_all_pages(NULL);
+	for (kind = 0; kind < ARRAY_SIZE(classes); kind++) {
+		for_each_online_cpu(cpu) {
+			if (reuse->seen == GENMASK(2, 0))
+				break;
+			if (kind) {
+				release_folio_probes(reuse);
+				drain_all_pages(NULL);
+			}
+			if (set_cpus_allowed_ptr(current, cpumask_of(cpu)))
+				return fail(test, __LINE__, -EINVAL);
+			allocate_folio_probes(reuse, classes[kind],
+					     kind ? reuse->capacity : REUSE_BATCH);
+		}
+		if (reuse->seen == GENMASK(2, 0))
+			break;
+		if (!kind)
+			kobox_linux_boot_diagnostic(
+				"kobox VFS reuse: extending search seen=%u probes=%u\n",
+				reuse->seen, reuse->count);
+		/* As in the VM Gate, the final test-only pass uses reserves.
+		 * A free PFN may lie below ordinary allocation watermarks. Never
+		 * replace actual alloc_page reuse with a zero-refcount shortcut.
+		 */
+	}
+	if (kind && reuse->seen == GENMASK(2, 0))
+		kobox_linux_boot_diagnostic(
+			"kobox VFS reuse: extended search matched all PFNs class=%u probes=%u\n",
+			kind, reuse->count);
+	return 0;
+}
+
+static void report_folio_reuse(struct folio_reuse *reuse, gfp_t gfp)
+{
+	unsigned int index;
+
+	kobox_linux_boot_diagnostic(
+		"kobox VFS reuse: seen=%u probes=%u gfp=%#x\n",
+		reuse->seen, reuse->count, gfp);
+	for (index = 0; index < ARRAY_SIZE(reuse->pfns); index++) {
+		struct page *page = pfn_to_page(reuse->pfns[index]);
+
+		/* Page metadata is permanent; observations may race reuse. */
+		kobox_linux_boot_diagnostic(
+			"kobox VFS reuse: pfn=%lu released_refs=%d refs=%d flags=%#lx type=%#x mobility=%d zone=%d\n",
+			reuse->pfns[index], reuse->released_refs[index],
+			page_ref_count(page), READ_ONCE(page->flags.f),
+			READ_ONCE(page->page_type),
+			get_pageblock_migratetype(page), page_zonenum(page));
+	}
+}
+
 static int reuse_folios(struct vfs_case *test)
 {
-	struct page **pages;
-	unsigned long pfns[ARRAY_SIZE(test->folios)];
-	unsigned int cpu, index, which, count = 0, seen = 0;
+	struct folio_reuse reuse = { .capacity = totalram_pages() };
+	unsigned int index;
+	int result;
 
-	pages = kcalloc(2 * REUSE_BATCH, sizeof(*pages), GFP_KERNEL);
-	if (!pages)
+	BUILD_BUG_ON(ARRAY_SIZE(reuse.pfns) != ARRAY_SIZE(test->folios));
+	/* Allocate scratch before retirement; it cannot consume a target PFN. */
+	reuse.pages = kvcalloc(reuse.capacity, sizeof(*reuse.pages), GFP_KERNEL);
+	if (!reuse.pages)
 		return fail(test, __LINE__, -ENOMEM);
 	for (index = 0; index < ARRAY_SIZE(test->folios); index++) {
 		size_t offset = index * PAGE_SIZE;
@@ -465,31 +568,22 @@ static int reuse_folios(struct vfs_case *test)
 		    folio_ref_count(test->folios[index]) != 1 ||
 		    memcmp(folio_address(test->folios[index]), test->read + offset, length))
 			return fail(test, __LINE__, -EINVAL);
-		pfns[index] = folio_pfn(test->folios[index]);
+		reuse.pfns[index] = folio_pfn(test->folios[index]);
 		folio_put(test->folios[index]);
+		/* Snapshot only; no ownership of the freed page remains. */
+		reuse.released_refs[index] = page_ref_count(pfn_to_page(reuse.pfns[index]));
 		test->folios[index] = NULL;
 	}
-	for_each_online_cpu(cpu) {
-		if (set_cpus_allowed_ptr(current, cpumask_of(cpu)))
-			return fail(test, __LINE__, -EINVAL);
-		for (index = 0; index < REUSE_BATCH && seen != GENMASK(2, 0); index++) {
-			/* Match shmem's zone and mobility class, not an unrelated PCP list. */
-			struct page *page = alloc_page(test->folio_gfp);
-
-			if (!page)
-				return fail(test, __LINE__, -ENOMEM);
-			pages[count++] = page;
-			for (which = 0; which < ARRAY_SIZE(pfns); which++)
-				if (page_to_pfn(page) == pfns[which])
-					seen |= BIT(which);
-		}
+	result = probe_folio_reuse(test, &reuse);
+	if (result)
+		return result;
+	if (reuse.seen != GENMASK(2, 0)) {
+		report_folio_reuse(&reuse, test->folio_gfp);
+		return fail(test, __LINE__, reuse.seen);
 	}
-	if (seen != GENMASK(2, 0))
-		return fail(test, __LINE__, seen);
-	for (index = 0; index < count; index++)
-		__free_page(pages[index]);
-	kfree(pages);
-	test->report->folio_reclaims += ARRAY_SIZE(pfns);
+	release_folio_probes(&reuse);
+	kvfree(reuse.pages);
+	test->report->folio_reclaims += ARRAY_SIZE(reuse.pfns);
 	return set_cpus_allowed_ptr(current, cpumask_of(test->report->cpu));
 }
 

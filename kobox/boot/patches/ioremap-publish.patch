@@ -1,0 +1,15 @@
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -11,3 +11,4 @@
+ #include <linux/vmalloc.h>
++#include <linux/kobox_boot.h>
+ #include <linux/mm.h>
+ #include <linux/module.h>
+@@ -348,5 +349,6 @@
+ 				 ioremap_max_page_shift);
+-	flush_cache_vmap(addr, end);
++	if (!err)
++		err = kobox_linux_memory_publish(addr, end);
+ 	if (!err)
+ 		err = kmsan_ioremap_page_range(addr, end, phys_addr, prot,
+ 					       ioremap_max_page_shift);

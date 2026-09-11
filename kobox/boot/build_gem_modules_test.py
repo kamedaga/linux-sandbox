@@ -14,6 +14,19 @@ SPEC.loader.exec_module(gem)
 
 
 class GemModuleBuildTest(unittest.TestCase):
+    def test_virtio_gpu_closure_requires_native_transport_and_kms(self):
+        config = "\n".join((
+            "CONFIG_MODULES=y", "CONFIG_DRM=m", "CONFIG_DRM_GEM_SHMEM_HELPER=m",
+            "CONFIG_VIRTIO=m", "CONFIG_VIRTIO_PCI=m", "CONFIG_VIRTIO_PCI_LIB=m",
+            "CONFIG_VIRTIO_DMA_SHARED_BUFFER=m", "CONFIG_DRM_KMS_HELPER=m",
+            "CONFIG_DRM_VIRTIO_GPU=m", "CONFIG_DRM_VIRTIO_GPU_KMS=y"))
+        self.assertEqual(gem.module_objects(config, False), gem.GEM_OBJECTS)
+        self.assertEqual(gem.module_objects(config, True),
+                         gem.GEM_OBJECTS + gem.VIRTIO_GPU_OBJECTS)
+        for setting in config.splitlines():
+            with self.subTest(setting=setting), self.assertRaises(gem.boot.BootBuildError):
+                gem.module_objects(config.replace(setting, ""), True)
+
     def relocation_record(self, kind, allocated=True):
         return {"Sections": [
             {"Section": {"Index": 1, "Name": {"Name": ".text"},

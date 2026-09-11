@@ -3,7 +3,7 @@
 #ifndef KOBOX_CLOSURE_LOADER_H
 #define KOBOX_CLOSURE_LOADER_H
 
-#include "../runtime/resource_runtime.h"
+#include "../host/posix/resource.h"
 
 #include <kobox2/closure_manifest.h>
 
@@ -40,7 +40,7 @@ struct kobox_closure_loader_config {
 	const kb2_resource_grant_t *grant;
 	const int *resource_handles;
 	size_t resource_handle_count;
-	kobox_resource_import_fn import_resource;
+	kobox_posix_resource_import_fn import_resource;
 	kobox_resource_release_fn release_resource;
 	void *resource_context;
 	kobox_closure_shared_validate_fn validate_shared;

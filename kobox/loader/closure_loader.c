@@ -933,7 +933,7 @@ enum kobox_closure_loader_status kobox_closure_loader_open(
 	if (status == KOBOX_CLOSURE_OK)
 		status = verify_artifacts(config, loader);
 	if (status == KOBOX_CLOSURE_OK) {
-		struct kobox_resource_runtime_config resource_config = {
+		struct kobox_posix_resource_config resource_config = {
 			.manifest = config->manifest,
 			.grant = config->grant,
 			.native_handles = config->resource_handles,
@@ -943,7 +943,7 @@ enum kobox_closure_loader_status kobox_closure_loader_open(
 			.object_context = config->resource_context,
 		};
 		enum kobox_resource_runtime_status resource_status =
-			kobox_resource_runtime_open(&resource_config,
+			kobox_posix_resource_open(&resource_config,
 						    &loader->resource_runtime);
 
 		if (resource_status == KOBOX_RESOURCE_RUNTIME_NO_MEMORY)

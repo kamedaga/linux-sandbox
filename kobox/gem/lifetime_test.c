@@ -25,6 +25,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem_shmem_helper.h>
+#include <drm/drm_vma_manager.h>
 #include "../../mm/slab.h"
 
 #define BUFFER_PAGES 3
@@ -104,6 +105,7 @@ DEFINE_DRM_GEM_FOPS(gem_fops);
 static const struct drm_driver gem_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_RENDER,
 	.fops = &gem_fops,
+	.dumb_create = drm_gem_shmem_dumb_create,
 	.name = "kobox-gem-lifetime",
 	.desc = "Upstream shmem lifetime test",
 	.major = 1,
@@ -127,10 +129,10 @@ fault:
 	return -EFAULT;
 }
 
-static int create_node(struct gem_case *test)
+static int create_node(struct gem_case *test, const char *node, dev_t number, umode_t mode)
 {
 	struct inode *parent = d_inode(test->mnt->mnt_root);
-	struct qstr name = QSTR_INIT("render", 6);
+	struct qstr name = QSTR_INIT(node, strlen(node));
 	struct dentry *dentry;
 	int result;
 
@@ -142,8 +144,20 @@ static int create_node(struct gem_case *test)
 	if (IS_ERR(dentry)) {
 		result = PTR_ERR(dentry);
 	} else {
+		struct iattr attributes = {
+			.ia_valid = ATTR_MODE | ATTR_CTIME, .ia_mode = S_IFCHR | mode,
+		};
+
 		result = vfs_mknod(mnt_idmap(test->mnt), parent, dentry,
-			S_IFCHR | 0600, MKDEV(DRM_MAJOR, test->dev->render->index));
+			S_IFCHR | mode, number);
+		/* vfs_mknod applies the creator's umask. Set the fixture's
+		 * explicit DAC permissions through VFS, just as device setup does.
+		 */
+		if (!result) {
+			inode_lock_nested(d_inode(dentry), I_MUTEX_CHILD);
+			result = notify_change(mnt_idmap(test->mnt), dentry, &attributes, NULL);
+			inode_unlock(d_inode(dentry));
+		}
 		dput(dentry);
 	}
 	inode_unlock(parent);
@@ -173,7 +187,7 @@ static int create_device(struct gem_case *test)
 	module_put(type->owner);
 	if (IS_ERR(test->mnt))
 		return fail(test, __LINE__, PTR_ERR(test->mnt));
-	result = create_node(test);
+	result = create_node(test, "render", MKDEV(DRM_MAJOR, test->dev->render->index), 0600);
 	if (result)
 		return fail(test, __LINE__, result);
 	for (index = 0; index < 2; index++) {
@@ -1605,6 +1619,53 @@ int kobox_gem_lifetime_test(const struct kobox_linux_vm_test *host,
 	return lifetime_test(host, report, drain, final_owner, NULL);
 }
 EXPORT_SYMBOL_GPL(kobox_gem_lifetime_test);
+
+int kobox_gem_syscall_test(const struct kobox_syscall_test *host,
+	struct kobox_syscall_report *report,
+	int (*run)(const struct kobox_syscall_test *, struct kobox_syscall_report *, struct vfsmount *),
+	void (*drain)(void))
+{
+	struct kobox_gem_lifetime_report device_report = {0};
+	struct gem_case *test;
+	dev_t number;
+	unsigned int index;
+	int result;
+
+	if (!host || !report || !run || !drain)
+		return -EINVAL;
+	test = kzalloc(sizeof(*test), GFP_KERNEL);
+	if (!test)
+		return -ENOMEM;
+	test->report = &device_report;
+	result = create_device(test);
+	if (result)
+		return result;
+	/* Dumb-buffer ioctls use a primary node, not a render-node exception.
+	 * Only the device description is fixture code; all file/ioctl/GEM
+	 * implementations and buffer allocation are upstream.
+	 */
+	number = MKDEV(DRM_MAJOR, test->dev->primary->index);
+	result = create_node(test, "card", number, 0666) ?:
+		 create_node(test, "private", number, 0600);
+	if (!result)
+		result = run(host, report, test->mnt);
+	if (result)
+		return result;
+	drain();
+	if (atomic_read(&test->dev->open_count) != 2 ||
+	    !drm_mm_clean(&test->dev->vma_offset_manager->vm_addr_space_mm))
+		return -EINVAL;
+	for (index = 0; index < ARRAY_SIZE(test->files); index++)
+		__fput_sync(test->files[index]);
+	drm_dev_unregister(test->dev);
+	drm_dev_put(test->dev);
+	root_device_unregister(test->parent);
+	kern_unmount(test->mnt);
+	drain();
+	kfree(test);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kobox_gem_syscall_test);
 
 int kobox_gem_failure_test(const struct kobox_linux_vm_test *host,
 	struct kobox_gem_lifetime_report *report,

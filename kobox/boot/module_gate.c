@@ -4,6 +4,7 @@
 #include "vm_lifetime.h"
 #include "exception.h"
 #include "allocation_gate.h"
+#include "diagnostic.h"
 #include "../mm/port.h"
 
 #include <linux/fcntl.h>
@@ -105,7 +106,7 @@ static int check_kernel_permissions(const struct kobox_linux_module_test *test,
 	struct page *page;
 	void *memory, *direct;
 	int (*execute)(void);
-	int result = -EINVAL;
+	int result = -EINVAL, access;
 
 	memory = execmem_alloc(EXECMEM_MODULE_TEXT, PAGE_SIZE);
 	if (!memory)
@@ -128,10 +129,24 @@ static int check_kernel_permissions(const struct kobox_linux_module_test *test,
 	report->permissions++;
 	/* Full CPA/TLB publication must not weaken boot's core RO aliases. */
 	__flush_tlb_all();
-	if (probe_read(__start_rodata, &core_value) ||
-	    probe_write(__start_rodata, core_value) != -EFAULT ||
-	    probe_write(__va(__pa_symbol(__start_rodata)), core_value) != -EFAULT)
+	access = probe_read(__start_rodata, &core_value);
+	if (access) {
+		kobox_linux_boot_diagnostic("module permissions: core read=%d address=%px\n",
+					    access, __start_rodata);
 		goto out;
+	}
+	access = probe_write(__start_rodata, core_value);
+	if (access != -EFAULT) {
+		kobox_linux_boot_diagnostic("module permissions: core image write=%d address=%px\n",
+					    access, __start_rodata);
+		goto out;
+	}
+	access = probe_write(__va(__pa_symbol(__start_rodata)), core_value);
+	if (access != -EFAULT) {
+		kobox_linux_boot_diagnostic("module permissions: core direct write=%d address=%px\n",
+					    access, __va(__pa_symbol(__start_rodata)));
+		goto out;
+	}
 	report->permissions++;
 	if (set_memory_nx(address, 1) || set_memory_rw(address, 1) ||
 	    probe_write(memory, value) || probe_write(direct, value) ||
@@ -236,15 +251,16 @@ int kobox_linux_module_probe(const struct kobox_linux_module_test *test,
 		{"kobox_vm_space_destroy", kobox_vm_space_destroy},
 		{"kobox_vm_resolve_fault", kobox_vm_resolve_fault},
 	};
-	static const char * const names[KOBOX_GEM_MODULES + 1] = {
+	const char * const names[KOBOX_GEM_MODULES + 1] = {
 		"i2c_core", "drm_panel_orientation_quirks", "drm", "drm_shmem_helper",
-		"lifetime_test",
+		test && test->resource_image.data ? "resource_test" : "lifetime_test",
 	};
 	struct pt_regs regs = {0};
 	unsigned int index;
 	long result = 0;
 
 	if (!test || test->size != sizeof(*test) || !test->access || !report ||
+	    (test->vm && test->resource_image.data) ||
 	    report->size != sizeof(*report))
 		return -EINVAL;
 	report->phase = 1;
@@ -262,9 +278,9 @@ int kobox_linux_module_probe(const struct kobox_linux_module_test *test,
 	result = check_kernel_permissions(test, report);
 	if (result)
 		goto out_report;
-	for (index = 0; index < KOBOX_GEM_MODULES + !!test->vm; index++) {
+	for (index = 0; index < KOBOX_GEM_MODULES + !!(test->vm || test->resource_image.data); index++) {
 		const struct kobox_linux_module_image *image = index < KOBOX_GEM_MODULES ?
-			&test->images[index] : &test->lifetime_image;
+			&test->images[index] : test->vm ? &test->lifetime_image : &test->resource_image;
 
 		report->phase = 2 + index;
 		if (!image->data || !image->length) {
@@ -276,13 +292,36 @@ int kobox_linux_module_probe(const struct kobox_linux_module_test *test,
 			break;
 		regs.di = (unsigned long)image->data;
 		regs.si = image->length;
-		regs.dx = (unsigned long)"";
+		regs.dx = (unsigned long)(index == KOBOX_GEM_MODULES && test->resource_fail_init ?
+			"fail_after_map=1" : index == KOBOX_GEM_MODULES && test->lifecycle ?
+			"heartbeat=1" : "");
 		result = __x64_sys_init_module(&regs);
 		if (result)
 			break;
 		report->loaded++;
 	}
-	if (!result && test->vm && test->allocation_failures) {
+	if (!result && test->vm && test->issue_syscall) {
+		struct kobox_syscall_test host = {
+			.size = sizeof(host), .vm = test->vm, .issue = test->issue_syscall,
+		};
+		int (*verify)(const struct kobox_syscall_test *, struct kobox_syscall_report *,
+			int (*)(const struct kobox_syscall_test *, struct kobox_syscall_report *,
+				struct vfsmount *), void (*)(void));
+
+		verify = __symbol_get("kobox_gem_syscall_test");
+		if (!verify) {
+			result = -ENOENT;
+		} else {
+			report->syscalls.size = sizeof(report->syscalls);
+			result = verify(&host, &report->syscalls,
+					test->syscall_rights ? kobox_linux_drm_rights_verify :
+					kobox_linux_drm_syscall_verify,
+					drain_lifetime);
+			if (result)
+				goto out_report;
+			__symbol_put("kobox_gem_syscall_test");
+		}
+	} else if (!result && test->vm && test->allocation_failures) {
 		struct failure_module_call call = { .test = test, .report = report };
 
 		call.verify = __symbol_get("kobox_gem_failure_test");
@@ -311,6 +350,8 @@ int kobox_linux_module_probe(const struct kobox_linux_module_test *test,
 			__symbol_put("kobox_gem_lifetime_test");
 		}
 	}
+	if (!result && test->lifecycle)
+		result = kobox_linux_lifecycle_wait(test->lifecycle);
 	for (index = report->loaded; index; index--) {
 		long unloaded;
 

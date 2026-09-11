@@ -1,0 +1,24 @@
+Subject: [PATCH] ui/sdl2: redraw the active scanout on deferred refresh
+
+Local follow-up to upstream 5bb16eb70701b01ae9ffe2d7e5165f5a70c5df69.
+Applies to the external QEMU display dependency, not the Linux core.
+The original SDL source license remains MIT.
+
+A placeholder update queued by scanout disable can still be pending when
+virtio-gpu installs and flushes its first GL scanout. The refresh timer then
+draws the old pixman surface over the GL frame. Preserving scanout_mode is
+not sufficient: refresh must select the active presentation source, just as
+an SDL expose/resize event already does. Reuse sdl2_gl_redraw for that choice.
+No guest resource contents, GPU commands, fences or events are synthesized.
+
+--- a/ui/sdl2-gl.c
++++ b/ui/sdl2-gl.c
+@@ -116,7 +116,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
+     graphic_hw_update(dcl->con);
+     if (scon->updates && scon->real_window) {
+         scon->updates = 0;
+-        sdl2_gl_render_surface(scon);
++        sdl2_gl_redraw(scon);
+     }
+     sdl2_poll_events(scon);
+ }

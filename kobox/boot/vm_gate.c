@@ -568,11 +568,16 @@ static struct page *reacquire_pfn(unsigned long pfn, gfp_t gfp,
 {
 	cpumask_t saved_mask = *current->cpus_ptr;
 	struct page *found = ERR_PTR(-ENOENT);
-	gfp_t classes[] = { gfp, GFP_KERNEL };
+	gfp_t classes[] = { gfp, GFP_KERNEL, GFP_KERNEL | __GFP_MEMALLOC };
 	unsigned int kind, cpu, index, count = 0;
 
 	/* Scratch predates retirement, so it cannot consume the target PFN.
 	 * Memory pressure can reorder all of buddy, not just one small batch.
+	 * The final test-only pass may use allocator reserves: an arbitrary
+	 * retired PFN can remain below the normal watermark even with no live
+	 * references. Require a real alloc_page of that PFN, then return all
+	 * scratch pages before resuming the delayed access. This does not
+	 * change the pressure workload's GFP flags or any runtime allocator.
 	 */
 	lru_add_drain_all();
 	for (kind = 0; kind < ARRAY_SIZE(classes); kind++) {

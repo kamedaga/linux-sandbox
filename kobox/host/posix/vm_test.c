@@ -66,13 +66,12 @@ static int reset_checked(struct kobox_posix_vm *space, uint64_t address)
 	return result;
 }
 
-static int exercise(const char *client)
+static int exercise(const char *client, uint64_t base, size_t window_size)
 {
 	struct kobox_posix_memory_backing ram = {0};
 	struct kobox_posix_vm spaces[2] = {0};
 	struct kobox_posix_vm failed = {0};
 	struct kobox_posix_vm_event event;
-	uint64_t base = KOBOX_VM_WINDOW_BASE;
 	unsigned int rw = KOBOX_POSIX_MEMORY_READ | KOBOX_POSIX_MEMORY_WRITE;
 	uint64_t *direct;
 	pid_t pids[2];
@@ -83,14 +82,49 @@ static int exercise(const char *client)
 	CHECK(direct != MAP_FAILED);
 	direct[0] = 0x13579;
 	direct[4096 / sizeof(*direct)] = 0xabcde;
-	CHECK(kobox_posix_vm_create(&failed, "/nonexistent/kobox-vm-client", &ram) == ENOENT);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, 0, window_size) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, base + 1, window_size) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, base, 0) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, base, window_size + 1) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, base, SIZE_MAX - 4095) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, client, &ram, UINT64_C(1) << 47, 4096) == EINVAL);
+	CHECK(!failed.owner && !failed.pid && !failed.control);
+	CHECK(kobox_posix_vm_reset(NULL, base, 4096) == EINVAL);
+	CHECK(kobox_posix_vm_protect(NULL, base, 4096, rw) == EINVAL);
+	CHECK(kobox_posix_vm_create(&failed, "/nonexistent/kobox-vm-client", &ram,
+		base, window_size) == ENOENT);
 	CHECK(!failed.pid && !failed.control && !failed.control_backing.initialized);
 	for (index = 0; index < 2; index++) {
-		CHECK(kobox_posix_vm_create(&spaces[index], client, &ram) == 0);
+		CHECK(kobox_posix_vm_create(&spaces[index], client, &ram, base, window_size) == 0);
 		pids[index] = spaces[index].pid;
 		CHECK(pids[index] > 0 && pids[index] != getpid());
 	}
 	CHECK(pids[0] != pids[1]);
+	/* Exercise the last page, including a relocated window much larger
+	 * than the old diagnostic reservation. Bounds remain host-owned even
+	 * if the client changes its bootstrap copy after initialization.
+	 */
+	spaces[0].control->window_start = 0;
+	spaces[0].control->window_size = UINT64_MAX;
+	CHECK(kobox_posix_vm_reset(&spaces[0], base - 4096, 4096) == EINVAL);
+	CHECK(kobox_posix_vm_reset(&spaces[0], base, SIZE_MAX - 4095) == EINVAL);
+	CHECK(access_begin(&spaces[0], base + window_size - 4096, 0, 0, &event) == 0);
+	CHECK(event.kind == KOBOX_POSIX_VM_FAULT && event.address == base + window_size - 4096);
+	CHECK(kobox_posix_vm_map(&spaces[0], base + window_size - 4096, 0, 4096, rw) == 0);
+	CHECK(access_resume(&spaces[0], &event) == 0 && access_done(&spaces[0], &event, direct[0]));
+	CHECK(kobox_posix_vm_reset(&spaces[0], base + window_size - 4096, 4096) == 0);
+	/* A push with RSP inside an inaccessible guest page must reach the
+	 * context's separate signal stack, then retry the real instruction.
+	 */
+	CHECK(access_begin(&spaces[0], base + 4096, 8, 0xfeed1234, &event) == 0);
+	CHECK(event.kind == KOBOX_POSIX_VM_FAULT &&
+	      event.address == base + 4096 && event.sp == base + 4096 + 8 &&
+	      (event.error & 6) == 6);
+	CHECK(kobox_posix_vm_map(&spaces[0], base + 4096, 4096, 4096, rw) == 0);
+	CHECK(access_resume(&spaces[0], &event) == 0 &&
+	      access_done(&spaces[0], &event, 0xfeed1234));
+	CHECK(direct[4096 / sizeof(*direct)] == 0xfeed1234);
+	direct[4096 / sizeof(*direct)] = 0xabcde;
 	CHECK(kobox_posix_vm_wait(&spaces[0], true, &event) == EAGAIN);
 	CHECK(access_begin(&spaces[0], base, 0, 0, &event) == 0);
 	CHECK(event.kind == KOBOX_POSIX_VM_FAULT && event.address == base &&
@@ -125,7 +159,7 @@ static int exercise(const char *client)
 	CHECK(kobox_posix_vm_map(&spaces[0], base - 4096, 0, 4096, rw) == EINVAL);
 	CHECK(kobox_posix_vm_protect(&spaces[0], base, 0, rw) == EINVAL);
 	CHECK(kobox_posix_vm_protect(&spaces[0], base, 4096, 8) == EINVAL);
-	CHECK(kobox_posix_vm_reset(&spaces[0], base + KOBOX_VM_WINDOW_SIZE, 4096) == EINVAL);
+	CHECK(kobox_posix_vm_reset(&spaces[0], base + window_size, 4096) == EINVAL);
 	for (index = 0; index < 200; index++) {
 		CHECK(kobox_posix_vm_reset(&spaces[0], base, 4096) == 0);
 		spaces[0].control->address = base;
@@ -164,6 +198,8 @@ static int exercise(const char *client)
 	CHECK(access_resume(&spaces[0], &event) == 0 && access_done(&spaces[0], &event, 0xabcde));
 	CHECK(kobox_posix_vm_protect(&spaces[1], base, 4096, KOBOX_POSIX_MEMORY_READ) == 0);
 	CHECK(access_begin(&spaces[1], base, 2, 0x99999, &event) == EPERM);
+	CHECK(kobox_posix_vm_resume(&spaces[1]) == EPERM);
+	CHECK(kobox_posix_vm_map(&spaces[1], base, 0, 4096, rw) == EPERM);
 	CHECK(direct[0] == 0xaaa55);
 	for (index = 0; index < 2; index++) {
 		CHECK(kobox_posix_vm_destroy(&spaces[index]) == 0);
@@ -182,7 +218,9 @@ static int exercise(const char *client)
 int main(int argc, char **argv)
 {
 	CHECK(argc == 2);
-	CHECK(exercise(argv[1]) == 0);
+	CHECK(exercise(argv[1], KOBOX_VM_TEST_WINDOW_BASE, KOBOX_VM_TEST_WINDOW_SIZE) == 0);
+	CHECK(exercise(argv[1], KOBOX_VM_TEST_WINDOW_BASE + (UINT64_C(1) << 32),
+		64UL * 1024 * 1024) == 0);
 	puts("POSIX two-process VM transport passed (not the Linux MM/VMA Gate)");
 	return 0;
 }

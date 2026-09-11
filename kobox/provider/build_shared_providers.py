@@ -213,6 +213,21 @@ def provider_include_flags(source_tree, provider_build_dir):
     return " ".join(flags)
 
 
+def prepare_hosted_kconfig(source_tree, build_dir):
+    source_tree, build_dir = source_tree.resolve(), build_dir.resolve()
+    if source_tree == build_dir:
+        raise ProviderBuildError("hosted Kconfig requires an out-of-tree build")
+    # Kconfig's mainmenu cannot occur inside a source statement. Preserve
+    # the complete upstream top-level text in an artifact, then source only
+    # our machine options. Never duplicate its include list or edit Linux.
+    content = (source_tree / "Kconfig").read_text() + '\nsource "kobox/Kconfig"\n'
+    output = build_dir / ".kobox/Kconfig"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not output.is_file() or output.read_text() != content:
+        output.write_text(content)
+    return output
+
+
 def make_arguments(arguments, targets, include_overlay=False):
     result = [
         arguments.make,
@@ -224,6 +239,10 @@ def make_arguments(arguments, targets, include_overlay=False):
         f"CC={arguments.cc}",
         f"LD={arguments.ld}",
     ]
+    config = arguments.provider_build_dir / ".config"
+    if config.is_file() and "CONFIG_KOBOX_HOSTED=y" in config.read_text().splitlines():
+        entry = prepare_hosted_kconfig(arguments.source_tree, arguments.provider_build_dir)
+        result.append(f"KBUILD_KCONFIG={entry}")
     if include_overlay:
         result.extend((
             "LINUXINCLUDE=" + provider_include_flags(

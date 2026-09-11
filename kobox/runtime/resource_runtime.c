@@ -2,7 +2,7 @@
 
 #include "resource_runtime.h"
 
-#include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 struct registry_object {
@@ -26,6 +26,9 @@ struct view_slot {
 struct node_view {
 	const struct kobox_resource_runtime *runtime;
 	uint32_t node_id;
+	uint32_t artifact_kind;
+	uint32_t artifact_flags;
+	char namespace_name[128];
 	struct view_slot *slots;
 	size_t slot_count;
 };
@@ -38,7 +41,21 @@ struct kobox_resource_runtime {
 	size_t view_count;
 	kobox_resource_release_fn release_object;
 	void *object_context;
+	struct kobox_runtime_allocator allocator;
 };
+
+static void *allocate(const struct kobox_runtime_allocator *allocator,
+		      size_t count, size_t size)
+{
+	if (size && count > SIZE_MAX / size)
+		return NULL;
+	return allocator->allocate_zeroed(allocator->context, count, size);
+}
+
+static void release(const struct kobox_resource_runtime *runtime, void *memory)
+{
+	runtime->allocator.release(runtime->allocator.context, memory);
+}
 
 static size_t find_view_index(const struct kobox_resource_runtime *runtime,
 			      uint32_t node_id)
@@ -239,16 +256,16 @@ static void free_runtime(struct kobox_resource_runtime *runtime)
 
 	if (!runtime)
 		return;
-	for (index = runtime->object_count; index > 0; index--) {
+	for (index = runtime->object_count; runtime->objects && index > 0; index--) {
 		if (runtime->objects[index - 1].native_object)
 			runtime->release_object(runtime->object_context,
 						runtime->objects[index - 1].native_object);
 	}
-	for (index = 0; index < runtime->view_count; index++)
-		free(runtime->views[index].slots);
-	free(runtime->views);
-	free(runtime->objects);
-	free(runtime);
+	for (index = 0; runtime->views && index < runtime->view_count; index++)
+		release(runtime, runtime->views[index].slots);
+	release(runtime, runtime->views);
+	release(runtime, runtime->objects);
+	release(runtime, runtime);
 }
 
 static enum kobox_resource_runtime_status copy_views(
@@ -266,17 +283,28 @@ static enum kobox_resource_runtime_status copy_views(
 	size_t index;
 
 	runtime->view_count = artifact_count;
-	runtime->views = calloc(artifact_count, sizeof(runtime->views[0]));
+	runtime->views = allocate(&runtime->allocator, artifact_count, sizeof(runtime->views[0]));
 	if (artifact_count && !runtime->views)
 		return KOBOX_RESOURCE_RUNTIME_NO_MEMORY;
 	for (index = 0; index < artifact_count; index++) {
 		kb2_closure_manifest_artifact_t artifact;
+		size_t prior;
 
 		if (kb2_closure_manifest_artifact(config->manifest, index,
 						  &artifact) != KB2_PROTOCOL_OK)
 			return KOBOX_RESOURCE_RUNTIME_MALFORMED;
 		runtime->views[index].runtime = runtime;
 		runtime->views[index].node_id = artifact.node_id;
+		runtime->views[index].artifact_kind = artifact.kind;
+		runtime->views[index].artifact_flags = artifact.flags;
+		if (artifact.namespace_name.length >= sizeof(runtime->views[index].namespace_name))
+			return KOBOX_RESOURCE_RUNTIME_MALFORMED;
+		memcpy(runtime->views[index].namespace_name, artifact.namespace_name.data,
+		       artifact.namespace_name.length);
+		for (prior = 0; prior < index; prior++)
+			if (!strcmp(runtime->views[prior].namespace_name,
+				    runtime->views[index].namespace_name))
+				return KOBOX_RESOURCE_RUNTIME_MALFORMED;
 	}
 	for (index = 0; index < binding_count; index++) {
 		kb2_closure_manifest_binding_t binding;
@@ -302,7 +330,7 @@ static enum kobox_resource_runtime_status copy_views(
 
 		if (!view->slot_count)
 			continue;
-		view->slots = calloc(view->slot_count, sizeof(view->slots[0]));
+		view->slots = allocate(&runtime->allocator, view->slot_count, sizeof(view->slots[0]));
 		if (!view->slots)
 			return KOBOX_RESOURCE_RUNTIME_NO_MEMORY;
 		view->slot_count = 0;
@@ -377,14 +405,14 @@ static enum kobox_resource_runtime_status import_objects(
 	size_t index;
 
 	runtime->object_count = kb2_resource_grant_object_count(config->grant);
-	runtime->objects = calloc(runtime->object_count,
+	runtime->objects = allocate(&runtime->allocator, runtime->object_count,
 				  sizeof(runtime->objects[0]));
 	if (runtime->object_count && !runtime->objects)
 		return KOBOX_RESOURCE_RUNTIME_NO_MEMORY;
 	for (index = 0; index < runtime->object_count; index++) {
 		kb2_resource_grant_object_t object;
 		kb2_resource_grant_slot_t slot;
-		struct kobox_resource_native_handle *handles = NULL;
+		struct kobox_resource_handle *handles = NULL;
 		struct registry_object *destination = &runtime->objects[index];
 		size_t slot_index;
 		size_t handle_index;
@@ -404,7 +432,7 @@ static enum kobox_resource_runtime_status import_objects(
 		if (slot_index == kb2_resource_grant_slot_count(config->grant))
 			return KOBOX_RESOURCE_RUNTIME_MALFORMED;
 		if (object.handle_count) {
-			handles = calloc(object.handle_count, sizeof(handles[0]));
+			handles = allocate(&runtime->allocator, object.handle_count, sizeof(handles[0]));
 			if (!handles)
 				return KOBOX_RESOURCE_RUNTIME_NO_MEMORY;
 		}
@@ -417,7 +445,7 @@ static enum kobox_resource_runtime_status import_objects(
 				    &binding) != KB2_PROTOCOL_OK ||
 			    binding.transfer_handle_index >=
 				    config->native_handle_count) {
-				free(handles);
+				release(runtime, handles);
 				return KOBOX_RESOURCE_RUNTIME_MALFORMED;
 			}
 			handles[handle_index].role = binding.role;
@@ -431,14 +459,14 @@ static enum kobox_resource_runtime_status import_objects(
 		memcpy(destination->interface_schema_digest,
 		       slot.interface_schema_digest,
 		       sizeof(destination->interface_schema_digest));
-		if (config->import_object(config->object_context, &slot, &object,
+		if (config->import_object(config->import_context, &slot, &object,
 					  handles, object.handle_count,
 					  &destination->native_object,
 					  &destination->operations)) {
-			free(handles);
+			release(runtime, handles);
 			return KOBOX_RESOURCE_RUNTIME_IMPORT_FAILURE;
 		}
-		free(handles);
+		release(runtime, handles);
 		if (!destination->native_object || !destination->operations ||
 		    destination->operations->size <
 			    sizeof(*destination->operations) ||
@@ -459,9 +487,12 @@ enum kobox_resource_runtime_status kobox_resource_runtime_open(
 	size_t object_count;
 	size_t handle_count;
 
-	if (!config || !config->manifest || !config->grant || !runtime_out)
+	if (!runtime_out)
 		return KOBOX_RESOURCE_RUNTIME_INVALID_ARGUMENT;
 	*runtime_out = NULL;
+	if (!config || !config->manifest || !config->grant ||
+	    !config->allocator.allocate_zeroed || !config->allocator.release)
+		return KOBOX_RESOURCE_RUNTIME_INVALID_ARGUMENT;
 	object_count = kb2_resource_grant_object_count(config->grant);
 	handle_count = kb2_resource_grant_handle_binding_count(config->grant);
 	if (handle_count != config->native_handle_count ||
@@ -471,21 +502,70 @@ enum kobox_resource_runtime_status kobox_resource_runtime_open(
 						 config->manifest) !=
 		    KB2_PROTOCOL_OK)
 		return KOBOX_RESOURCE_RUNTIME_MALFORMED;
-	runtime = calloc(1, sizeof(*runtime));
+	runtime = allocate(&config->allocator, 1, sizeof(*runtime));
 	if (!runtime)
 		return KOBOX_RESOURCE_RUNTIME_NO_MEMORY;
+	runtime->allocator = config->allocator;
 	runtime->generation = config->grant->generation;
 	runtime->release_object = config->release_object;
-	runtime->object_context = config->object_context;
-	status = import_objects(config, runtime);
+	runtime->object_context = config->release_context;
+	/* Reject invalid visibility before any native import has side effects. */
+	status = copy_views(config, runtime);
 	if (status == KOBOX_RESOURCE_RUNTIME_OK)
-		status = copy_views(config, runtime);
+		status = import_objects(config, runtime);
 	if (status != KOBOX_RESOURCE_RUNTIME_OK) {
 		free_runtime(runtime);
 		return status;
 	}
 	*runtime_out = runtime;
 	return KOBOX_RESOURCE_RUNTIME_OK;
+}
+
+enum kobox_resource_lookup_result kobox_resource_runtime_native_lookup(const struct kobox_resource_runtime *runtime,
+					 const char *module_name, uint32_t slot_id,
+					 size_t index, uint64_t rights,
+					 const uint8_t digest[32],
+					 struct kobox_resource_snapshot *snapshot)
+{
+	const struct node_view *view = NULL;
+	const struct registry_object *object;
+	const struct view_slot *slot;
+	size_t candidate;
+
+	if (!snapshot)
+		return KOBOX_RESOURCE_LOOKUP_INVALID;
+	*snapshot = (struct kobox_resource_snapshot) {0};
+	if (!runtime || !slot_id || !digest)
+		return KOBOX_RESOURCE_LOOKUP_INVALID;
+	for (candidate = 0; candidate < runtime->view_count; candidate++) {
+		const struct node_view *item = &runtime->views[candidate];
+		bool core = item->artifact_kind == KB2_CLOSURE_ARTIFACT_SHARED_PROVIDER;
+
+		if (!(item->artifact_flags & KB2_CLOSURE_ARTIFACT_FLAG_NATIVE_LINUX) ||
+		    (module_name ? (core || strcmp(item->namespace_name, module_name)) : !core))
+			continue;
+		if (view)
+			return KOBOX_RESOURCE_LOOKUP_INVALID;
+		view = item;
+	}
+	if (!view)
+		return KOBOX_RESOURCE_LOOKUP_ABSENT;
+	slot = find_view_slot(view, slot_id);
+	if (!slot)
+		return KOBOX_RESOURCE_LOOKUP_RIGHTS;
+	if (slot->state == KOBOX_MODULE_RESOURCE_ABSENT_STATE || index >= slot->object_count)
+		return KOBOX_RESOURCE_LOOKUP_ABSENT;
+	object = &runtime->objects[slot->object_start + index];
+	if (rights & ~object->granted_rights)
+		return KOBOX_RESOURCE_LOOKUP_RIGHTS;
+	if (memcmp(digest, object->interface_schema_digest, 32))
+		return KOBOX_RESOURCE_LOOKUP_INTERFACE;
+	*snapshot = (struct kobox_resource_snapshot) {
+		.generation = runtime->generation, .object_id = object->object_id,
+		.rights = object->granted_rights, .type = object->resource_type,
+		.binding = {.object = object->native_object, .operations = object->operations},
+	};
+	return 0;
 }
 
 const void *kobox_resource_runtime_view(

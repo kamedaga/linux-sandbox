@@ -2,6 +2,8 @@
 #ifndef KOBOX_POSIX_HOST_H
 #define KOBOX_POSIX_HOST_H
 
+#include "../../machine/domain.h"
+
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -38,6 +40,7 @@ struct kobox_posix_memory_backing {
 	int descriptor;
 	size_t size;
 	bool initialized;
+	bool revoked;
 };
 
 struct kobox_posix_memory_window {
@@ -67,11 +70,13 @@ enum kobox_posix_memory_protection {
 };
 
 enum kobox_posix_notification {
-	KOBOX_POSIX_NOTIFICATION_TICK = 0,
-	KOBOX_POSIX_NOTIFICATION_IRQ,
-	KOBOX_POSIX_NOTIFICATION_CALL_FUNCTION,
-	KOBOX_POSIX_NOTIFICATION_VM_EVENT,
-	KOBOX_POSIX_NOTIFICATION_COUNT,
+	KOBOX_POSIX_NOTIFICATION_TICK = KOBOX_MACHINE_TICK,
+	KOBOX_POSIX_NOTIFICATION_IRQ = KOBOX_MACHINE_RESCHEDULE,
+	KOBOX_POSIX_NOTIFICATION_CALL_FUNCTION = KOBOX_MACHINE_CALL_FUNCTION,
+	KOBOX_POSIX_NOTIFICATION_DEVICE_IRQ = KOBOX_MACHINE_DEVICE_IRQ,
+	KOBOX_POSIX_NOTIFICATION_CONTROL_EVENT = KOBOX_MACHINE_CONTROL_EVENT,
+	KOBOX_POSIX_NOTIFICATION_VM_EVENT = KOBOX_MACHINE_VM_EVENT,
+	KOBOX_POSIX_NOTIFICATION_COUNT = KOBOX_MACHINE_NOTIFICATION_COUNT,
 };
 
 struct kobox_posix_cpu;
@@ -91,18 +96,12 @@ struct kobox_posix_cpu {
 	pthread_mutex_t owner_lock;
 	pthread_cond_t execution_condition;
 	pthread_t owner;
-	struct kobox_posix_task *owner_task;
+	struct kobox_machine_domain domain;
 	struct sigaction previous_action;
 	kobox_posix_notification_fn notification;
 	void *notification_context;
-	atomic_uint irq_disable_depth;
-	atomic_uint_fast64_t notification_sequence;
-	atomic_uint_fast64_t pending[KOBOX_POSIX_NOTIFICATION_COUNT];
 	uint32_t logical_cpu;
 	int signal_number;
-	bool handoff_released;
-	bool owner_valid;
-	bool accepting_notifications;
 	bool initialized;
 };
 
@@ -163,6 +162,15 @@ int kobox_posix_memory_unmap(void *address, size_t size);
 int kobox_posix_memory_backing_init(
 	struct kobox_posix_memory_backing *backing,
 	size_t size);
+/* Single owner, serialized with map/destroy. Stop all DMA users first:
+ * successful truncation invalidates every CPU alias and releases pages.
+ * The sealed inode can never be regrown; restart needs a fresh backing.
+ * Failure is not invalidation proof: retain/quarantine the backing and
+ * its ownership until all users are independently proven dead/unmapped.
+ * destroy only closes this FD; it is never revocation proof.
+ */
+int kobox_posix_memory_backing_revoke(
+	struct kobox_posix_memory_backing *backing);
 int kobox_posix_memory_backing_destroy(
 	struct kobox_posix_memory_backing *backing);
 int kobox_posix_memory_window_init(
@@ -195,6 +203,10 @@ int kobox_posix_cpu_enter_task(
 	struct kobox_posix_cpu *cpu,
 	struct kobox_posix_task *task);
 int kobox_posix_cpu_leave(struct kobox_posix_cpu *cpu);
+/* Irreversible machine halt, independent of guest IRQ state. Success means
+ * the execution owner acknowledged the halt; only process teardown recovers it.
+ */
+int kobox_posix_cpu_stop(struct kobox_posix_cpu *cpu);
 int kobox_posix_cpu_switch(
 	struct kobox_posix_cpu *cpu,
 	struct kobox_posix_task *previous,

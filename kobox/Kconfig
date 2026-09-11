@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config KOBOX_HOSTED
+	bool "kobox hosted machine ports"
+	depends on X86_64 && SMP && PCI_MSI
+	select IRQ_MSI_LIB
+	help
+	  Build the upstream MSI parent-domain helpers used by kobox's
+	  host interrupt-controller port. Linux retains ownership of PCI
+	  MSI device domains, descriptors, and capability programming.

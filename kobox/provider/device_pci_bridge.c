@@ -309,7 +309,7 @@ void __iomem *pci_iomap_range(struct pci_dev *device, int bar,
 	const struct kobox_pci_function_resource_operations *operations =
 		(const void *)kobox_pci_bridge.resources.pci.operations;
 	struct kobox_linux_pci_mapping *mapping;
-	kobox_abi_u64 bar_length;
+	kobox_abi_u64 bar_address, bar_length;
 	kobox_abi_u32 bar_flags;
 	size_t length;
 	void *address;
@@ -317,7 +317,7 @@ void __iomem *pci_iomap_range(struct pci_dev *device, int bar,
 	if (!bridge_context_valid(kobox_pci_bridge.context) ||
 	    device != kobox_pci_bridge.device || bar < 0 || bar >= PCI_STD_NUM_BARS ||
 	    operations->bar_info(kobox_pci_bridge.resources.pci.object,
-				 (kobox_abi_u32)bar, &bar_length, &bar_flags) ||
+				 (kobox_abi_u32)bar, &bar_address, &bar_length, &bar_flags) ||
 	    !(bar_flags & KB2_PCI_FUNCTION_BAR_FLAG_MEMORY) ||
 	    offset >= bar_length || bar_length - offset > SIZE_MAX)
 		return NULL;
@@ -329,7 +329,7 @@ void __iomem *pci_iomap_range(struct pci_dev *device, int bar,
 				(kobox_abi_u32)bar, offset, length,
 				KB2_PCI_FUNCTION_MAP_PROTECTION_READ |
 					KB2_PCI_FUNCTION_MAP_PROTECTION_WRITE,
-				&address))
+				KB2_PCI_FUNCTION_CACHE_UC_MINUS, NULL, &address))
 		return NULL;
 	mapping = kmalloc(sizeof(*mapping), GFP_KERNEL);
 	if (!mapping) {
@@ -748,7 +748,7 @@ static int bridge_prepare_windows(struct pci_host_bridge *host_bridge)
 		unsigned long resource_flags;
 
 		if (operations->bar_info(kobox_pci_bridge.resources.pci.object,
-					 (kobox_abi_u32)bar, &length,
+					 (kobox_abi_u32)bar, &start, &length,
 					 &bar_flags))
 			continue;
 		if (!length || (length & (length - 1)) ||

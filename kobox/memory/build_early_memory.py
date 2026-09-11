@@ -393,6 +393,65 @@ def prepare_object(arguments, source_object, support_defined):
     return destination
 
 
+def isolated_linker_script(base):
+    """Keep closure sections separable without excluding them from RAM bounds.
+
+    Large-model .ltext.* and .lbss.* are orphan sections in these diagnostic
+    closures. The provider's .ltext/.bss bounds do not enclose those sections.
+    The boot-rooted core uses its own complete Linux linker layout.
+    """
+    replacements = {
+        "\t\t*(.ltext.*)\n": "",
+        "_etext = ADDR(.ltext) + SIZEOF(.ltext);":
+            "_etext = ADDR(.data..percpu);",
+        "_text = ADDR(.ltext);": "_text = __ehdr_start;",
+        "__bss_stop = ADDR(.bss) + SIZEOF(.bss);":
+            "__bss_stop = ADDR(.kobox_image_bss) + SIZEOF(.kobox_image_bss);",
+    }
+    for original, replacement in replacements.items():
+        if base.count(original) != 1:
+            raise MemoryBuildError(f"missing isolated image linker boundary: {original}")
+        base = base.replace(original, replacement)
+    return base + """
+SECTIONS
+{
+    .kobox_image_data : ALIGN(4096)
+    {
+        *(.ldata .ldata.*)
+    }
+    .kobox_image_bss (NOLOAD) : ALIGN(4096)
+    {
+        *(.lbss .lbss.*)
+        . = ALIGN(4096);
+    }
+}
+INSERT AFTER .bss;
+"""
+
+
+def validate_isolated_image(arguments, output):
+    symbols = {}
+    for line in run([arguments.nm, "--defined-only", "--format=posix", output]).splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] in ("_text", "__bss_stop"):
+            symbols[fields[0]] = int(fields[2], 16)
+    if set(symbols) != {"_text", "__bss_stop"}:
+        raise MemoryBuildError("isolated image has no complete RAM bounds")
+    start, end = symbols["_text"], symbols["__bss_stop"]
+    if start >= end or start % 4096 or end % 4096:
+        raise MemoryBuildError("isolated image RAM bounds are not page aligned")
+    loads = 0
+    for line in run([arguments.readelf, "-lW", output]).splitlines():
+        fields = line.split()
+        if fields and fields[0] == "LOAD":
+            address, size = int(fields[2], 16), int(fields[5], 16)
+            if address < start or address + size > end:
+                raise MemoryBuildError("isolated image RAM bounds exclude a LOAD segment")
+            loads += 1
+    if not loads:
+        raise MemoryBuildError("isolated image has no LOAD segments")
+
+
 def link_shared(arguments, objects):
     version = arguments.output_dir / ".memory.map"
     version.write_text(
@@ -407,15 +466,9 @@ def link_shared(arguments, objects):
     base_linker_script = (
         arguments.source_tree / "kobox/provider/provider.lds"
     ).read_text(encoding="utf-8")
-    split_marker = "\t\t*(.ltext.*)\n"
-    if base_linker_script.count(split_marker) != 1:
-        raise MemoryBuildError("provider linker script has no ltext split point")
     memory_linker_script = arguments.output_dir / ".memory.lds"
     memory_linker_script.write_text(
-        base_linker_script.replace(split_marker, "").replace(
-            "_etext = ADDR(.ltext) + SIZEOF(.ltext);",
-            "_etext = ADDR(.data..percpu);",
-        ),
+        isolated_linker_script(base_linker_script),
         encoding="utf-8",
     )
     output = arguments.output_dir / "linux-early-memory-gate.so"
@@ -445,6 +498,7 @@ def link_shared(arguments, objects):
         *objects,
     ]
     run(command)
+    validate_isolated_image(arguments, output)
     return output
 
 
@@ -535,6 +589,22 @@ def build_phase_boundary(arguments, definitions):
     return output
 
 
+def include_overlay_identity(arguments):
+    roots = list(getattr(arguments, "extra_include_dirs", ()))
+    architecture = getattr(arguments, "architecture_include", None)
+    if architecture:
+        roots.append(architecture)
+    roots.append(arguments.source_tree / "kobox/provider/include")
+    digest = hashlib.sha256()
+    for index, root in enumerate(roots):
+        digest.update(f"{index}\0".encode())
+        for header in sorted(root.rglob("*.h")):
+            digest.update(str(header.relative_to(root)).encode())
+            digest.update(b"\0")
+            digest.update(header.read_bytes())
+    return digest.hexdigest()
+
+
 def compile_linux_objects(arguments, source_objects, *, build_targets=None,
                           external_module=None):
     namespace = types.SimpleNamespace(
@@ -553,17 +623,8 @@ def compile_linux_objects(arguments, source_objects, *, build_targets=None,
     targets = list(build_targets) if build_targets is not None else outputs
     if not targets:
         return
-    architecture_include = getattr(arguments, "architecture_include", None)
     extra_includes = getattr(arguments, "extra_include_dirs", ())
-    overlay_identity = None
-    if architecture_include:
-        digest = hashlib.sha256()
-        for root in [*extra_includes, architecture_include]:
-            for header in sorted(root.rglob("*.h")):
-                digest.update(str(header.relative_to(root)).encode())
-                digest.update(b"\0")
-                digest.update(header.read_bytes())
-        overlay_identity = digest.hexdigest()
+    overlay_identity = include_overlay_identity(arguments)
     command = provider.make_arguments(namespace, tuple(targets), include_overlay=True)
     if external_module is not None:
         command.insert(-len(targets), f"M={arguments.source_tree / external_module}")

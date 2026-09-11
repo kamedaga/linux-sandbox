@@ -1,0 +1,12 @@
+--- a/arch/x86/kernel/fpu/signal.c
++++ b/arch/x86/kernel/fpu/signal.c
+@@ -19,6 +19,9 @@
+ #include "internal.h"
+ #include "legacy.h"
+ #include "xstate.h"
++#ifdef KOBOX_BOOT_RUNTIME
++#include <linux/kobox_fpu_user.h>
++#endif
+ 
+ /*
+  * Check for the presence of extended state information in the

@@ -154,6 +154,13 @@ static int host_cpu_wait(
 		&cpus[cpu], observed_sequence, sequence_out);
 }
 
+static int host_cpu_stop(uint32_t cpu)
+{
+	if (cpu >= KOBOX_LINUX_MEMORY_LOGICAL_CPUS)
+		return EINVAL;
+	return kobox_posix_cpu_stop(&cpus[cpu]);
+}
+
 static int host_cpu_notify(
 	uint32_t cpu,
 	enum kobox_linux_task_notification notification)
@@ -169,11 +176,17 @@ static int host_cpu_notify(
 	case KOBOX_LINUX_TASK_CALL_FUNCTION:
 		native = KOBOX_POSIX_NOTIFICATION_CALL_FUNCTION;
 		break;
+	case KOBOX_LINUX_TASK_DEVICE_IRQ:
+		native = KOBOX_POSIX_NOTIFICATION_DEVICE_IRQ;
+		break;
 	case KOBOX_LINUX_TASK_CLOCKEVENT:
 		native = KOBOX_POSIX_NOTIFICATION_TICK;
 		break;
 	case KOBOX_LINUX_TASK_VM_EVENT:
 		native = KOBOX_POSIX_NOTIFICATION_VM_EVENT;
+		break;
+	case KOBOX_LINUX_TASK_CONTROL_EVENT:
+		native = KOBOX_POSIX_NOTIFICATION_CONTROL_EVENT;
 		break;
 	default:
 		return EINVAL;
@@ -270,11 +283,17 @@ static void host_notification(
 	case KOBOX_POSIX_NOTIFICATION_CALL_FUNCTION:
 		translated = KOBOX_LINUX_TASK_CALL_FUNCTION;
 		break;
+	case KOBOX_POSIX_NOTIFICATION_DEVICE_IRQ:
+		translated = KOBOX_LINUX_TASK_DEVICE_IRQ;
+		break;
 	case KOBOX_POSIX_NOTIFICATION_TICK:
 		translated = KOBOX_LINUX_TASK_CLOCKEVENT;
 		break;
 	case KOBOX_POSIX_NOTIFICATION_VM_EVENT:
 		translated = KOBOX_LINUX_TASK_VM_EVENT;
+		break;
+	case KOBOX_POSIX_NOTIFICATION_CONTROL_EVENT:
+		translated = KOBOX_LINUX_TASK_CONTROL_EVENT;
 		break;
 	default:
 		__builtin_trap();
@@ -304,6 +323,7 @@ const struct kobox_linux_task_host_operations kobox_task_posix_operations = {
 	.cpu_leave = host_cpu_leave,
 	.cpu_switch = host_cpu_switch,
 	.cpu_wait = host_cpu_wait,
+	.cpu_stop = host_cpu_stop,
 	.cpu_notify = host_cpu_notify,
 	.cpu_irq_disable = host_cpu_irq_disable,
 	.cpu_irq_enable = host_cpu_irq_enable,

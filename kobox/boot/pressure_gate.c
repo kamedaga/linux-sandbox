@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "host.h"
+#include "diagnostic.h"
 #include "pressure_gate.h"
 
+#include <linux/atomic.h>
 #include <linux/bitmap.h>
 #include <linux/delay.h>
 #include <linux/file.h>
@@ -27,6 +29,18 @@
 #define HELD_PAGES 4
 #define GATE_WAIT (10 * HZ)
 #define PRESSURE_GFP (GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN)
+#define DIRECT_REQUESTS (2 * CACHE_PAGES)
+
+struct pressure_failure {
+	unsigned long cached;
+	unsigned long pages;
+	long count_calls;
+	long scan_calls;
+	unsigned int task_flags;
+	gfp_t gfp;
+	bool reclaim_state;
+	bool captured;
+};
 
 struct pressure_case {
 	struct kobox_linux_pressure_report *report;
@@ -51,12 +65,49 @@ struct pressure_case {
 	struct vfsmount *mnt;
 	struct dentry *held_dentry;
 	unsigned long dcache_before;
+	atomic_long_t count_calls;
+	atomic_long_t scan_calls;
+	struct pressure_failure first_nowait;
+	struct pressure_failure first_direct;
 };
+
+static void snapshot_failure(struct pressure_case *test,
+			     struct pressure_failure *failure, gfp_t gfp)
+{
+	if (failure->captured)
+		return;
+	failure->cached = READ_ONCE(test->cached);
+	failure->pages = test->report->pressure_pages;
+	failure->count_calls = atomic_long_read(&test->count_calls);
+	failure->scan_calls = atomic_long_read(&test->scan_calls);
+	failure->task_flags = current->flags;
+	failure->gfp = gfp;
+	failure->reclaim_state = current->reclaim_state != NULL;
+	failure->captured = true;
+}
+
+static void report_failure(const char *stage,
+			   const struct pressure_failure *failure)
+{
+	kobox_linux_boot_diagnostic(
+		"kobox pressure: stage=%s captured=%u cached=%lu pages=%lu count=%ld scan=%ld flags=%#x reclaim=%u gfp=%#x\n",
+		stage, failure->captured, failure->cached, failure->pages,
+		failure->count_calls, failure->scan_calls, failure->task_flags,
+		failure->reclaim_state, (__force unsigned int)failure->gfp);
+}
 
 static int fail(struct pressure_case *test, unsigned int line, int result)
 {
 	test->report->line = line;
 	test->report->result = result;
+	kobox_linux_boot_diagnostic(
+		"kobox pressure: fail line=%u result=%d phase=%u cached=%lu count=%ld scan=%ld flags=%#x reclaim=%u\n",
+		line, result, test->report->phase, READ_ONCE(test->cached),
+		atomic_long_read(&test->count_calls),
+		atomic_long_read(&test->scan_calls), current->flags,
+		current->reclaim_state != NULL);
+	report_failure("first-nowait", &test->first_nowait);
+	report_failure("first-direct", &test->first_direct);
 	return -EINVAL;
 }
 
@@ -71,6 +122,7 @@ static unsigned long cache_count(struct shrinker *shrinker,
 	struct pressure_case *test = shrinker->private_data;
 	unsigned long count = READ_ONCE(test->cached);
 
+	atomic_long_inc(&test->count_calls);
 	return count ?: SHRINK_EMPTY;
 }
 
@@ -81,6 +133,7 @@ static unsigned long cache_scan(struct shrinker *shrinker,
 	struct page *page;
 	unsigned long count = 0;
 
+	atomic_long_inc(&test->scan_calls);
 	spin_lock(&test->lock);
 	while (count < sc->nr_to_scan && !list_empty(&test->cache)) {
 		page = list_first_entry(&test->cache, struct page, lru);
@@ -134,6 +187,7 @@ static void exhaust_ram(struct pressure_case *test, gfp_t flags)
 
 	while ((page = alloc_page(flags | __GFP_NOWARN)))
 		keep_pressure_page(test, page);
+	snapshot_failure(test, &test->first_nowait, flags | __GFP_NOWARN);
 }
 
 static int populate_cache(struct pressure_case *test)
@@ -264,6 +318,37 @@ static int check_retained(struct pressure_case *test)
 	return 0;
 }
 
+static int require_direct_reclaim(struct pressure_case *test)
+{
+	gfp_t gfp = PRESSURE_GFP & ~__GFP_KSWAPD_RECLAIM;
+	unsigned long deadline = jiffies + GATE_WAIT;
+	struct page *page;
+	unsigned int request;
+
+	/*
+	 * NORETRY bounds each allocation, not the lifetime of a reclaimable
+	 * cache. One reclaim pass can stop after freeing other caches before
+	 * this shrinker earns a scan budget, yet still fail its allocation.
+	 * Keep issuing real requests while retaining every successful page.
+	 * Require both an allocation and actual direct frees within the bounds;
+	 * neither count_objects() nor an intermediate NULL proves progress.
+	 */
+	for (request = 0; request < DIRECT_REQUESTS; request++) {
+		page = alloc_page(gfp);
+		if (page) {
+			keep_pressure_page(test, page);
+			if (READ_ONCE(test->report->direct_freed))
+				return 0;
+		} else {
+			snapshot_failure(test, &test->first_direct, gfp);
+		}
+		if (time_after_eq(jiffies, deadline))
+			break;
+		cond_resched();
+	}
+	return fail(test, __LINE__, -ETIMEDOUT);
+}
+
 static int run_pressure(struct pressure_case *test)
 {
 	unsigned long deadline, unused;
@@ -277,14 +362,8 @@ static int run_pressure(struct pressure_case *test)
 	 * stopped, frozen or replaced to control the outcome.
 	 */
 	exhaust_ram(test, GFP_NOWAIT & ~__GFP_KSWAPD_RECLAIM);
-	for (i = 0; i < 2 * CACHE_PAGES; i++) {
-		page = alloc_page(PRESSURE_GFP & ~__GFP_KSWAPD_RECLAIM);
-		if (!page)
-			break;
-		keep_pressure_page(test, page);
-	}
-	if (!test->report->direct_freed)
-		return fail(test, __LINE__, -EINVAL);
+	if (require_direct_reclaim(test))
+		return -EINVAL;
 	free_pages_list(&test->pressure);
 	if (populate_cache(test))
 		return -EINVAL;
@@ -303,7 +382,7 @@ static int run_pressure(struct pressure_case *test)
 	    test->report->pressure_pages < 4096)
 		return fail(test, __LINE__, -ETIMEDOUT);
 	test->report->phase = 3;
-	/* Continue until the allocator has exhausted all reclaimable copies.
+	/* Observe a bounded allocation failure under retained pressure.
 	 * NORETRY prevents this bounded negative test from invoking the OOM
 	 * killer or relying on killing an unrelated task to regain memory.
 	 */

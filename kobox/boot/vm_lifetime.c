@@ -253,11 +253,18 @@ out:
 static int reuse_folio(struct kobox_vm_lifetime *audit, unsigned long pfn)
 {
 	cpumask_t saved = *current->cpus_ptr;
-	gfp_t classes[] = { GFP_HIGHUSER_MOVABLE, GFP_KERNEL };
+	gfp_t classes[] = {
+		GFP_HIGHUSER_MOVABLE, GFP_KERNEL, GFP_KERNEL | __GFP_MEMALLOC,
+	};
 	unsigned int cpu, kind;
 	unsigned long index, count = 0;
 	int result = -ENOENT;
 
+	/* The allocator oracle must also reach retired pages below normal
+	 * watermarks, including backing returned by an entire freed slab.
+	 * Reserve access is confined to this post-release test probe; success
+	 * still requires allocating and overwriting the exact retired PFN.
+	 */
 	for (kind = 0; kind < ARRAY_SIZE(classes); kind++) {
 		for_each_online_cpu(cpu) {
 			for (index = 0; index < count; index++)

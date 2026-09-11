@@ -24,6 +24,8 @@ provider = memory.provider
 ROOT_SYMBOL = "kobox_linux_task_smp_boot"
 DISPATCH_SYMBOL = "kobox_linux_task_dispatch"
 SUPPORT_SOURCES = (
+    "kobox/tests/gates/task_smp.c",
+    "kobox/arch/x86_64/task.c",
     "kobox/memory/early_boot.c",
     "kobox/task/port.c",
     "kobox/task/time_port.c",
@@ -226,6 +228,8 @@ def compile_support(arguments, source_name):
         "-funsigned-char",
         "-fno-common",
         "-mno-red-zone",
+        # Match Kbuild: generated vector copies must not clobber task FP.
+        "-mgeneral-regs-only",
         "-mstackrealign",
         "-c",
         source,
@@ -283,15 +287,9 @@ def link_shared(arguments, objects):
     base_script = (
         arguments.source_tree / "kobox/provider/provider.lds"
     ).read_text(encoding="utf-8")
-    split_marker = "\t\t*(.ltext.*)\n"
-    if base_script.count(split_marker) != 1:
-        raise TaskBuildError("provider linker script has no ltext split point")
     linker_script = arguments.output_dir / ".task.lds"
     linker_script.write_text(
-        base_script.replace(split_marker, "").replace(
-            "_etext = ADDR(.ltext) + SIZEOF(.ltext);",
-            "_etext = ADDR(.data..percpu);",
-        ),
+        memory.isolated_linker_script(base_script),
         encoding="utf-8",
     )
     output = arguments.output_dir / "linux-task-smp-gate.so"
@@ -316,6 +314,7 @@ def link_shared(arguments, objects):
         "-o", output,
         *objects,
     ])
+    memory.validate_isolated_image(arguments, output)
     return output
 
 

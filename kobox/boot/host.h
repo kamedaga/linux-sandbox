@@ -4,6 +4,7 @@
 
 #include "../task/host.h"
 #include "exception.h"
+#include "resource_port.h"
 
 enum kobox_linux_image_protection {
 	KOBOX_IMAGE_READ = 1U << 0,
@@ -23,6 +24,7 @@ struct kobox_linux_boot_layout {
 	int (*image_protect)(void *image, size_t offset, size_t length,
 			     unsigned int protection);
 	void *image;
+	const struct kobox_linux_resource_port *resources;
 	const char *command_line;
 	void (*console_write)(void *context, const char *text, size_t length);
 	void *console_context;

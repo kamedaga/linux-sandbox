@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -726,9 +727,77 @@ static int test_nested_irq(unsigned int cpu)
 	return 0;
 }
 
+struct stop_case {
+	struct kobox_posix_cpu cpu;
+	atomic_uint_fast64_t iterations;
+	bool disable_irq;
+};
+
+static void *stop_worker(void *argument)
+{
+	struct stop_case *test = argument;
+
+	if (kobox_posix_cpu_enter(&test->cpu) ||
+	    (test->disable_irq && kobox_posix_cpu_irq_disable(&test->cpu)))
+		_exit(2);
+	for (;;)
+		atomic_fetch_add_explicit(&test->iterations, 1, memory_order_release);
+	return NULL;
+}
+
+static int stop_child(unsigned int target, bool disable_irq)
+{
+	struct stop_case test = {.disable_irq = disable_irq};
+	struct kobox_posix_cpu self = {0};
+	struct notification_state notifications = {0};
+	struct kobox_posix_thread worker = {0};
+	struct timespec delay = {.tv_nsec = SHORT_DELAY_NS};
+	uint_fast64_t before;
+
+	/* This machine halt deliberately retains ownership until process exit. */
+	alarm(5);
+	atomic_init(&test.iterations, 0);
+	CHECK(kobox_posix_cpu_init(&test.cpu, target, notification_callback,
+				   &notifications) == 0);
+	CHECK(kobox_posix_cpu_init(&self, target ^ 1, notification_callback,
+				   &notifications) == 0);
+	CHECK(kobox_posix_cpu_enter(&self) == 0);
+	CHECK(kobox_posix_thread_start(&worker, stop_worker, &test) == 0);
+	while (!atomic_load_explicit(&test.iterations, memory_order_acquire))
+		;
+	CHECK(kobox_posix_cpu_stop(&test.cpu) == 0);
+	before = atomic_load_explicit(&test.iterations, memory_order_acquire);
+	CHECK(nanosleep(&delay, NULL) == 0);
+	CHECK(atomic_load_explicit(&test.iterations, memory_order_acquire) == before);
+	CHECK(atomic_load(&notifications.count[KOBOX_POSIX_NOTIFICATION_IRQ]) == 0);
+	CHECK(kobox_posix_cpu_irq_disabled(&test.cpu) == disable_irq);
+	CHECK(kobox_posix_cpu_leave(&self) == 0);
+	CHECK(kobox_posix_cpu_destroy(&self) == 0);
+	return 0;
+}
+
+static int test_cpu_stop(void)
+{
+	unsigned int target, disabled;
+	int status;
+	pid_t child;
+
+	for (target = 0; target < 2; target++) {
+		for (disabled = 0; disabled < 2; disabled++) {
+			child = fork();
+			CHECK(child >= 0);
+			if (!child)
+				_exit(stop_child(target, disabled));
+			CHECK(waitpid(child, &status, 0) == child);
+			CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		}
+	}
+	return 0;
+}
+
 int main(void)
 {
-	struct kobox_posix_cpu cpus[2] = {{0}};
+	struct kobox_posix_cpu cpus[2] = {0};
 	struct notification_state notifications = {0};
 	unsigned int index;
 
@@ -748,6 +817,8 @@ int main(void)
 	CHECK(test_cpu_bound_notification(
 		&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
 	CHECK(test_irq_disable_pending(&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_IRQ) == 0);
+	CHECK(test_irq_disable_pending(&cpus[0], &notifications, KOBOX_POSIX_NOTIFICATION_CONTROL_EVENT) == 0);
+	CHECK(test_irq_disable_pending(&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_CONTROL_EVENT) == 0);
 	CHECK(test_irq_disable_pending(&cpus[0], &notifications, KOBOX_POSIX_NOTIFICATION_VM_EVENT) == 0);
 	CHECK(test_irq_disable_pending(&cpus[1], &notifications, KOBOX_POSIX_NOTIFICATION_VM_EVENT) == 0);
 	CHECK(test_idle_pending_before_sequence(&cpus[0], &notifications) == 0);
@@ -757,5 +828,6 @@ int main(void)
 	CHECK(kobox_posix_cpu_destroy(&cpus[0]) == 0);
 	CHECK(test_nested_irq(0) == 0);
 	CHECK(test_nested_irq(1) == 0);
+	CHECK(test_cpu_stop() == 0);
 	return 0;
 }

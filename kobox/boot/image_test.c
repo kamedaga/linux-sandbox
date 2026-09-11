@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _GNU_SOURCE
 
-#include "image.h"
+#include "../host/posix/image.h"
 
 #include <dlfcn.h>
 #include <errno.h>

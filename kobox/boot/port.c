@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "host.h"
+#include "diagnostic.h"
+#include "../arch/x86_64/host_call.h"
 #include "../memory/port.h"
 #include "../task/boot.h"
 #include "../task/time_port.h"
@@ -13,6 +15,7 @@
 #include <linux/sched.h>
 #include <linux/sched/idle.h>
 #include <linux/smp.h>
+#include <linux/sprintf.h>
 #include <linux/start_kernel.h>
 #include <linux/string.h>
 #include <linux/kobox_boot.h>
@@ -149,6 +152,23 @@ static struct console host_console = {
 	.index = -1,
 };
 
+void kobox_linux_boot_diagnostic(const char *format, ...)
+{
+	char text[512];
+	va_list arguments;
+	int length;
+
+	/* The fixed core may have PRINTK disabled. Failure diagnostics still
+	 * use the existing text-only host boundary, without allocation or a
+	 * persistent console-registration change.
+	 */
+	va_start(arguments, format);
+	length = vscnprintf(text, sizeof(text), format, arguments);
+	va_end(arguments);
+	kobox_host_call((boot_layout->console_write(boot_layout->console_context,
+						   text, length), 0));
+}
+
 void __init trap_init(void)
 {
 	int status;
@@ -269,6 +289,9 @@ int kobox_linux_boot_start(const struct kobox_linux_boot_layout *layout,
 	    !layout->console_write || !layout->kernel_main ||
 	    !layout->image_protect || !layout->image)
 		return -EINVAL;
+	status = kobox_linux_resource_port_install(layout->resources);
+	if (status)
+		return status;
 	status = kobox_linux_task_bind_boot(&layout->task, report);
 	if (status)
 		return status;

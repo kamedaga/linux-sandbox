@@ -3,6 +3,8 @@
 
 import importlib.util
 import pathlib
+import tempfile
+import types
 import unittest
 
 
@@ -47,6 +49,38 @@ def test_profile():
 
 
 class SharedProviderBuildTest(unittest.TestCase):
+    def test_hosted_kconfig_entry_is_selected_only_for_hosted_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            build, source = root / "build", root / "source"
+            build.mkdir()
+            source.mkdir()
+            upstream = 'mainmenu "Linux"\nsource "init/Kconfig"\n'
+            (source / "Kconfig").write_text(upstream)
+            arguments = types.SimpleNamespace(
+                make="make", source_tree=source, provider_build_dir=build,
+                llvm="-18", cc="clang-18", ld="ld.lld", jobs=1,
+            )
+            config = build / ".config"
+            for text, hosted in (("CONFIG_SMP=y\n", False),
+                                 ("# CONFIG_KOBOX_HOSTED is not set\n", False),
+                                 ("CONFIG_KOBOX_HOSTED=y\n", True)):
+                config.write_text(text)
+                command = provider.make_arguments(arguments, ("modules_prepare",))
+                entry = build / ".kobox/Kconfig"
+                self.assertEqual(f"KBUILD_KCONFIG={entry}" in command, hosted)
+            self.assertEqual((source / "Kconfig").read_text(), upstream)
+            self.assertEqual(entry.read_text(), upstream + '\nsource "kobox/Kconfig"\n')
+            timestamp = entry.stat().st_mtime_ns
+            provider.prepare_hosted_kconfig(source, build)
+            self.assertEqual(entry.stat().st_mtime_ns, timestamp)
+
+    def test_hosted_kconfig_rejects_in_tree_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            with self.assertRaisesRegex(provider.ProviderBuildError, "out-of-tree"):
+                provider.prepare_hosted_kconfig(root, root)
+
     def test_runtime_exports_retain_their_source(self):
         self.assertEqual(provider.collect_runtime_symbols(test_profile()), {
             "runtime_call": ("core.so", "kobox/provider/runtime.c"),

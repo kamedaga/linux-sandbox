@@ -1,0 +1,22 @@
+--- a/arch/x86/mm/physaddr.c
++++ b/arch/x86/mm/physaddr.c
+@@ -43,6 +43,11 @@
+ 
+ bool __virt_addr_valid(unsigned long x)
+ {
++#ifdef KOBOX_BOOT_RUNTIME
++	if (!kobox_linux_memory_address_is_ram(x))
++		return false;
++	return pfn_valid(__phys_addr_nodebug(x) >> PAGE_SHIFT);
++#else
+ 	unsigned long y = x - __START_KERNEL_map;
+ 
+ 	/* use the carry flag to determine if x was < __START_KERNEL_map */
+@@ -61,6 +66,7 @@
+ 	}
+ 
+ 	return pfn_valid(x >> PAGE_SHIFT);
++#endif
+ }
+ EXPORT_SYMBOL(__virt_addr_valid);
+ 

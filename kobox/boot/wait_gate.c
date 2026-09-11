@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "wait_gate.h"
+#include "wait_budget.h"
 #include "host.h"
+#include "diagnostic.h"
 
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -147,7 +149,7 @@ struct wait_case {
 	unsigned int milliseconds;
 	unsigned long timeout;
 	unsigned long start;
-	unsigned long asleep;
+	struct kobox_wait_budget budget;
 	unsigned long wake;
 	unsigned long end;
 	ktime_t start_ns;
@@ -361,7 +363,7 @@ static unsigned long await_sleep(struct wait_case *test)
 			return 0;
 		switches = wait_task_inactive(test->task, apis[test->api].state);
 		if (switches) {
-			test->asleep = jiffies;
+			test->budget.asleep = jiffies;
 			return switches;
 		}
 		cond_resched();
@@ -372,6 +374,7 @@ static unsigned long await_sleep(struct wait_case *test)
 static void deliver_event(struct wait_case *test)
 {
 	test->wake = jiffies;
+	kobox_wait_budget_wake(&test->budget, test->wake);
 	if (properties(test) & QUEUE) {
 		WRITE_ONCE(test->condition, true);
 		wake_up_all(&test->queue);
@@ -406,7 +409,6 @@ static int stimulate(struct wait_case *test)
 {
 	unsigned long switches;
 	unsigned long deadline;
-	unsigned long first_asleep;
 	unsigned int i;
 	int signal;
 
@@ -436,19 +438,20 @@ static int stimulate(struct wait_case *test)
 		return inject_noise(test, switches);
 	/*
 	 * Advance real jiffies before waking, so an unchanged timeout cannot pass.
-	 * Keep the initial asleep bound for the remaining-time oracle.
+	 * Bound each pending timer separately: upstream wait loops rearm using
+	 * the last returned remainder, not a single absolute deadline. Execution
+	 * between schedule_timeout calls need not consume that remainder.
 	 */
 	msleep(20);
 	if (test->scenario == REPEATED_WAKE) {
-		first_asleep = test->asleep;
 		for (i = 0; i < 3; i++) {
+			kobox_wait_budget_wake(&test->budget, jiffies);
 			if (!wake_up_process(test->task) || !await_sleep(test) ||
 			    READ_ONCE(test->task->nvcsw) == (switches & LONG_MAX))
 				return fail(test, __LINE__);
 			switches = READ_ONCE(test->task->nvcsw) | LONG_MIN;
 			msleep(20);
 		}
-		test->asleep = first_asleep;
 		if (test->api != SLEEP_MS_INTERRUPTIBLE) {
 			deliver_event(test);
 			return 0;
@@ -467,6 +470,7 @@ static int stimulate(struct wait_case *test)
 	signal = properties(test) & KILLABLE &&
 		test->scenario == SIGNAL_ASLEEP ? SIGKILL : SIGUSR1;
 	test->wake = jiffies;
+	kobox_wait_budget_wake(&test->budget, test->wake);
 	if (send_sig(signal, test->task, 1))
 		return fail(test, __LINE__);
 	return 0;
@@ -547,9 +551,10 @@ static int check_result(struct wait_case *test)
 	 */
 	low = max_t(long, 0, test->timeout - (test->end - test->start));
 	high = test->timeout;
-	if (test->scenario == EARLY_WAKE || test->scenario == SIGNAL_ASLEEP ||
-	    test->scenario == REPEATED_WAKE)
-		high -= test->wake - test->asleep;
+	if (test->scenario == REPEATED_WAKE)
+		high = kobox_wait_budget_remaining(&test->budget, test->timeout);
+	else if (test->scenario == EARLY_WAKE || test->scenario == SIGNAL_ASLEEP)
+		high -= test->wake - test->budget.asleep;
 	if (flags & (QUEUE | COMPLETION)) {
 		low = max(low, 1L);
 		high = max(high, 1L);
@@ -558,8 +563,14 @@ static int check_result(struct wait_case *test)
 		low = jiffies_to_msecs(low);
 		high = jiffies_to_msecs(high);
 	}
-	return test->result >= low && test->result <= high ?
-		0 : fail(test, __LINE__);
+	if (test->result < low || test->result > high) {
+		kobox_linux_boot_diagnostic(
+			"kobox wait budget: result=%ld low=%ld high=%ld timeout=%lu slept=%lu start=%lu asleep=%lu wake=%lu end=%lu\n",
+			test->result, low, high, test->timeout, test->budget.slept,
+			test->start, test->budget.asleep, test->wake, test->end);
+		return fail(test, __LINE__);
+	}
+	return 0;
 }
 
 static int run_case(struct kobox_linux_wait_report *report, enum wait_api api,

@@ -3,7 +3,9 @@
 
 import importlib.util
 import pathlib
+import types
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("build_task_smp.py")
@@ -13,6 +15,17 @@ SPEC.loader.exec_module(task_build)
 
 
 class TaskBuildTest(unittest.TestCase):
+    def test_machine_support_cannot_implicitly_use_vector_registers(self):
+        arguments = types.SimpleNamespace(
+            source_tree=pathlib.Path("/source"), output_dir=pathlib.Path("/output"),
+            cc="clang", protocol_include=pathlib.Path("/protocol"),
+            architecture_include=pathlib.Path("/arch"),
+            provider_build_dir=pathlib.Path("/provider"))
+        with mock.patch.object(task_build, "run") as run, \
+                mock.patch.object(task_build.provider, "provider_include_flags", return_value=""):
+            task_build.compile_support(arguments, "kobox/task/user.c")
+        self.assertIn("-mgeneral-regs-only", run.call_args.args[0])
+
     config = "\n".join((
         "CONFIG_SMP=y", "CONFIG_NR_CPUS=2", "CONFIG_PREEMPT=y",
         "CONFIG_PREEMPT_COUNT=y",

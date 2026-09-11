@@ -5,9 +5,11 @@
 #ifdef __KERNEL__
 #include <linux/types.h>
 #else
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #endif
+#include "../arch/x86_64/user.h"
 
 enum kobox_linux_vm_protection {
 	KOBOX_VM_READ = 1U << 0,
@@ -28,6 +30,25 @@ struct kobox_linux_vm_host_operations {
 		   size_t size, unsigned int protection);
 	int (*reset)(void *space, uint64_t address, size_t size);
 	int (*close)(void *space);
+	int (*clone)(void *space, uint64_t sequence, uint64_t syscall_sequence,
+		     bool share_mm, void **child, struct kobox_x86_fp_state *fp);
+	int (*enable_syscalls)(void *space);
+	int (*start)(void *space, const struct kobox_x86_user_regs *registers,
+		     const struct kobox_x86_fp_state *fp);
+	/* A racing machine event is retained and reported as -EBUSY. */
+	int (*snapshot)(void *space, uint64_t sequence,
+			struct kobox_x86_user_regs *registers, struct kobox_x86_fp_state *fp);
+	int (*restore)(void *space, uint64_t sequence,
+		       const struct kobox_x86_user_regs *registers,
+		       const struct kobox_x86_fp_state *fp);
+	int (*write_fpregs)(void *space, uint64_t sequence,
+			    const struct kobox_x86_fp_state *fp);
+	int (*syscall_return)(void *space, uint64_t sequence,
+			     uint64_t syscall_sequence,
+			     const struct kobox_x86_user_regs *registers);
+	/* Successful resume advances sequence by one immediately, including
+	 * while running without an event. Snapshot/restore use that generation.
+	 */
 	int (*resume)(void *space, uint64_t sequence);
 	/* Nonblocking dequeue: -EAGAIN is no event, never completion/death. */
 	int (*event)(void *space, struct kobox_linux_vm_event *event);
@@ -47,11 +68,20 @@ struct kobox_linux_vm_fault {
 enum kobox_linux_vm_event_kind {
 	KOBOX_VM_EVENT_STOP,
 	KOBOX_VM_EVENT_FAULT,
+	KOBOX_VM_EVENT_SYSCALL,
 	KOBOX_VM_EVENT_EXIT,
+};
+
+struct kobox_linux_vm_syscall {
+	uint64_t sequence;
+	uint64_t number;
+	uint64_t arguments[6];
 };
 
 struct kobox_linux_vm_event {
 	struct kobox_linux_vm_fault fault;
+	struct kobox_linux_vm_syscall syscall;
+	struct kobox_x86_user_regs user;
 	uint64_t sequence;
 	uint64_t value;
 	uint32_t kind;

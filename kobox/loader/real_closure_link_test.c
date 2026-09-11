@@ -238,24 +238,27 @@ static int pci_config_write(void *object, uint32_t offset, uint32_t width,
 	return 0;
 }
 
-static int pci_bar_info(void *object, uint32_t bar, uint64_t *length_out,
+static int pci_bar_info(void *object, uint32_t bar, uint64_t *cpu_address_out,
+			uint64_t *length_out,
 			uint32_t *flags_out)
 {
-	if (object != &test_resources || bar || !length_out || !flags_out)
+	if (object != &test_resources || bar || !cpu_address_out || !length_out || !flags_out)
 		return -1;
+	*cpu_address_out = TEST_BAR_ADDRESS;
 	*length_out = TEST_BAR_SIZE;
 	*flags_out = KB2_PCI_FUNCTION_BAR_FLAG_MEMORY;
 	return 0;
 }
 
 static int pci_bar_map(void *object, uint32_t bar, uint64_t offset,
-		       size_t length, uint32_t protection, void **address_out)
+		       size_t length, uint32_t protection, uint32_t cache_type,
+		       void *requested_address, void **address_out)
 {
 	if (object != &test_resources || bar || offset > TEST_BAR_SIZE ||
 	    !length || length > TEST_BAR_SIZE - offset ||
 	    protection != (KB2_PCI_FUNCTION_MAP_PROTECTION_READ |
 			   KB2_PCI_FUNCTION_MAP_PROTECTION_WRITE) ||
-	    !address_out)
+	    !address_out || requested_address || cache_type != KB2_PCI_FUNCTION_CACHE_UC_MINUS)
 		return -1;
 	*address_out = test_resources.bar + offset;
 	test_resources.bar_mappings++;

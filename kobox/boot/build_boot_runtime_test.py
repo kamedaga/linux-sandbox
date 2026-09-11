@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -14,13 +15,40 @@ SPEC = importlib.util.spec_from_file_location(
 boot = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(boot)
 LOAD_SPEC = importlib.util.spec_from_file_location(
-    "boot_load", pathlib.Path(__file__).with_name("load_test.py")
+    "boot_load", pathlib.Path(__file__).with_name("inspect_core.py")
 )
 boot_load = importlib.util.module_from_spec(LOAD_SPEC)
 LOAD_SPEC.loader.exec_module(boot_load)
 
 
 class BootBuildTest(unittest.TestCase):
+    def test_gate_sources_are_explicit_and_disjoint(self):
+        production = boot.sources.support_sources(False)
+        testing = boot.sources.support_sources(True)
+        self.assertEqual(len(testing), len(set(testing)))
+        self.assertFalse(set(production) & set(boot.sources.GATE_SOURCES))
+        self.assertEqual(set(testing) - set(production), set(boot.sources.GATE_SOURCES))
+        self.assertTrue(all("_gate.c" not in name for name in production))
+        self.assertIn("kobox/task/port.c", production)
+        self.assertIn("kobox/tests/gates/task_smp.c", boot.sources.GATE_SOURCES)
+        self.assertIn("kobox/boot/vm_lifetime.c", boot.sources.GATE_SOURCES)
+
+    def test_new_provider_overlay_invalidates_existing_kbuild_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory)
+            arguments = types.SimpleNamespace(source_tree=source)
+            before = boot.memory.include_overlay_identity(arguments)
+            header = source / "kobox/provider/include/asm/pgtable.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("#define KERNEL_PGD_BOUNDARY PGD_KERNEL_START\n")
+            added = boot.memory.include_overlay_identity(arguments)
+            self.assertNotEqual(before, added)
+            self.assertEqual(added, boot.memory.include_overlay_identity(arguments))
+            header.write_text("#define KERNEL_PGD_BOUNDARY 0\n")
+            self.assertNotEqual(added, boot.memory.include_overlay_identity(arguments))
+            header.unlink()
+            self.assertEqual(before, boot.memory.include_overlay_identity(arguments))
+
     objects = [
         "init/main.o", "kernel/cpu.o", "kernel/smp.o", "kernel/softirq.o",
         "kernel/workqueue.o", "kernel/rcu/tree.o", "kernel/rcu/srcutree.o",
@@ -28,16 +56,32 @@ class BootBuildTest(unittest.TestCase):
         "fs/namei.o", "fs/open.o", "fs/read_write.o", "fs/file_table.o",
         "fs/file.o", "fs/inode.o", "fs/dcache.o", "fs/super.o",
         "mm/memory.o", "mm/mprotect.o", "mm/mmap.o", "kernel/fork.o",
+        "kernel/cred.o", "kernel/groups.o",
+        "fs/exec.o", "fs/binfmt_elf.o",
+        "kernel/signal.o", "arch/x86/kernel/signal.o",
+        "arch/x86/kernel/fpu/signal.o", "arch/x86/kernel/fpu/core.o",
+        "net/socket.o", "net/core/scm.o", "net/unix/af_unix.o",
+        "net/unix/garbage.o",
+        "kernel/futex/core.o", "kernel/futex/syscalls.o", "kernel/futex/pi.o",
+        "kernel/futex/requeue.o", "kernel/futex/waitwake.o",
         "kernel/kthread.o", "arch/x86/mm/fault.o", "arch/x86/mm/pgtable.o",
         "arch/x86/mm/tlb.o",
+        "kernel/dma/mapping.o", "lib/scatterlist.o",
+        "drivers/iommu/iommu.o", "drivers/iommu/dma-iommu.o", "drivers/iommu/iova.o",
+        "kernel/irq/irqdomain.o", "kernel/irq/msi.o", "kernel/irq/manage.o",
+        "kernel/irq/chip.o", "drivers/pci/msi/api.o", "drivers/pci/msi/msi.o",
+        "drivers/pci/msi/irqdomain.o",
+        "drivers/irqchip/irq-msi-lib.o",
     ]
 
-    def test_real_shmem_and_memory_configuration_are_mandatory(self):
+    def test_memory_dma_and_irq_configuration_are_mandatory(self):
         task_config = (boot.SCRIPT_DIR.parent / "task/config").read_text()
         config = task_config + "\nCONFIG_PREEMPT_COUNT=y\nCONFIG_CONTEXT_TRACKING_IDLE=y\n"
-        config += "\n".join(boot.REQUIRED_MEMORY_CONFIG) + "\n"
+        required_config = (boot.REQUIRED_MEMORY_CONFIG + boot.REQUIRED_DMA_CONFIG +
+                           boot.REQUIRED_IRQ_CONFIG + boot.REQUIRED_CLIENT_CONFIG)
+        config += "\n".join(required_config) + "\n"
         boot.validate_config(config)
-        for required in boot.REQUIRED_MEMORY_CONFIG:
+        for required in required_config:
             for replacement in ("", required.replace("=y", "=m"),
                                 "# " + required.replace("=y", " is not set")):
                 with self.subTest(required=required, replacement=replacement), \
@@ -85,6 +129,29 @@ class BootBuildTest(unittest.TestCase):
         records = boot.validate_machine_overrides(set(definitions), definitions)
         self.assertEqual(len(records), 2)
         for symbol, owner, kind in (
+            ("kernel_clone", "kernel/fork.o", "T"),
+            ("get_signal", "kernel/signal.o", "T"),
+            ("arch_do_signal_or_restart", "arch/x86/kernel/signal.o", "T"),
+            ("__x64_sys_rt_sigreturn", "arch/x86/kernel/signal.o", "T"),
+            ("fpu__restore_sig", "arch/x86/kernel/fpu/signal.o", "T"),
+            ("copy_fpstate_to_sigframe", "arch/x86/kernel/fpu/signal.o", "T"),
+            ("do_exit", "kernel/exit.o", "T"),
+            ("copy_creds", "kernel/cred.o", "T"),
+            ("commit_creds", "kernel/cred.o", "T"),
+            ("begin_new_exec", "fs/exec.o", "T"),
+            ("setup_arg_pages", "fs/exec.o", "T"),
+            ("bprm_execve", "fs/exec.o", "T"),
+            ("dup_fd", "fs/file.o", "T"),
+            ("fd_install", "fs/file.o", "T"),
+            ("f_dupfd", "fs/file.o", "T"),
+            ("receive_fd", "fs/file.o", "T"),
+            ("__sys_sendmsg", "net/socket.o", "T"),
+            ("__sys_recvmsg", "net/socket.o", "T"),
+            ("scm_detach_fds", "net/core/scm.o", "T"),
+            ("unix_gc", "net/unix/garbage.o", "T"),
+            ("do_futex", "kernel/futex/syscalls.o", "T"),
+            ("futex_wait", "kernel/futex/waitwake.o", "T"),
+            ("futex_wake", "kernel/futex/waitwake.o", "T"),
             ("schedule", "kernel/sched/core.o", "T"),
             ("schedule_timeout", "kernel/time/sleep_timeout.o", "T"),
             ("schedule_hrtimeout", "kernel/time/sleep_timeout.o", "T"),
@@ -126,6 +193,15 @@ class BootBuildTest(unittest.TestCase):
             ("request_threaded_irq", "kernel/irq/manage.o", "T"),
             ("free_irq", "kernel/irq/manage.o", "T"),
             ("handle_level_irq", "kernel/irq/chip.o", "T"),
+            ("handle_edge_irq", "kernel/irq/chip.o", "T"),
+            ("__irq_domain_alloc_irqs", "kernel/irq/irqdomain.o", "T"),
+            ("irq_domain_free_irqs", "kernel/irq/irqdomain.o", "T"),
+            ("pci_alloc_irq_vectors_affinity", "drivers/pci/msi/api.o", "T"),
+            ("pci_free_irq_vectors", "drivers/pci/msi/api.o", "T"),
+            ("pci_msi_create_irq_domain", "drivers/pci/msi/irqdomain.o", "T"),
+            ("pci_msi_mask_irq", "drivers/pci/msi/msi.o", "T"),
+            ("pci_msi_unmask_irq", "drivers/pci/msi/msi.o", "T"),
+            ("msi_domain_alloc_irqs_all_locked", "kernel/irq/msi.o", "T"),
             ("vfree", "mm/vmalloc.o", "T"),
             ("mm_alloc", "kernel/fork.o", "T"),
             ("mmput", "kernel/fork.o", "T"),
@@ -134,6 +210,19 @@ class BootBuildTest(unittest.TestCase):
             ("vm_mmap", "mm/util.o", "T"),
             ("vm_munmap", "mm/vma.o", "T"),
             ("__x64_sys_mprotect", "mm/mprotect.o", "T"),
+            ("fixup_user_fault", "mm/gup.o", "T"),
+            ("strncpy_from_user", "lib/strncpy_from_user.o", "T"),
+            ("strnlen_user", "lib/strnlen_user.o", "T"),
+            ("futex_wait", "kernel/futex/waitwake.o", "T"),
+            ("futex_wake", "kernel/futex/waitwake.o", "T"),
+            ("x64_sys_call", "arch/x86/entry/syscall_64.o", "T"),
+            ("do_arch_prctl_64", "arch/x86/kernel/process_64.o", "T"),
+            ("flush_thread", "arch/x86/kernel/process.o", "T"),
+            ("start_thread", "arch/x86/kernel/process_64.o", "T"),
+            ("x86_fsbase_read_task", "arch/x86/kernel/process_64.o", "T"),
+            ("x86_gsbase_read_task", "arch/x86/kernel/process_64.o", "T"),
+            ("syscall_trace_enter", "kernel/entry/syscall-common.o", "T"),
+            ("syscall_exit_work", "kernel/entry/syscall-common.o", "T"),
             ("handle_mm_fault", "mm/memory.o", "T"),
             ("do_user_addr_fault", "arch/x86/mm/fault.o", "T"),
             ("unmap_mapping_range", "mm/memory.o", "T"),
@@ -161,6 +250,20 @@ class BootBuildTest(unittest.TestCase):
             ("flush_delayed_fput", "fs/file_table.o", "T"),
             ("iput", "fs/inode.o", "T"),
             ("task_work_run", "kernel/task_work.o", "T"),
+            ("pci_scan_root_bus_bridge", "drivers/pci/probe.o", "T"),
+            ("pci_bus_add_devices", "drivers/pci/bus.o", "T"),
+            ("pci_find_capability", "drivers/pci/pci.o", "T"),
+            ("pci_iomap", "drivers/pci/iomap.o", "T"),
+            ("pci_iounmap", "drivers/pci/iomap.o", "T"),
+            ("ioremap", "arch/x86/mm/ioremap.o", "T"),
+            ("ioremap_wc", "arch/x86/mm/ioremap.o", "T"),
+            ("memtype_reserve", "arch/x86/mm/pat/memtype.o", "T"),
+            ("dma_map_phys", "kernel/dma/mapping.o", "T"),
+            ("dma_map_sg_attrs", "kernel/dma/mapping.o", "T"),
+            ("iommu_dma_map_phys", "drivers/iommu/dma-iommu.o", "T"),
+            ("iommu_dma_map_sg", "drivers/iommu/dma-iommu.o", "T"),
+            ("iommu_map", "drivers/iommu/iommu.o", "T"),
+            ("alloc_iova_fast", "drivers/iommu/iova.o", "T"),
             ("__boot_cpu_id", "kernel/cpu.o", "B"),
             ("setup_arch", "kernel/new_owner.o", "T"),
             ("arch_cpu_idle_exit", "kernel/sched/build_policy.o", "T"),
@@ -217,6 +320,39 @@ class BootBuildTest(unittest.TestCase):
             record = arguments.native_source_patches[name]
             self.assertEqual(record["source_sha256"], boot.memory.sha256(source_tree / name))
             self.assertEqual(record["hosted_source_sha256"], boot.memory.sha256(staged))
+
+    def test_isolated_image_bounds_include_large_model_bss(self):
+        source = boot.SCRIPT_DIR.parent / "provider/provider.lds"
+        original = source.read_text()
+        hosted = boot.memory.isolated_linker_script(original)
+        self.assertIn("_text = __ehdr_start;", hosted)
+        self.assertIn("*(.lbss .lbss.*)", hosted)
+        self.assertIn("INSERT AFTER .bss;", hosted)
+        self.assertIn("__bss_stop = ADDR(.kobox_image_bss) + SIZEOF(.kobox_image_bss);", hosted)
+        self.assertNotIn("*(.ltext.*)", hosted)
+        self.assertEqual(source.read_text(), original)
+        for marker in ("_text = ADDR(.ltext);", "__bss_stop = ADDR(.bss) + SIZEOF(.bss);"):
+            with self.subTest(marker=marker), self.assertRaises(boot.memory.MemoryBuildError):
+                boot.memory.isolated_linker_script(original.replace(marker, ""))
+
+    def test_isolated_image_rejects_load_outside_ram_bounds(self):
+        arguments = types.SimpleNamespace(nm="nm", readelf="readelf")
+        symbols = "_text r 0\n__bss_stop b 4000\n"
+        headers = "LOAD 0 0 0 0x1000 0x1000 R 0x1000\n"
+        headers += "LOAD 0x2000 0x2000 0x2000 0x1000 0x2000 RW 0x1000\n"
+        with mock.patch.object(boot.memory, "run", side_effect=[symbols, headers]):
+            boot.memory.validate_isolated_image(arguments, pathlib.Path("core.so"))
+        for bad_symbols, bad_headers in (
+            (symbols.replace("4000", "3000"), headers),
+            (symbols.replace("4000", "4001"), headers),
+            ("_text r 0\n", headers),
+            (symbols, ""),
+            (symbols.replace("r 0", "r 1000"), headers),
+        ):
+            with self.subTest(symbols=bad_symbols, headers=bad_headers), \
+                    mock.patch.object(boot.memory, "run", side_effect=[bad_symbols, bad_headers]), \
+                    self.assertRaises(boot.memory.MemoryBuildError):
+                boot.memory.validate_isolated_image(arguments, pathlib.Path("core.so"))
 
 
 if __name__ == "__main__":

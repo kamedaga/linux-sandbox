@@ -4,12 +4,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-static atomic_uint_fast64_t backing_sequence;
 
 static int valid_range(size_t total, size_t offset, size_t size)
 {
@@ -96,25 +93,21 @@ int kobox_posix_memory_backing_init(
 	struct kobox_posix_memory_backing *backing,
 	size_t size)
 {
-	char name[80];
-	uint_fast64_t sequence;
 	int descriptor;
 	int status;
 
 	if (!backing || !size || !page_aligned(size) ||
 	    !valid_file_offset(size) || backing->initialized)
 		return EINVAL;
-	sequence = atomic_fetch_add_explicit(
-		&backing_sequence, 1, memory_order_relaxed);
-	status = snprintf(name, sizeof(name), "/kobox2-%ld-%llu",
-		(long)getpid(), (unsigned long long)sequence);
-	if (status < 0 || (size_t)status >= sizeof(name))
-		return EOVERFLOW;
-	descriptor = shm_open(name, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+	descriptor = memfd_create("kobox2-ram", MFD_CLOEXEC | MFD_ALLOW_SEALING);
 	if (descriptor < 0)
 		return errno;
-	status = shm_unlink(name) == 0 ? 0 : errno;
-	if (!status && ftruncate(descriptor, (off_t)size) != 0)
+	status = ftruncate(descriptor, (off_t)size) == 0 ? 0 : errno;
+	/* Install before granting the FD. After revoke shrinks it to zero,
+	 * no retained FD can grow this inode back into a live generation or
+	 * add F_SEAL_SHRINK to take away the owner's revocation authority.
+	 */
+	if (!status && fcntl(descriptor, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SEAL) != 0)
 		status = errno;
 	if (status) {
 		(void)close(descriptor);
@@ -123,7 +116,33 @@ int kobox_posix_memory_backing_init(
 	backing->descriptor = descriptor;
 	backing->size = size;
 	backing->initialized = true;
+	backing->revoked = false;
 	return 0;
+}
+
+int kobox_posix_memory_backing_revoke(
+	struct kobox_posix_memory_backing *backing)
+{
+	struct stat state;
+	int seals;
+
+	if (!backing || !backing->initialized)
+		return EINVAL;
+	backing->revoked = true;
+	seals = fcntl(backing->descriptor, F_GET_SEALS);
+	if (seals < 0)
+		return errno;
+	if (!(seals & F_SEAL_GROW))
+		return EPERM;
+	/* Host shmem truncation invalidates shared and private/COW aliases,
+	 * including remote processes. It also releases pages, so the caller
+	 * must have stopped every DMA user before reaching this operation.
+	 */
+	if (ftruncate(backing->descriptor, 0))
+		return errno;
+	if (fstat(backing->descriptor, &state))
+		return errno;
+	return state.st_size == 0 ? 0 : EIO;
 }
 
 int kobox_posix_memory_backing_destroy(
@@ -179,6 +198,8 @@ int kobox_posix_memory_window_map(
 	    !page_aligned(window_offset) || !page_aligned(backing_offset) ||
 	    !page_aligned(size) || !valid_file_offset(backing_offset))
 		return EINVAL;
+	if (backing->revoked)
+		return ESTALE;
 	status = native_protection(protection, &native);
 	if (status)
 		return status;

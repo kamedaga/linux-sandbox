@@ -4,7 +4,7 @@
 
 #include "core_lifecycle.h"
 
-#include "../runtime/memory_resource.h"
+#include "../host/posix/memory_resource.h"
 
 #include <kobox2/closure_layout.h>
 #include <kobox2/memory_arena_layout.h>

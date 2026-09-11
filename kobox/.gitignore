@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+!/boot/patches/
+!/boot/patches/*.patch
+!/tests/linux/qemu/qemu_sdl_scanout.patch
+!/tests/linux/qemu/qemu_sdl_active_redraw.patch

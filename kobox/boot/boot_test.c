@@ -2,7 +2,16 @@
 #define _GNU_SOURCE
 
 #include "host.h"
-#include "image.h"
+#include "boot_test.h"
+#include "client_task_gate.h"
+#include "syscall_gate.h"
+#include "exec_gate.h"
+#include "../arch/x86_64/user_layout.h"
+#include "dma_gate.h"
+#include "irq_gate.h"
+#include "virtio_gate.h"
+#include "../host/posix/image.h"
+#include "../host/posix/exception.h"
 #include "service_gate.h"
 #include "wait_gate.h"
 #include "rcu_gate.h"
@@ -14,12 +23,15 @@
 #include "pressure_gate.h"
 #include "vm_gate.h"
 #include "module_gate.h"
+#include "module_launch.h"
+#include "pci_host.h"
 #include "../mm/posix.h"
 #include "../host/posix/vm_service.h"
 #include "../task/posix_machine.h"
 #include "../host/posix/host.h"
 
-#include <dlfcn.h>
+#include "../host/posix/core.h"
+#include "../host/posix/bootstrap.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -54,12 +66,30 @@ static int (*verify_rcu)(struct kobox_linux_rcu_report *report);
 static int (*verify_workqueue)(struct kobox_linux_workqueue_report *report);
 static int (*verify_cleanup)(struct kobox_linux_cleanup_report *report);
 static int (*verify_memory)(struct kobox_linux_boot_memory_report *report);
+static int (*verify_client_task)(struct kobox_client_task_report *report);
+static int (*verify_syscall)(const struct kobox_syscall_test *, struct kobox_syscall_report *);
+static bool autonomous_client;
+static int (*verify_exec)(const struct kobox_exec_test *, struct kobox_exec_report *);
+static struct kobox_linux_module_image exec_image;
+static struct kobox_posix_vm_service *exec_vm_service;
 static int (*verify_vfs)(struct kobox_linux_vfs_report *report);
 static int (*verify_shmem)(struct kobox_linux_shmem_report *report);
 static int (*verify_pressure)(struct kobox_linux_pressure_report *report);
+static int (*verify_pci)(const struct kobox_linux_pci_host *,
+			 struct kobox_linux_pci_report *, int (*)(void *));
+static int (*verify_dma)(const struct kobox_linux_pci_host *,
+			 const struct kobox_linux_dma_test *, struct kobox_linux_dma_report *);
+static int (*verify_irq)(const struct kobox_linux_pci_host *,
+			 const struct kobox_linux_irq_test *, struct kobox_linux_irq_report *);
+static int (*verify_virtio)(const struct kobox_linux_virtio_test *,
+			    struct kobox_linux_virtio_report *);
 static int (*probe_vm)(const struct kobox_linux_vm_test *host, struct kobox_linux_vm_report *report);
 static struct kobox_linux_vm_test vm_host;
 static struct kobox_linux_module_test module_host = {.size = sizeof(module_host)};
+static const struct kobox_boot_test_resources *resource_host;
+static int resources_drained;
+static int (*run_modules)(const struct kobox_linux_module_launch *,
+			  struct kobox_linux_module_launch_report *);
 
 static int module_access(void *address, enum kobox_linux_module_access operation)
 {
@@ -109,6 +139,11 @@ static int module_access(void *address, enum kobox_linux_module_access operation
 		__builtin_trap();
 	return result;
 }
+static int pci_mapping_faults(void *address)
+{
+	return module_access(address, KOBOX_MODULE_READ);
+}
+
 static int (*probe_modules)(const struct kobox_linux_module_test *,
 			    struct kobox_linux_module_report *);
 
@@ -214,9 +249,12 @@ static void kernel_main(void *argument)
 	struct kobox_linux_vfs_report vfs = {.size = sizeof(vfs)};
 	struct kobox_linux_shmem_report shmem = {.size = sizeof(shmem)};
 	struct kobox_linux_pressure_report pressure = {.size = sizeof(pressure)};
+	struct kobox_linux_pci_report pci = {.size = sizeof(pci)};
+	struct kobox_linux_dma_report dma = {.size = sizeof(dma)};
+	struct kobox_linux_irq_report irq = {.size = sizeof(irq)};
 	struct kobox_linux_vm_report vm = {.size = sizeof(vm)};
 	struct kobox_linux_task_report *task = argument;
-	char message[256];
+	char message[512];
 	uint64_t notification_mask;
 	int status, length;
 
@@ -266,6 +304,97 @@ static void kernel_main(void *argument)
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
+	if (!status && verify_virtio) {
+		struct kobox_linux_virtio_report gpu = {.size = sizeof(gpu)};
+		struct kobox_linux_virtio_test test = *resource_host->virtio;
+		const struct kobox_exec_test client = {
+			.size = sizeof(client), .vm = &vm_host,
+			.image = exec_image.data, .length = exec_image.length,
+			.files = resource_host->client_files,
+			.file_count = resource_host->client_file_count,
+		};
+
+		if (verify_exec)
+			test.client = &client;
+		status = verify_virtio(&test, &gpu);
+		if (!status && verify_exec)
+			status = -kobox_posix_vm_service_quiescent(exec_vm_service);
+		resources_drained = gpu.drained;
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"Native virtio: status=%d loaded=%u unloaded=%u bound=%u vectors=%u nodes=%u phase=%u line=%u cleanup=%d drained=%u warnings=%llu interrupts=%llu\n",
+			status, gpu.loaded, gpu.unloaded, gpu.bound, gpu.vectors, gpu.nodes,
+			gpu.phase, gpu.line, gpu.cleanup, gpu.drained,
+			(unsigned long long)gpu.warnings, (unsigned long long)gpu.interrupts);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (gpu.diagnostics[0])
+			(void)write(STDERR_FILENO, gpu.diagnostics,
+				    strnlen(gpu.diagnostics, sizeof(gpu.diagnostics)));
+		if (test.client) {
+			if (gpu.client.diagnostics[0])
+				(void)write(STDERR_FILENO, gpu.client.diagnostics,
+					    strnlen(gpu.client.diagnostics, sizeof(gpu.client.diagnostics)));
+			length = snprintf(message, sizeof(message),
+				"DRM client: entered=%u exited=%u cpus=%u phase=%u line=%u program=%d user_line=%llu user_error=%lld\n",
+				gpu.client.entered, gpu.client.exited, gpu.client.cpu_mask,
+				gpu.client.phase, gpu.client.line, gpu.client.program_status,
+				(unsigned long long)gpu.client.user_failure.line,
+				(long long)gpu.client.user_failure.error);
+			if (length > 0 && (size_t)length < sizeof(message))
+				(void)write(STDERR_FILENO, message, length);
+		}
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_pci) {
+		status = verify_pci(resource_host->pci, &pci, pci_mapping_faults);
+		resources_drained = pci.scans == pci.removals;
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"PCI enumeration: status=%d scans=%u caps=%u removals=%u maps=%u revoked=%u cache=%u bar=%llx size=%llx warnings=%llu phase=%u\n",
+			status, pci.scans, pci.capabilities, pci.removals, pci.mappings,
+			pci.revoked_mappings, pci.cache_mode,
+			(unsigned long long)pci.bar_start,
+			(unsigned long long)pci.bar_size,
+			(unsigned long long)pci.warnings, pci.phase);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_dma) {
+		status = verify_dma(resource_host->pci, resource_host->dma, &dma);
+		resources_drained = dma.drained;
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"DMA Gate: status=%d cases=%u phase=%u drained=%u warnings=%llu cpu_mask=%x rounds=%u sole_pins=%u pressure=%u reclaimed=%u pressure_line=%u\n",
+			status, dma.cases, dma.phase, dma.drained, (unsigned long long)dma.warnings,
+			dma.cpu_mask, dma.parallel_rounds, dma.sole_pins,
+			dma.pressure_pages, dma.pressure_reclaimed, dma.pressure_line);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_irq) {
+		status = verify_irq(resource_host->pci, resource_host->irq, &irq);
+		resources_drained = irq.drained;
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"IRQ routing: status=%d vectors=%u deliveries=%u cpu_mask=%x modes=%u rounds=%u masks=%u migrations=%u rollbacks=%u sync=%u stale=%u dma=%u pending_free=%u warnings=%llu line=%u drained=%u\n",
+			status, irq.vectors, irq.deliveries, irq.cpu_mask, irq.modes, irq.rounds,
+			irq.masks, irq.migrations, irq.rollbacks, irq.synchronizations, irq.stale,
+			irq.dma, irq.pending_free, (unsigned long long)irq.warnings, irq.line, irq.drained);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
 	if (!status && verify_vfs) {
 		status = verify_vfs(&vfs);
 		if (kobox_posix_notifications_save(&notification_mask))
@@ -286,6 +415,71 @@ static void kernel_main(void *argument)
 			if (length > 0 && (size_t)length < sizeof(message))
 				(void)write(STDERR_FILENO, message, length);
 		}
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_client_task) {
+		struct kobox_client_task_report client = {.size = sizeof(client)};
+
+		status = verify_client_task(&client);
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"Client task prerequisite: status=%d tasks=%u switches=%u mappings=%u creds=%u files=%u reaped=%u warnings=%llu phase=%u line=%u\n",
+			status, client.tasks, client.switches, client.mappings,
+			client.credentials, client.files, client.reaped,
+			(unsigned long long)client.warnings, client.phase, client.line);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_exec && !verify_virtio) {
+		const struct kobox_exec_test host = {
+			.size = sizeof(host), .vm = &vm_host,
+			.image = exec_image.data, .length = exec_image.length,
+		};
+		struct kobox_exec_report report = {.size = sizeof(report)};
+
+		status = verify_exec(&host, &report);
+		if (!status)
+			status = -kobox_posix_vm_service_quiescent(exec_vm_service);
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"External ELF exec: status=%d entered=%u exited=%u reclaimed=%u cpus=%u warnings=%llu phase=%u line=%u program=%d result=%d user_pid=%llu user_line=%llu user_error=%lld\n",
+			status, report.entered, report.exited, report.reclaimed, report.cpu_mask,
+			(unsigned long long)report.warnings, report.phase, report.line,
+			report.program_status, report.result,
+			(unsigned long long)report.user_failure.pid,
+			(unsigned long long)report.user_failure.line,
+			(long long)report.user_failure.error);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_syscall) {
+		const struct kobox_syscall_test host = {
+			.size = sizeof(host), .vm = &vm_host,
+			.issue = autonomous_client ? NULL : kobox_vm_posix_syscall_probe,
+		};
+		struct kobox_syscall_report report = {.size = sizeof(report)};
+
+		status = verify_syscall(&host, &report);
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"External syscall dispatch: status=%d calls=%u faults=%u tls=%u nested=%u invalid=%u fd=%u exit=%u reclaimed=%u cpus=%u warnings=%llu line=%u nr=%llu returned=%lld rights=%u truncated=%u queued_exit=%u rendezvous=%u race_sent=%u race_rejected=%u inherited=%u cow=%u binding_rollbacks=%u forks=%u clones=%u threads=%u group_exits=%u autonomous=%u\n",
+			status, report.calls, report.faults, report.tls, report.nested, report.invalid, report.descriptors,
+			report.exited, report.reclaimed, report.cpu_mask, (unsigned long long)report.warnings,
+			report.line, (unsigned long long)report.number, (long long)report.returned,
+			report.transfers, report.truncated, report.queued_exit,
+			report.rendezvous, report.race_sent, report.race_rejected,
+			report.inherited, report.cow, report.binding_rollbacks, report.native_forks,
+			report.shared_clones, report.threads, report.group_exits, report.autonomous);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
@@ -378,10 +572,26 @@ static void kernel_main(void *argument)
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
+	if (!status && run_modules) {
+		struct kobox_linux_module_launch_report modules = {.size = sizeof(modules)};
+
+		status = run_modules(resource_host->modules, &modules);
+		resources_drained = modules.loaded == modules.unloaded && !modules.cleanup_result;
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"Native manifest lifecycle: status=%d loaded=%zu unloaded=%zu cleanup=%d\n",
+			status, modules.loaded, modules.unloaded, modules.cleanup_result);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
 	if (!status && probe_modules) {
 		struct kobox_linux_module_report modules = {.size = sizeof(modules)};
 
 		status = probe_modules(&module_host, &modules);
+		resources_drained = modules.loaded == modules.unloaded;
 		if (kobox_posix_notifications_save(&notification_mask))
 			__builtin_trap();
 		length = snprintf(message, sizeof(message),
@@ -399,6 +609,21 @@ static void kernel_main(void *argument)
 				modules.gem.faults, modules.gem.denied, modules.gem.partial_unmaps,
 				modules.gem.object_reclaims, modules.gem.page_reclaims,
 				modules.gem.live_checks, modules.gem.revoked);
+			if (length > 0 && (size_t)length < sizeof(message))
+				(void)write(STDERR_FILENO, message, length);
+		}
+		if (module_host.issue_syscall) {
+			length = snprintf(message, sizeof(message),
+				"DRM syscalls: result=%d line=%u nr=%llu returned=%lld calls=%u files=%u handles=%u nested=%u invalid=%u fd=%u faults=%u reclaimed=%u exited=%u cpus=%u transfers=%u truncated=%u queued_exit=%u\n",
+				modules.syscalls.result, modules.syscalls.line,
+				(unsigned long long)modules.syscalls.number,
+				(long long)modules.syscalls.returned, modules.syscalls.calls,
+				modules.syscalls.drm_files, modules.syscalls.gem_handles,
+				modules.syscalls.nested, modules.syscalls.invalid, modules.syscalls.descriptors,
+				modules.syscalls.faults, modules.syscalls.reclaimed,
+				modules.syscalls.exited, modules.syscalls.cpu_mask,
+				modules.syscalls.transfers, modules.syscalls.truncated,
+				modules.syscalls.queued_exit);
 			if (length > 0 && (size_t)length < sizeof(message))
 				(void)write(STDERR_FILENO, message, length);
 		}
@@ -521,42 +746,63 @@ static void kernel_main(void *argument)
 				cleanup.line, cleanup.errors);
 			if (length > 0 && (size_t)length < sizeof(message))
 				(void)write(STDERR_FILENO, message, length);
+			length = snprintf(message, sizeof(message),
+				"cleanup watchdog: hold_phase=%u work=%u delayed=%u probe_timeout_phase=%u calls=%u phase=%u cleaner=%u active=%u\n",
+				cleanup.hold_phase, cleanup.hold_work_active,
+				cleanup.hold_delayed_active, cleanup.probe_timeout_phase,
+				cleanup.probe_calls, cleanup.probe_phase,
+				cleanup.probe_cleaner, cleanup.probe_active);
+			if (length > 0 && (size_t)length < sizeof(message))
+				(void)write(STDERR_FILENO, message, length);
 		}
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
+	if (resources_drained && resource_host && resource_host->close) {
+		/* Native unload and RCU drain have completed. Stop host signal
+		 * reentry while releasing the bootstrap-owned registry and images.
+		 */
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		resource_host->close(resource_host->context);
+	}
 	_exit(status ? 1 : 0);
 }
 
-int main(int argc, char **argv)
+int kobox_boot_test_run(int argc, char **argv,
+			const struct kobox_boot_test_resources *resources)
 {
 	struct kobox_posix_memory_backing backing = {0};
-	struct kobox_posix_memory_window direct = {0};
-	struct kobox_posix_memory_window vmemmap = {0};
-	struct kobox_posix_memory_window vmalloc = {0};
-	struct kobox_boot_image image = {0};
+	struct kobox_posix_bootstrap bootstrap = {0};
+	const struct kobox_posix_boot_profile profile = {
+		.ram_size = TEST_RAM_SIZE,
+		.vmemmap_size = TEST_VMEMMAP_SIZE,
+		.vmalloc_size = TEST_VMALLOC_SIZE,
+		.image_physical_base = TEST_IMAGE_PHYSICAL_BASE,
+	};
 	struct kobox_posix_vm_service *vm_service = NULL;
-	struct kobox_posix_task *boot_task = NULL;
 	struct kobox_linux_task_report report = {
 		.size = sizeof(report),
 		.identity = KOBOX_LINUX_TASK_HOST_IDENTITY,
 	};
-	struct kobox_linux_boot_layout layout;
 	struct sigaction action = {
 		.sa_sigaction = crash_handler,
 		.sa_flags = SA_SIGINFO,
 	};
-	int (*entry)(const struct kobox_linux_boot_layout *layout,
-		     struct kobox_linux_task_report *report);
-	kobox_linux_task_notification_fn dispatch;
-	void *direct_address;
+	struct kobox_posix_core *native_core = NULL;
+	struct kobox_boot_core *core;
 	void *address;
-	void *handle;
-	Dl_info info;
 	int status;
 
-	CHECK(argc == 2 || (argc == 7 && !strcmp(argv[2], "--modules")) ||
+	resource_host = resources;
+	module_host.lifecycle = resources ? resources->lifecycle : NULL;
+	CHECK(argc == 2 || (argc == 5 && !strcmp(argv[2], "--elf-exec")) ||
+	      (argc == 7 && !strcmp(argv[2], "--modules")) ||
+	      (argc == 8 && (!strcmp(argv[2], "--resource-port") ||
+			    !strcmp(argv[2], "--resource-port-fail")) && resources) ||
 	      (argc == 9 && (!strcmp(argv[2], "--gem") ||
+			    !strcmp(argv[2], "--gem-syscall") ||
+			    !strcmp(argv[2], "--gem-fd-transfer") ||
 			    !strcmp(argv[2], "--gem-object-last") ||
 			    !strcmp(argv[2], "--gem-failure") ||
 			    !strcmp(argv[2], "--gem-cleanup") ||
@@ -564,7 +810,17 @@ int main(int argc, char **argv)
 			    !strcmp(argv[2], "--gem-cleanup-death") ||
 			    !strcmp(argv[2], "--gem-cleanup-death-object-last") ||
 			    !strcmp(argv[2], "--gem-failure-object-last"))) ||
-	      (argc == 4 && (!strcmp(argv[2], "--vm-probe") ||
+	      (argc == 4 && (!strcmp(argv[2], "--client-run") ||
+					!strcmp(argv[2], "--syscall") || !strcmp(argv[2], "--fd-transfer") ||
+					!strcmp(argv[2], "--fd-exit-race") ||
+					!strcmp(argv[2], "--fd-inheritance") ||
+					!strcmp(argv[2], "--fork") ||
+					!strcmp(argv[2], "--clone") ||
+					!strcmp(argv[2], "--thread") ||
+					!strcmp(argv[2], "--thread-exit-wait") ||
+					!strcmp(argv[2], "--thread-exit-running") ||
+					!strcmp(argv[2], "--thread-exit-peer") ||
+					!strcmp(argv[2], "--vm-probe") ||
 					!strcmp(argv[2], "--vm-probe-ro") ||
 					!strcmp(argv[2], "--vm-probe-reuse") ||
 					!strcmp(argv[2], "--vm-probe-irq") ||
@@ -581,6 +837,7 @@ int main(int argc, char **argv)
 					!strcmp(argv[2], "--workqueue") ||
 					!strcmp(argv[2], "--cleanup") ||
 					!strcmp(argv[2], "--vfs") ||
+					!strcmp(argv[2], "--client-task") ||
 					!strcmp(argv[2], "--shmem") ||
 					!strcmp(argv[2], "--pressure") ||
 					!strcmp(argv[2], "--alloc-failure") ||
@@ -591,37 +848,72 @@ int main(int argc, char **argv)
 	CHECK(sigaction(SIGSEGV, &action, NULL) == 0);
 	CHECK(sigaction(SIGBUS, &action, NULL) == 0);
 	CHECK(sigaction(SIGILL, &action, NULL) == 0);
-	handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
-	if (!handle) {
-		fprintf(stderr, "cannot load boot core: %s\n", dlerror());
-		return 1;
-	}
-	address = dlsym(handle, "kobox_linux_boot_start");
-	CHECK(address && dladdr(address, &info));
-	core_base = (uintptr_t)info.dli_fbase;
-	memcpy(&entry, &address, sizeof(entry));
-	address = dlsym(handle, "kobox_linux_task_dispatch");
-	CHECK(address);
-	memcpy(&dispatch, &address, sizeof(dispatch));
-	address = dlsym(handle, "kobox_linux_boot_verify");
+	CHECK(!kobox_posix_core_open(argv[1], &native_core));
+	core = kobox_posix_core_boot(native_core);
+	core_base = (uintptr_t)kobox_posix_core_base(native_core);
+	address = core->lookup(core->loader, "kobox_linux_boot_verify");
 	CHECK(address);
 	memcpy(&verify_boot, &address, sizeof(verify_boot));
-	address = dlsym(handle, "kobox_linux_boot_memory_verify");
+	address = core->lookup(core->loader, "kobox_linux_boot_memory_verify");
 	CHECK(address);
 	memcpy(&verify_memory, &address, sizeof(verify_memory));
-	if (argc == 7 || argc == 9) {
+	if (resources && resources->pci) {
+		CHECK(argc == 2);
+		address = core->lookup(core->loader, resources->pci_verifier ?
+			       resources->pci_verifier : "kobox_linux_pci_verify");
+		CHECK(address);
+		memcpy(&verify_pci, &address, sizeof(verify_pci));
+	}
+	if (resources && resources->dma) {
+		CHECK(resources->pci && resources->prepare_dma);
+		address = core->lookup(core->loader, "kobox_linux_dma_verify");
+		CHECK(address);
+		memcpy(&verify_dma, &address, sizeof(verify_dma));
+	}
+	if (resources && resources->modules) {
+		CHECK(argc == 2);
+		address = core->lookup(core->loader, "kobox_linux_modules_run");
+		CHECK(address);
+		memcpy(&run_modules, &address, sizeof(run_modules));
+	}
+	if (resources && resources->irq) {
+		CHECK(resources->pci);
+		address = core->lookup(core->loader, "kobox_linux_irq_verify");
+		CHECK(address);
+		memcpy(&verify_irq, &address, sizeof(verify_irq));
+	}
+	if (resources && resources->virtio) {
+		CHECK((argc == 2 || argc == 5) && resources->prepare_dma);
+		address = core->lookup(core->loader, "kobox_linux_virtio_verify");
+		CHECK(address);
+		memcpy(&verify_virtio, &address, sizeof(verify_virtio));
+	}
+	if (argc == 5) {
+		address = core->lookup(core->loader, "kobox_linux_exec_verify");
+		CHECK(address);
+		memcpy(&verify_exec, &address, sizeof(verify_exec));
+		CHECK(!read_module_image(argv[4], &exec_image));
+	}
+	if (argc == 7 || argc == 8 || argc == 9) {
 		unsigned int index;
 
-		address = dlsym(handle, "kobox_linux_module_probe");
+		address = core->lookup(core->loader, "kobox_linux_module_probe");
 		CHECK(address);
 		memcpy(&probe_modules, &address, sizeof(probe_modules));
 		for (index = 0; index < KOBOX_GEM_MODULES; index++)
 			CHECK(!read_module_image(argv[(argc == 9 ? 4 : 3) + index],
 						&module_host.images[index]));
 		module_host.access = module_access;
+		if (argc == 8) {
+			CHECK(!read_module_image(argv[7], &module_host.resource_image));
+			module_host.resource_fail_init = !strcmp(argv[2], "--resource-port-fail");
+		}
 		if (argc == 9) {
 			CHECK(!read_module_image(argv[8], &module_host.lifetime_image));
 			module_host.vm = &vm_host;
+			module_host.syscall_rights = !strcmp(argv[2], "--gem-fd-transfer");
+			if (!strcmp(argv[2], "--gem-syscall") || module_host.syscall_rights)
+				module_host.issue_syscall = kobox_vm_posix_syscall_probe;
 			module_host.buffer_cleanup = !strcmp(argv[2], "--gem-cleanup") ||
 				!strcmp(argv[2], "--gem-cleanup-object-last") ? KOBOX_GEM_CLEANUP_NORMAL :
 				!strcmp(argv[2], "--gem-cleanup-death") ||
@@ -636,68 +928,103 @@ int main(int argc, char **argv)
 				KOBOX_GEM_FINAL_OBJECT : KOBOX_GEM_FINAL_VMA;
 		}
 	}
-	if (argc == 4) {
-		address = dlsym(handle, "kobox_linux_vm_probe");
+	if (argc == 4 && strcmp(argv[2], "--client-run") &&
+	    strcmp(argv[2], "--syscall") && strcmp(argv[2], "--fd-transfer") &&
+	    strcmp(argv[2], "--fd-exit-race") && strcmp(argv[2], "--fd-inheritance") &&
+	    strcmp(argv[2], "--fork") && strcmp(argv[2], "--clone") && strcmp(argv[2], "--thread") &&
+	    strcmp(argv[2], "--thread-exit-wait") && strcmp(argv[2], "--thread-exit-running") &&
+	    strcmp(argv[2], "--thread-exit-peer")) {
+		address = core->lookup(core->loader, "kobox_linux_vm_probe");
 		CHECK(address);
 		memcpy(&probe_vm, &address, sizeof(probe_vm));
 	}
+	if (argc == 4 && (!strcmp(argv[2], "--client-run") ||
+			 !strcmp(argv[2], "--syscall") || !strcmp(argv[2], "--fd-transfer") ||
+			 !strcmp(argv[2], "--fd-exit-race") || !strcmp(argv[2], "--fd-inheritance") ||
+			 !strcmp(argv[2], "--fork") || !strcmp(argv[2], "--clone") ||
+			 !strcmp(argv[2], "--thread") || !strcmp(argv[2], "--thread-exit-wait") ||
+			 !strcmp(argv[2], "--thread-exit-running") || !strcmp(argv[2], "--thread-exit-peer"))) {
+		autonomous_client = !strcmp(argv[2], "--client-run");
+		address = core->lookup(core->loader, autonomous_client ?
+			"kobox_linux_autonomous_client_verify" : !strcmp(argv[2], "--thread-exit-peer") ?
+			"kobox_linux_group_exit_peer_verify" : !strcmp(argv[2], "--thread-exit-wait") ?
+			"kobox_linux_group_exit_wait_verify" : !strcmp(argv[2], "--thread-exit-running") ?
+			"kobox_linux_group_exit_running_verify" :
+			!strcmp(argv[2], "--thread") ? "kobox_linux_thread_verify" :
+			!strcmp(argv[2], "--clone") ? "kobox_linux_clone_verify" :
+			!strcmp(argv[2], "--fork") ? "kobox_linux_fork_verify" :
+			!strcmp(argv[2], "--fd-inheritance") ?
+			"kobox_linux_fd_inheritance_verify" : !strcmp(argv[2], "--fd-exit-race") ?
+			"kobox_linux_fd_exit_race_verify" : !strcmp(argv[2], "--fd-transfer") ?
+			"kobox_linux_fd_transfer_verify" : "kobox_linux_syscall_verify");
+		CHECK(address);
+		memcpy(&verify_syscall, &address, sizeof(verify_syscall));
+	}
+	if (argc == 3 && !strcmp(argv[2], "--client-task")) {
+		address = core->lookup(core->loader, "kobox_linux_client_task_verify");
+		CHECK(address);
+		memcpy(&verify_client_task, &address, sizeof(verify_client_task));
+	}
 	if (argc == 3 && (!strcmp(argv[2], "--vfs") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_vfs_verify");
+		address = core->lookup(core->loader, "kobox_linux_vfs_verify");
 		CHECK(address);
 		memcpy(&verify_vfs, &address, sizeof(verify_vfs));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--shmem") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_shmem_verify");
+		address = core->lookup(core->loader, "kobox_linux_shmem_verify");
 		CHECK(address);
 		memcpy(&verify_shmem, &address, sizeof(verify_shmem));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--timed-wait") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_wait_verify");
+		address = core->lookup(core->loader, "kobox_linux_wait_verify");
 		CHECK(address);
 		memcpy(&verify_wait, &address, sizeof(verify_wait));
 	}
 	if (argc == 3 && !strcmp(argv[2], "--pressure")) {
-		address = dlsym(handle, "kobox_linux_pressure_verify");
+		address = core->lookup(core->loader, "kobox_linux_pressure_verify");
 		CHECK(address);
 		memcpy(&verify_pressure, &address, sizeof(verify_pressure));
 	}
 	if (argc == 3 && !strcmp(argv[2], "--alloc-failure")) {
-		address = dlsym(handle, "kobox_linux_allocation_verify");
+		address = core->lookup(core->loader, "kobox_linux_allocation_verify");
 		CHECK(address);
 		memcpy(&verify_pressure, &address, sizeof(verify_pressure));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--rcu") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_rcu_verify");
+		address = core->lookup(core->loader, "kobox_linux_rcu_verify");
 		CHECK(address);
 		memcpy(&verify_rcu, &address, sizeof(verify_rcu));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--workqueue") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_workqueue_verify");
+		address = core->lookup(core->loader, "kobox_linux_workqueue_verify");
 		CHECK(address);
 		memcpy(&verify_workqueue, &address, sizeof(verify_workqueue));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--cleanup") || !strcmp(argv[2], "--all"))) {
-		address = dlsym(handle, "kobox_linux_cleanup_verify");
+		address = core->lookup(core->loader, "kobox_linux_cleanup_verify");
 		CHECK(address);
 		memcpy(&verify_cleanup, &address, sizeof(verify_cleanup));
 	}
 	CHECK(kobox_posix_memory_backing_init(&backing, TEST_RAM_SIZE) == 0);
-	CHECK(kobox_posix_memory_window_init(&direct, TEST_RAM_SIZE) == 0);
-	CHECK(kobox_posix_memory_window_init(&vmemmap, TEST_VMEMMAP_SIZE) == 0);
-	CHECK(kobox_posix_memory_window_init(&vmalloc, TEST_VMALLOC_SIZE) == 0);
-	CHECK(kobox_posix_memory_window_map(&direct, 0, &backing, 0,
-		TEST_RAM_SIZE, KOBOX_POSIX_MEMORY_READ | KOBOX_POSIX_MEMORY_WRITE,
-		&direct_address) == 0);
-	CHECK(kobox_boot_image_alias(handle, &backing, direct_address,
-		TEST_IMAGE_PHYSICAL_BASE, &image) == 0);
-	core_size = image.size;
-	if (probe_vm || module_host.vm) {
+	if (resources && resources->prepare_dma)
+		CHECK(!resources->prepare_dma(resources->context, backing.descriptor, backing.size));
+	CHECK(!kobox_posix_bootstrap_prepare(&bootstrap, native_core, &backing, &profile));
+	core_size = bootstrap.image.size;
+	if (probe_vm || module_host.vm || verify_syscall || verify_exec) {
 		unsigned int index;
 
 		CHECK(kobox_posix_vm_service_create(&vm_service, kobox_vm_posix_notify, NULL) == 0);
+		if (resources && resources->vm_ready)
+			resources->vm_ready(resources->context, vm_service);
+		if (verify_exec)
+			exec_vm_service = vm_service;
 		vm_host = (struct kobox_linux_vm_test) {
 			.size = sizeof(vm_host), .operations = &kobox_vm_posix_operations,
-			.start = KOBOX_VM_WINDOW_BASE, .length = KOBOX_VM_WINDOW_SIZE,
+			.start = verify_exec ? KOBOX_X86_USER_START :
+				autonomous_client ? KOBOX_VM_TEST_WINDOW_BASE + (UINT64_C(1) << 32) :
+				KOBOX_VM_TEST_WINDOW_BASE,
+			.length = verify_exec ? KOBOX_X86_USER_END - KOBOX_X86_USER_START :
+				autonomous_client ? 64UL * 1024 * 1024 : KOBOX_VM_TEST_WINDOW_SIZE,
 			.probe = kobox_vm_posix_probe,
 			.readonly_case = !strcmp(argv[2], "--vm-probe-ro"),
 			.reuse_case = !strcmp(argv[2], "--vm-probe-reuse"),
@@ -717,48 +1044,18 @@ int main(int argc, char **argv)
 			struct kobox_posix_vm_remote *remote = NULL;
 			pid_t pid;
 
-			CHECK(kobox_posix_vm_remote_create(vm_service, argv[3], &backing, &remote, &pid) == 0);
+			CHECK(kobox_posix_vm_remote_create(vm_service, argv[3], &backing,
+				vm_host.start, vm_host.length, &remote, &pid) == 0);
 			vm_host.spaces[index] = remote;
 			vm_host.pids[index] = pid;
 		}
 	}
-	CHECK(kobox_task_posix_init(dispatch) == 0);
-	CHECK(kobox_posix_task_bind_current(&boot_task) == 0);
-	CHECK(kobox_task_posix_operations.cpu_enter(0, boot_task) == 0);
-	CHECK(kobox_task_posix_operations.cpu_irq_disable(0) == 0);
-	layout = (struct kobox_linux_boot_layout) {
-		.size = sizeof(layout),
-		.exceptions_install = kobox_posix_exceptions_install,
-		.image_protect = kobox_boot_image_protect,
-		.image = &image,
-		.task = {
-			.size = sizeof(layout.task),
-			.identity = KOBOX_LINUX_TASK_HOST_IDENTITY,
-			.memory = {
-				.size = sizeof(layout.task.memory),
-				.identity = KOBOX_LINUX_MEMORY_HOST_IDENTITY,
-				.operations = &kobox_task_posix_memory_operations,
-				.ram_backing = &backing,
-				.direct_window = &direct,
-				.vmemmap_window = &vmemmap,
-				.vmalloc_window = &vmalloc,
-				.direct_map = direct_address,
-				.ram_size = TEST_RAM_SIZE,
-				.vmemmap_base = vmemmap.address,
-				.vmemmap_size = vmemmap.size,
-				.vmalloc_base = vmalloc.address,
-				.vmalloc_size = vmalloc.size,
-				.kernel_image_physical_base = TEST_IMAGE_PHYSICAL_BASE,
-			},
-			.operations = &kobox_task_posix_operations,
-			.boot_task = boot_task,
-		},
-		.command_line = "console=kobox earlycon loglevel=8",
-		.console_write = console_write,
-		.kernel_main = kernel_main,
-		.kernel_argument = &report,
-	};
-	status = entry(&layout, &report);
+	bootstrap.layout.resources = resources ? resources->port : NULL;
+	bootstrap.layout.command_line = "console=kobox earlycon loglevel=8";
+	bootstrap.layout.console_write = console_write;
+	bootstrap.layout.kernel_main = kernel_main;
+	bootstrap.layout.kernel_argument = &report;
+	CHECK(!kobox_posix_bootstrap_start(&bootstrap, &report, &status));
 	fprintf(stderr, "upstream start_kernel unexpectedly returned: %d\n", status);
 	return 1;
 }

@@ -37,6 +37,55 @@ static int resume(void *space, uint64_t sequence)
 	return -kobox_posix_vm_remote_resume(space, sequence);
 }
 
+static int clone_space(void *space, uint64_t sequence, uint64_t syscall_sequence,
+		       bool share_mm, void **child, struct kobox_x86_fp_state *fp)
+{
+	struct kobox_posix_vm_remote *remote = NULL;
+	pid_t pid;
+	int result = kobox_posix_vm_remote_clone(space, sequence, syscall_sequence, share_mm,
+					      &remote, &pid, fp);
+
+	if (!result)
+		*child = remote;
+	return -result;
+}
+
+static int enable_syscalls(void *space)
+{
+	return -kobox_posix_vm_remote_enable_syscalls(space);
+}
+
+static int syscall_return(void *space, uint64_t sequence,
+	uint64_t syscall_sequence, const struct kobox_x86_user_regs *registers)
+{
+	return -kobox_posix_vm_remote_syscall_return(space, sequence,
+						  syscall_sequence, registers);
+}
+
+static int start(void *space, const struct kobox_x86_user_regs *registers,
+		 const struct kobox_x86_fp_state *fp)
+{
+	return -kobox_posix_vm_remote_start(space, registers, fp);
+}
+
+static int write_fpregs(void *space, uint64_t sequence,
+			const struct kobox_x86_fp_state *fp)
+{
+	return -kobox_posix_vm_remote_write_fpregs(space, sequence, fp);
+}
+
+static int snapshot(void *space, uint64_t sequence,
+	struct kobox_x86_user_regs *registers, struct kobox_x86_fp_state *fp)
+{
+	return -kobox_posix_vm_remote_snapshot(space, sequence, registers, fp);
+}
+
+static int restore(void *space, uint64_t sequence,
+	const struct kobox_x86_user_regs *registers, const struct kobox_x86_fp_state *fp)
+{
+	return -kobox_posix_vm_remote_restore(space, sequence, registers, fp);
+}
+
 static int event(void *space, struct kobox_linux_vm_event *event)
 {
 	struct kobox_posix_vm_completion native;
@@ -47,6 +96,7 @@ static int event(void *space, struct kobox_linux_vm_event *event)
 	*event = (struct kobox_linux_vm_event) {
 		.sequence = native.sequence, .value = native.value,
 		.error = -native.error, .exit_status = native.event.exit_status,
+		.user = native.event.user,
 		.fault = {.address = native.event.address, .ip = native.event.ip,
 			.sp = native.event.sp, .flags = native.event.flags, .error = native.event.error},
 	};
@@ -56,6 +106,13 @@ static int event(void *space, struct kobox_linux_vm_event *event)
 		break;
 	case KOBOX_POSIX_VM_FAULT:
 		event->kind = KOBOX_VM_EVENT_FAULT;
+		break;
+	case KOBOX_POSIX_VM_SYSCALL:
+		event->kind = KOBOX_VM_EVENT_SYSCALL;
+		event->syscall.number = native.event.syscall.number;
+		event->syscall.sequence = native.event.syscall.sequence;
+		for (unsigned int index = 0; index < 6; index++)
+			event->syscall.arguments[index] = native.event.syscall.arguments[index];
 		break;
 	case KOBOX_POSIX_VM_EXIT:
 		event->kind = KOBOX_VM_EVENT_EXIT;
@@ -69,6 +126,10 @@ static int event(void *space, struct kobox_linux_vm_event *event)
 const struct kobox_linux_vm_host_operations kobox_vm_posix_operations = {
 	.size = sizeof(kobox_vm_posix_operations),
 	.map = map, .reset = reset, .close = close, .resume = resume, .event = event,
+	.clone = clone_space,
+	.enable_syscalls = enable_syscalls, .syscall_return = syscall_return,
+	.start = start, .write_fpregs = write_fpregs,
+	.snapshot = snapshot, .restore = restore,
 };
 
 void kobox_vm_posix_notify(void *context)
@@ -85,4 +146,10 @@ int kobox_vm_posix_probe(void *space, uint64_t address, unsigned int write,
 	uint64_t value, uint64_t sequence)
 {
 	return -kobox_posix_vm_remote_probe(space, address, write, value, sequence);
+}
+
+int kobox_vm_posix_syscall_probe(void *space, uint64_t number,
+	const uint64_t arguments[6], uint64_t sequence)
+{
+	return -kobox_posix_vm_remote_syscall_probe(space, number, arguments, sequence);
 }

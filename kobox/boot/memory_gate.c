@@ -46,6 +46,11 @@ static int page_allocator(struct kobox_linux_boot_memory_report *report)
 	unsigned long *address;
 	unsigned long pfn;
 
+	if (__pa(_text) != __pa_symbol(_text) || !virt_addr_valid(_text) ||
+	    !virt_addr_valid(empty_zero_page) ||
+	    page_to_pfn(ZERO_PAGE(0)) != (__pa_symbol(empty_zero_page) >> PAGE_SHIFT) ||
+	    memchr_inv(page_address(ZERO_PAGE(0)), 0, PAGE_SIZE))
+		return fail(report, __LINE__);
 	for (order = 0; order <= 4; order++) {
 		pages = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
 		if (!pages)

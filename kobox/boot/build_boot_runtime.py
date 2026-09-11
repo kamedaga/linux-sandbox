@@ -49,9 +49,13 @@ MACHINE_DEFINITIONS = {
     "arch/x86/kernel/smpboot.o": ("__cpu_primary_thread_mask", "__max_smt_threads"),
     "arch/x86/kernel/process.o": (
         "arch_cpu_idle", "arch_release_task_struct", "copy_thread",
-        "exit_thread", "flush_thread",
+        "exit_thread",
+    ),
+    "arch/x86/kernel/process_64.o": (
+        "x86_gsbase_read_cpu_inactive", "x86_gsbase_write_cpu_inactive",
     ),
     "arch/x86/kernel/fpu/core.o": ("fpu_thread_struct_whitelist",),
+    "arch/x86/kernel/cpu/mtrr/generic.o": ("mtrr_type_lookup",),
     "arch/x86/kernel/fpu/init.o": ("fpu__init_cpu",),
     "arch/x86/kernel/alternative.o": ("text_poke_early",),
     "arch/x86/entry/entry_64.o": ("__switch_to_asm",),
@@ -94,29 +98,24 @@ WEAK_MACHINE_HOOKS = {
     "kernel/time/timekeeping.o": ("read_persistent_wall_and_boot_offset",),
 }
 
-SUPPORT_SOURCES = (
-    "kobox/memory/early_boot.c", "kobox/task/port.c",
-    "kobox/task/time_port.c", "kobox/task/time_gate.c", "kobox/boot/port.c",
-    "kobox/boot/exception_port.c", "kobox/boot/cpu_port.c",
-    "kobox/boot/service_gate.c", "kobox/boot/wait_gate.c", "kobox/boot/rcu_gate.c",
-    "kobox/boot/workqueue_gate.c", "kobox/boot/cleanup_gate.c",
-    "kobox/boot/memory_gate.c", "kobox/boot/vfs_gate.c", "kobox/boot/shmem_gate.c",
-    "kobox/boot/pressure_gate.c",
-    "kobox/boot/allocation_gate.c",
-    "kobox/mm/port.c", "kobox/boot/vm_gate.c", "kobox/boot/vm_lifetime.c",
-    "kobox/boot/module_exports.c", "kobox/boot/module_gate.c",
-    "kobox/boot/module_port.c",
-)
+SOURCES_SPEC = importlib.util.spec_from_file_location(
+    "boot_sources", SCRIPT_DIR / "sources.py")
+sources = importlib.util.module_from_spec(SOURCES_SPEC)
+SOURCES_SPEC.loader.exec_module(sources)
 
 # Address formation and explicit hosted architecture/boot-end boundaries.
 # No service initialization or initcall membership changes are permitted.
 MACHINE_SOURCE_PATCHES = {
+    "arch/x86/lib/iomem.c": "iomem-transactions.patch",
+    "arch/x86/kernel/fpu/signal.c": "fpu-user-operand.patch",
     "arch/x86/entry/calling.h": "calling-pic.patch",
     "arch/x86/entry/entry_64.S": "entry_64-pic.patch",
     "arch/x86/kernel/head_64.S": "head_64-pic.patch",
     "arch/x86/kernel/traps.c": "traps-hosted-address.patch",
     "arch/x86/kernel/process_64.c": "register-dump-hosted.patch",
     "arch/x86/mm/pat/set_memory.c": "direct-map-publish.patch",
+    "arch/x86/mm/physaddr.c": "physaddr-hosted.patch",
+    "mm/vmalloc.c": "ioremap-publish.patch",
     "init/main.c": "main-hosted-init.patch",
 }
 
@@ -134,6 +133,23 @@ UPSTREAM_STARTUP_ONLY = {
 REQUIRED_MEMORY_CONFIG = (
     "CONFIG_MMU=y", "CONFIG_SHMEM=y", "CONFIG_TMPFS=y", "CONFIG_MEMFD_CREATE=y",
     "CONFIG_SLUB=y", "CONFIG_SPARSEMEM_VMEMMAP=y",
+    "CONFIG_MTRR=y", "CONFIG_X86_PAT=y",
+)
+
+REQUIRED_DMA_CONFIG = (
+    "CONFIG_IOMMU_SUPPORT=y", "CONFIG_IOMMU_API=y", "CONFIG_IOMMU_DMA=y",
+    "CONFIG_IOMMU_IOVA=y", "CONFIG_IOMMU_DEFAULT_DMA_STRICT=y",
+)
+
+REQUIRED_IRQ_CONFIG = (
+    "CONFIG_KOBOX_HOSTED=y", "CONFIG_IRQ_MSI_LIB=y",
+    "CONFIG_PCI_MSI=y", "CONFIG_GENERIC_MSI_IRQ=y",
+    "CONFIG_IRQ_DOMAIN_HIERARCHY=y", "CONFIG_SPARSE_IRQ=y",
+)
+
+REQUIRED_CLIENT_CONFIG = (
+    "CONFIG_MULTIUSER=y", "CONFIG_FUTEX=y", "CONFIG_NET=y", "CONFIG_UNIX=y",
+    "CONFIG_BINFMT_ELF=y",
 )
 
 
@@ -146,6 +162,15 @@ def validate_config(config):
     for required in REQUIRED_MEMORY_CONFIG:
         if required not in config.splitlines():
             raise BootBuildError(f"boot memory gate requires {required}")
+    for required in REQUIRED_DMA_CONFIG:
+        if required not in config.splitlines():
+            raise BootBuildError(f"boot DMA port requires {required}")
+    for required in REQUIRED_IRQ_CONFIG:
+        if required not in config.splitlines():
+            raise BootBuildError(f"boot IRQ port requires {required}")
+    for required in REQUIRED_CLIENT_CONFIG:
+        if required not in config.splitlines():
+            raise BootBuildError(f"boot client port requires {required}")
 
 
 def validate_source_order(objects):
@@ -162,8 +187,22 @@ def validate_source_order(objects):
         "fs/namei.o", "fs/open.o", "fs/read_write.o", "fs/file_table.o",
         "fs/file.o", "fs/inode.o", "fs/dcache.o", "fs/super.o",
         "mm/memory.o", "mm/mprotect.o", "mm/mmap.o", "kernel/fork.o",
+        "kernel/cred.o", "kernel/groups.o",
+        "fs/exec.o", "fs/binfmt_elf.o",
+        "kernel/signal.o", "arch/x86/kernel/signal.o",
+        "arch/x86/kernel/fpu/signal.o", "arch/x86/kernel/fpu/core.o",
+        "kernel/futex/core.o", "kernel/futex/syscalls.o", "kernel/futex/pi.o",
+        "kernel/futex/requeue.o", "kernel/futex/waitwake.o",
+        "net/socket.o", "net/core/scm.o", "net/unix/af_unix.o",
+        "net/unix/garbage.o",
         "kernel/kthread.o", "arch/x86/mm/fault.o", "arch/x86/mm/pgtable.o",
         "arch/x86/mm/tlb.o",
+        "kernel/dma/mapping.o", "lib/scatterlist.o",
+        "drivers/iommu/iommu.o", "drivers/iommu/dma-iommu.o", "drivers/iommu/iova.o",
+        "kernel/irq/irqdomain.o", "kernel/irq/msi.o", "kernel/irq/manage.o",
+        "kernel/irq/chip.o", "drivers/pci/msi/api.o", "drivers/pci/msi/msi.o",
+        "drivers/pci/msi/irqdomain.o",
+        "drivers/irqchip/irq-msi-lib.o",
     ):
         if required not in objects:
             raise BootBuildError(f"canonical boot core omits {required}")
@@ -310,7 +349,7 @@ def compile_machine_patches(arguments):
     return objects, patches
 
 
-def compile_module_exports(arguments, support):
+def compile_module_exports(arguments, source_names, support):
     """Let native modpost generate exports for the already-linked arch port.
 
     The partial link is metadata input only; the final core retains separate
@@ -318,9 +357,13 @@ def compile_module_exports(arguments, support):
     """
     root = arguments.output_dir / ".module-exports"
     root.mkdir(parents=True, exist_ok=True)
-    selected = [path for name, path in zip(SUPPORT_SOURCES, support)
-                if name in ("kobox/task/port.c", "kobox/memory/early_boot.c",
-                            "kobox/mm/port.c", "kobox/boot/module_exports.c")]
+    selected = [path for name, path in zip(source_names, support)
+                if name in ("kobox/task/port.c", "kobox/task/user.c", "kobox/memory/early_boot.c",
+                            "kobox/arch/x86_64/registers.c",
+                            "kobox/memory/mmio.c",
+                            "kobox/mm/port.c", "kobox/mm/uaccess.c",
+                            "kobox/boot/module_exports.c",
+                            "kobox/boot/resource_port.c")]
     task.run([arguments.ld, "-r", "-o", root / "vmlinux.o", *selected])
     task.run([arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
               "-o", "core-module.symvers", "vmlinux.o"], cwd=root)
@@ -338,8 +381,9 @@ def link_runtime(arguments):
     """Strict development link; no unresolved-symbol boundary DSO or stubs."""
     arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
     (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
-    support = [task.compile_support(arguments, source) for source in SUPPORT_SOURCES]
-    support.extend(compile_module_exports(arguments, support))
+    source_names = sources.support_sources(arguments.with_gates)
+    support = [task.compile_support(arguments, source) for source in source_names]
+    support.extend(compile_module_exports(arguments, source_names, support))
     support_defined = set().union(*(
         memory.defined_symbols(path, arguments.nm) for path in support
     ))
@@ -385,11 +429,14 @@ def link_runtime(arguments):
         json.dumps({"stage": "link-inputs-not-runtime-certified", "overrides": overrides,
                     "source_patches": source_patches,
                     "native_source_patches": getattr(arguments, "native_source_patches", {}),
-                    "local_exports": local_exports},
+                    "local_exports": local_exports,
+                    "support_sources": list(source_names),
+                    "with_gates": arguments.with_gates,
+                    "os_backend": arguments.os_backend, "cpu_arch": arguments.cpu_arch},
                    indent=2, sort_keys=True) + "\n"
     )
     task.run([
-        arguments.cc, "-shared", "-nostartfiles", "--ld-path=" + arguments.ld,
+        arguments.cc, "-shared", "-nostdlib", "--ld-path=" + arguments.ld,
         "-Wl,-Bsymbolic,-z,defs,-z,now,--build-id=none,--error-limit=20",
         "-Wl,--script=" + str(arguments.output_dir / "runtime.lds"),
         "-Wl,--soname=linux-boot-runtime.so",
@@ -397,7 +444,7 @@ def link_runtime(arguments):
         "@" + str(response),
     ])
     print(task.run([
-        sys.executable, SCRIPT_DIR / "load_test.py",
+        sys.executable, SCRIPT_DIR / "inspect_core.py",
         "--core", arguments.output_dir / "linux-boot-runtime.so",
         "--inputs", arguments.output_dir / "linux-boot-inputs.json",
         "--nm", arguments.nm,
@@ -420,6 +467,8 @@ def build_inputs(arguments):
         arguments.canonical_build_dir / "include/config/kernel.release"
     ).read_text().strip()
     arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1"]
+    if arguments.with_gates:
+        arguments.extra_cflags.append("-DKOBOX_RUNTIME_GATES=1")
 
     print(f"Compiling all {len(objects)} canonical boot objects", flush=True)
     # vmlinux_o is the upstream full-tree target, including lib-y inputs.
@@ -457,6 +506,9 @@ def build_inputs(arguments):
         "format": "kobox-linux-boot-inputs-dev",
         "stage": "compiled-inputs-not-runtime-certified",
         "root_symbol": "start_kernel",
+        "with_gates": arguments.with_gates,
+        "os_backend": arguments.os_backend,
+        "cpu_arch": arguments.cpu_arch,
         "root_source": "init/main.o",
         "linux": identity,
         "required_memory_config": list(REQUIRED_MEMORY_CONFIG),
@@ -481,6 +533,10 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source-tree", "canonical-build-dir", "provider-build-dir", "output-dir"):
         parser.add_argument("--" + name, required=True, type=pathlib.Path)
+    parser.add_argument("--os-backend", choices=("linux",), default="linux")
+    parser.add_argument("--cpu-arch", choices=("x86_64",), default="x86_64")
+    parser.add_argument("--with-gates", action="store_true",
+                        help="Link test workloads; omitted for the production core")
     parser.add_argument("--cc", default="clang-18")
     parser.add_argument("--ld", default="ld.lld")
     parser.add_argument("--llvm", default="-18")

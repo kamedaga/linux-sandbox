@@ -3,7 +3,7 @@
 #define _GNU_SOURCE
 
 #include "../loader/closure_loader.h"
-#include "../runtime/memory_resource.h"
+#include "../host/posix/memory_resource.h"
 #include "core_lifecycle.h"
 
 #include <kobox2/closure_layout.h>

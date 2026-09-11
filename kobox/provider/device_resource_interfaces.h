@@ -29,9 +29,18 @@ struct kobox_pci_function_resource_operations {
 	int (*config_write)(void *object, kobox_abi_u32 offset,
 			    kobox_abi_u32 width, kobox_abi_u32 value);
 	int (*bar_info)(void *object, kobox_abi_u32 bar,
-			kobox_abi_u64 *length_out, kobox_abi_u32 *flags_out);
-	int (*bar_map)(void *object, kobox_abi_u32 bar, kobox_abi_u64 offset,
+			kobox_abi_u64 *cpu_address_out, kobox_abi_u64 *length_out,
+			kobox_abi_u32 *flags_out);
+	/* Local callbacks only. A non-NULL target is a caller-owned reservation,
+	 * not an address accepted from a resource-grant wire message. Fixed
+	 * unmap restores that reservation; cache types must not be ignored.
+	 * page_offset is relative to the page-aligned BAR base, unlike bar_read
+	 * and bar_write offsets. The host must authorize complete mapped pages,
+	 * including padding outside a sub-page BAR, or fail the request.
+	 */
+	int (*bar_map)(void *object, kobox_abi_u32 bar, kobox_abi_u64 page_offset,
 		       size_t length, kobox_abi_u32 protection,
+		       kobox_abi_u32 cache_type, void *requested_address,
 		       void **address_out);
 	int (*bar_unmap)(void *object, void *address, size_t length);
 	int (*bar_read)(void *object, kobox_abi_u32 bar, kobox_abi_u64 offset,

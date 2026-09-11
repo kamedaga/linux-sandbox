@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _GNU_SOURCE
 
-#include "exception.h"
+#include "../host/posix/exception.h"
 #include "../host/posix/host.h"
 
 #include <errno.h>

@@ -14,6 +14,9 @@
 #include <asm/runtime-const.h>
 #include <asm/sync_core.h>
 #include <asm/text-patching.h>
+#include <asm/memtype.h>
+#include "../arch/x86_64/user_layout.h"
+#include "../../arch/x86/mm/mm_internal.h"
 
 /* fpu__init_system() remains upstream, including task/FPU allocation sizing. */
 void fpu__init_system(void);
@@ -68,14 +71,35 @@ static void __init hosted_cpu_features(void)
 
 void __init arch_cpu_finalize_init(void)
 {
+	static const enum page_cache_mode hosted_pat[] = {
+		_PAGE_CACHE_MODE_WB, _PAGE_CACHE_MODE_WC,
+		_PAGE_CACHE_MODE_UC_MINUS, _PAGE_CACHE_MODE_UC,
+		_PAGE_CACHE_MODE_WB, _PAGE_CACHE_MODE_WP,
+		_PAGE_CACHE_MODE_UC_MINUS, _PAGE_CACHE_MODE_WT,
+	};
+	int slot;
+
 	if (raw_smp_processor_id() || num_online_cpus() != 1)
 		panic("hosted CPU finalization outside boot CPU");
 	hosted_cpu_features();
+	/* These encode Linux's logical PTEs, not the host CPU's PAT MSR.
+	 * Physical cache attributes are enforced by the host mapping operation;
+	 * unsupported attributes fail there. Keep upstream memtype accounting.
+	 * As in native PAT setup, prefer the lower slot for duplicate types.
+	 */
+	if (pat_enabled())
+		for (slot = ARRAY_SIZE(hosted_pat) - 1; slot >= 0; slot--)
+			update_cache_mode_entry(slot, hosted_pat[slot]);
 	cpu_smt_set_num_threads(1, 1);
 	fpu__init_system();
 	*this_cpu_ptr(&cpu_info) = boot_cpu_data;
 	alternative_instructions();
-	USER_PTR_MAX = TASK_SIZE_MAX;
+	/* The instruction-level pointer clamp also serves trusted native boot
+	 * inputs, which can live above the client MM's machine reservation.
+	 * Client copies still require TASK_SIZE bounds and real Linux PTEs in
+	 * kobox/mm/uaccess.c; a failed guest lookup never uses native memory.
+	 */
+	USER_PTR_MAX = KOBOX_X86_NATIVE_USER_END;
 	runtime_const_init(ptr, USER_PTR_MAX);
 }
 

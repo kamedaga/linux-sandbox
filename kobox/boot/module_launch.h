@@ -3,6 +3,7 @@
 #define KOBOX_BOOT_MODULE_LAUNCH_H
 
 #include "lifecycle.h"
+#include "device_launch.h"
 
 /* Borrowed immutable package data, local to one sandbox process. One launch
  * attempt per boot; restart creates a fresh process and resource generation.
@@ -18,6 +19,8 @@ struct kobox_linux_module_launch {
 	size_t size;
 	const struct kobox_linux_native_module *modules;
 	size_t count;
+	/* Optional device attachment; readiness precedes lifecycle publication. */
+	const struct kobox_linux_device_launch *device;
 	const struct kobox_linux_lifecycle *lifecycle;
 };
 
@@ -27,6 +30,7 @@ struct kobox_linux_module_launch_report {
 	size_t unloaded;
 	int result;
 	int cleanup_result;
+	struct kobox_linux_device_launch_report device;
 };
 
 #ifdef __KERNEL__

@@ -1,0 +1,67 @@
+# deviceを伴うmodule起動
+
+`kobox_linux_modules_run()`の任意`device`入力は、hostが許可した1つのvirtio GPUを
+正規boot済みLinux coreへ接続する。process内のGPL interfaceであり、controller wire形式や
+host kernel ABIではない。入力とdevice reportの追加で未固定dev構造体のsizeが変わるため、
+launcherとcoreは一緒に再ビルドする。旧sizeは拒否する。
+
+既存module ownerの一度限りの起動制約が、PCI準備を含むtransaction全体を覆う。
+許可済みfunctionのscan、resource割当、DMA/IRQ attach、PCI device公開後にmoduleをloadする。
+moduleのadmissionと逆順unloadには、init前の名前検査を含む既存native loaderを使用する。
+
+全moduleのload後、Linux contextでprobe完了を待ち、実`virtio-pci`と子`virtio_gpu`の
+driverを確認する。同じPCI function配下のprimary/render DRM nodeを確認後、private tmpfsに
+検証済みrender nodeを作り、実内部FDとupstream ioctl syscallでVERSION/GET_CAPを実行する。
+成功後だけ元のlifecycle wait/READYへ進む。Linuxアプリlauncher、固定vector数、
+模擬DRM実装をreadiness判定に使わない。
+
+このreadinessはdriver bindと実render file照会であり、**外部DRMサービス公開ではない**。
+serviceには要求の受理・dispatch・client/FD所有権とunload前の停止境界が別途必要である。
+native適合試験はhost認証済みchannelでrenderのSESSION_OPEN/CLOSEと読み取り専用commandを
+検証する。公開LPR endpointや任意DRM操作はまだ提供しない。
+
+device launcherはreadiness後に`drm_service`所有台帳を作る。必須の`render_file_limit`は
+信頼済みlaunch policyで、peer入力ではない。openごとに新しいupstream file、内部FD、
+`drm_file`を作り、readinessや別sessionのfileをdupしない。同時所有fileのidentityが別物で
+あることも検証する。native dispatch層に渡すのは再利用しないopaqueなprivate cookieだけで、
+wire session ID、認証済みclient binding、generation、quota予約、dispatch drainのadmissionは
+host policyに残す。peerからcookieを直接受け取らない。
+
+cleanupでは台帳の受付を停止し、応答未配送のopenを含む全session file、次にreadiness fileを
+openしたLinux taskで同期closeする。失敗したcloseは再試行せず、fileが消費されても最初の
+errorを保持する。内部FDはguard参照を持ち、
+`close_fd()`によるFD取り外し後に`__fput_sync()`で最後のreleaseを完了し、private mountを
+解放する。生FD、file pointer、VERSIONの入れ子pointerはservice境界へ出さない。
+異なるtaskやFD identity変更後の呼出しを拒否する。内部FDのdup/shareは禁止。
+close errorは、FD消費後のflush errorも含めてunloadを阻止する。
+
+続いて全load済みmoduleをunloadし、module workとRCUをdrainした後、IRQ、DMA、PCIの
+順にdetachする。全moduleがunload済みかつunload errorがない場合だけ実行する。
+live driverが残っている場合もdetachを拒否する。部分的な準備状態はheap sessionに保持する。
+unload/detachの失敗では残るsession・port・backingを保持し、process終了とhostのdevice回収へ
+委ねる。失敗した資源を再利用してよいという意味ではない。
+
+lifecycle callbackの寿命は従来どおりprocess終了までで、待機・割当・Linux再入をしない。
+device検査はlifecycle公開前のLinux process contextで行い、一時device sessionを参照する
+割込callback wrapperを作らない。
+
+任意dispatch callbackは元のLinux taskだけで実行し、quiesceまでservice台帳を借用する。
+private cookieからfileを解決し、そのdispatch内だけfileを借用する。
+native receiverがprivateなdecode済みplanを公開し、IRQ callbackはpending状態の観測とcompletion
+通知だけを行う。task loopがworkを一度だけ消費してcanonical query completionを返し、受理済み
+workを完了してからSTOPへ進む。callback境界ではhostのFP/SSE状態を保護する。
+
+`drm_query.c`はnative側GPL glueであり、core stackでcommandをdecodeしない。native receiverの
+stackでcanonical GPU commandをdecodeし、owner taskでVERSION/GET_CAPだけをprivateな正式型へ
+変換してLinuxを呼ぶ。他のwell-formed操作はDRM副作用なしでunsupported completionを返す。
+transport、世代/session権限、private出力stagingはhost integrationの責務とし、hostのservice名や
+native ABIをこのコードへ持ち込まない。
+
+native接続の検証証跡と正確な入力はhost project側の完了記録に置く。
+正常cleanupだけでは、process強制終了からの回復・device reset・generation revokeを
+証明しない。
+
+Gate有効coreでは、VERSIONの全長・1 byte・容量0、無効capability、過大容量拒否時の出力不変、
+不正API入力を追加検証する。外部command admission、別taskからの所有権違反、FD identity破壊、
+close失敗はこれらの試験対象ではない。typed helperが受理するのはVERSIONとGET_CAPのみで、
+raw ioctlの公開入口はない。

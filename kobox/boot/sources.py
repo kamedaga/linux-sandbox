@@ -19,6 +19,9 @@ COMMON_SOURCES = (
     "kobox/memory/mmio.c",
     "kobox/boot/lifecycle.c",
     "kobox/boot/module_launch.c",
+    "kobox/boot/device_launch.c",
+    "kobox/boot/drm_file.c",
+    "kobox/boot/drm_service.c",
     "kobox/boot/module_port.c",
 )
 
@@ -31,6 +34,7 @@ ARCH_SOURCES = (
 )
 
 GATE_SOURCES = (
+    "kobox/boot/drm_file_gate.c",
     "kobox/tests/gates/task_smp.c",
     "kobox/boot/tls_gate.c",
     "kobox/task/time_gate.c",

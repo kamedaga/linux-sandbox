@@ -55,6 +55,7 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		.owner = current,
 	};
 	struct pt_regs regs = {0};
+	struct kobox_linux_device_session *device = NULL;
 	size_t index, prior;
 	int result;
 
@@ -80,9 +81,14 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		goto unlock;
 	}
 	launch_consumed = true;
+	if (launch->device) {
+		result = kobox_linux_device_prepare(launch->device, &device);
+		if (result)
+			goto finish_device;
+	}
 	result = register_module_notifier(&session.notifier);
 	if (result)
-		goto unlock;
+		goto finish_device;
 	for (index = 0; index < launch->count; index++) {
 		const struct kobox_linux_native_module *module = &launch->modules[index];
 
@@ -96,8 +102,16 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 			break;
 		report->loaded++;
 	}
+	if (!result && device)
+		result = kobox_linux_device_ready(device, &report->device);
 	if (!result)
-		result = kobox_linux_lifecycle_wait(launch->lifecycle);
+		result = kobox_linux_lifecycle_serve(launch->lifecycle,
+						   kobox_linux_device_service(device));
+	if (device)
+		report->cleanup_result = kobox_linux_device_quiesce(device,
+							 &report->device);
+	if (report->cleanup_result)
+		goto unregister_notifier;
 	for (index = report->loaded; index; index--) {
 		regs.di = (unsigned long)launch->modules[index - 1].name;
 		regs.si = O_NONBLOCK;
@@ -108,7 +122,16 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	}
 	flush_module_init_free_work();
 	rcu_barrier();
+unregister_notifier:
 	unregister_module_notifier(&session.notifier);
+finish_device:
+	/* Failed unload still owns ports and backing. The host must retire this
+	 * process and revoke its device; it cannot reuse a partial generation.
+	 */
+	if (device && !report->cleanup_result &&
+	    report->loaded == report->unloaded)
+		report->cleanup_result = kobox_linux_device_finish(device,
+								&report->device);
 unlock:
 	mutex_unlock(&launch_lock);
 	report->result = result ?: report->cleanup_result;

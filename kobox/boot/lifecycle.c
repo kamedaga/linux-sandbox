@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "lifecycle.h"
+#include "../arch/x86_64/host_call.h"
 
 #include <linux/completion.h>
 #include <linux/errno.h>
@@ -12,11 +13,13 @@ static bool armed;
 
 void kobox_linux_lifecycle_interrupt(void)
 {
-	if (smp_load_acquire(&armed) && lifecycle.pending(lifecycle.context))
-		complete_all(&stop_requested);
+	if (smp_load_acquire(&armed) &&
+	    kobox_host_call(lifecycle.pending(lifecycle.context)))
+		complete(&stop_requested);
 }
 
-int kobox_linux_lifecycle_wait(const struct kobox_linux_lifecycle *host)
+int kobox_linux_lifecycle_serve(const struct kobox_linux_lifecycle *host,
+			       void *service)
 {
 	int result;
 
@@ -28,12 +31,31 @@ int kobox_linux_lifecycle_wait(const struct kobox_linux_lifecycle *host)
 		return -EBUSY;
 	lifecycle = *host;
 	smp_store_release(&armed, true);
-	result = lifecycle.ready(lifecycle.context);
+	result = kobox_host_call(lifecycle.ready(lifecycle.context));
 	if (result)
 		return result < 0 ? result : -EPROTO;
-	/* Also covers publication before ready/park; completion retains wake. */
-	kobox_linux_lifecycle_interrupt();
-	wait_for_completion(&stop_requested);
-	result = lifecycle.pending(lifecycle.context);
-	return result == 1 ? 0 : result < 0 ? result : -EPROTO;
+	for (;;) {
+		/* State is authoritative; notifications may repeat or precede wait.
+		 * Never reinitialize completion after observing an idle state.
+		 */
+		result = kobox_host_call(lifecycle.pending(lifecycle.context));
+		if (!result) {
+			wait_for_completion(&stop_requested);
+			continue;
+		}
+		if (result == 1)
+			return 0;
+		if (result < 0)
+			return result;
+		if (result != 2 || !lifecycle.dispatch)
+			return -EPROTO;
+		result = kobox_host_call(lifecycle.dispatch(lifecycle.context, service));
+		if (result)
+			return result < 0 ? result : -EPROTO;
+	}
+}
+
+int kobox_linux_lifecycle_wait(const struct kobox_linux_lifecycle *host)
+{
+	return kobox_linux_lifecycle_serve(host, NULL);
 }

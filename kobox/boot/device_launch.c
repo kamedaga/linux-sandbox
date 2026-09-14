@@ -10,6 +10,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <drm/drm.h>
+#include <kobox2/gpu_layout.h>
 
 struct kobox_linux_device_session {
 	struct pci_host_bridge *bridge;
@@ -118,7 +119,8 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 		return -ENODEV;
 	candidate.bound = 1;
 	result = kobox_linux_drm_open(MKDEV(candidate.render_major,
-					  candidate.render_minor), &session->render);
+					  candidate.render_minor),
+				      KB2_GPU_NODE_RENDER, &session->render);
 	if (result)
 		return result;
 	candidate.render_opened = 1;
@@ -137,6 +139,7 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 #endif
 	if (!result)
 		result = kobox_linux_drm_service_create(
+			MKDEV(candidate.primary_major, candidate.primary_minor),
 			MKDEV(candidate.render_major, candidate.render_minor),
 			session->render_file_limit, &session->service);
 	*report = candidate;

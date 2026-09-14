@@ -6,6 +6,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <kobox2/gpu_layout.h>
 
 int kobox_linux_drm_file_gate(struct kobox_linux_drm_file *file,
 			     unsigned int *checks)
@@ -60,7 +61,7 @@ int kobox_linux_drm_file_gate(struct kobox_linux_drm_file *file,
 	    memcmp(shortened, full, sizeof(*full)))
 		goto out;
 	(*checks)++;
-	if (kobox_linux_drm_open(0, &invalid) != -EINVAL || invalid ||
+	if (kobox_linux_drm_open(0, KB2_GPU_NODE_RENDER, &invalid) != -EINVAL || invalid ||
 	    kobox_linux_drm_get_cap(NULL, 0, &value) != -EPERM ||
 	    value != 0xdeadbeef)
 		goto out;

@@ -206,7 +206,7 @@ static int coherent_rollback(struct device *dev,
 	dma_addr_t address;
 	void *cpu;
 
-	for (after = 1; after <= 2; after++) {
+	for (after = 1; after <= 1; after++) {
 		fail_map(test, after);
 		cpu = dma_alloc_coherent(dev, 2 * PAGE_SIZE, &address, GFP_KERNEL);
 		fail_map(test, 0);

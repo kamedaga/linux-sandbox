@@ -7,6 +7,7 @@
 #include <asm/preempt.h>
 #include <asm/io.h>
 #include "../mm/port.h"
+#include "drm_file.h"
 #include "resource_port.h"
 
 /* Hosted module instructions use the same arch boundary as built-in code.
@@ -22,5 +23,9 @@ EXPORT_SYMBOL_GPL(kobox_vm_space_bind);
 EXPORT_SYMBOL_GPL(kobox_vm_space_destroy);
 EXPORT_SYMBOL_GPL(kobox_vm_resolve_fault);
 EXPORT_SYMBOL_GPL(kobox_linux_resource_bind);
+EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_register);
+EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_unregister);
+EXPORT_SYMBOL_GPL(kobox_linux_drm_poll_events);
+EXPORT_SYMBOL_GPL(kobox_linux_drm_read_events);
 EXPORT_SYMBOL_GPL(kobox_mmio_read);
 EXPORT_SYMBOL_GPL(kobox_mmio_write);

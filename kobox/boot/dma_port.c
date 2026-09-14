@@ -35,6 +35,28 @@ struct hosted_dma_domain {
  * its allocation until unmap, and the IOMMU must not change SLUB's refcount.
  */
 #define DMA_PAGE_PINNED XA_MARK_0
+#define DMA_MAPPING_START XA_MARK_1
+#define DMA_MAPPING_END XA_MARK_2
+
+static void release_hosted_pages(struct hosted_dma_domain *dma,
+				 unsigned long iova, size_t count)
+{
+	unsigned long flags;
+	size_t index;
+
+	raw_spin_lock_irqsave(&dma->lock, flags);
+	for (index = 0; index < count; index++) {
+		unsigned long key = (iova >> PAGE_SHIFT) + index;
+		struct page *page = xa_load(&dma->pages, key);
+
+		if (!page)
+			continue;
+		if (xa_get_mark(&dma->pages, key, DMA_PAGE_PINNED))
+			put_page(page);
+		xa_erase(&dma->pages, key);
+	}
+	raw_spin_unlock_irqrestore(&dma->lock, flags);
+}
 
 static struct hosted_dma_domain *hosted(struct iommu_domain *domain)
 {
@@ -47,7 +69,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 {
 	struct hosted_dma_domain *dma = hosted(domain);
 	const struct kobox_linux_dma_host *host = &dma->port->host;
-	size_t length, index;
+	size_t length, index, stored = 0;
 	unsigned long flags;
 	unsigned int protection = 0;
 	u64 end;
@@ -69,8 +91,10 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		protection |= KOBOX_DMA_DEVICE_WRITE;
 	if (!protection)
 		return -EINVAL;
-	/* Reserve xarray nodes before taking the leaf-operation lock. This
-	 * honors the caller's GFP constraints without sleeping under the lock.
+	/* Publish one host range for the physically contiguous run selected by
+	 * iommu_map_nosync(). Per-page capabilities make ordinary GEM objects
+	 * exhaust the host descriptor table despite having only a few runs.
+	 * The xarray remains page-granular for pins and iova_to_phys().
 	 */
 	for (index = 0; index < count; index++) {
 		unsigned long key = (iova >> PAGE_SHIFT) + index;
@@ -79,11 +103,13 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		struct folio *folio;
 		bool pin;
 
-		if (!pfn_valid(pfn))
-			return -EINVAL;
+		if (!pfn_valid(pfn)) {
+			result = -EINVAL;
+			goto rollback;
+		}
 		result = xa_reserve(&dma->pages, key, gfp);
 		if (result)
-			return result;
+			goto rollback;
 		page = pfn_to_page(pfn);
 		folio = page_folio(page);
 		pin = !folio_test_slab(folio) && !folio_test_large_kmalloc(folio);
@@ -94,27 +120,36 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 			if (pin && !folio_try_get(folio)) {
 				raw_spin_unlock_irqrestore(&dma->lock, flags);
 				xa_release(&dma->pages, key);
-				return -EFAULT;
+				result = -EFAULT;
+				goto rollback;
 			}
 			result = xa_err(xa_store(&dma->pages, key, page, GFP_NOWAIT));
-			if (!result) {
-				if (pin)
-					xa_set_mark(&dma->pages, key, DMA_PAGE_PINNED);
-				result = kobox_host_call(host->map(host->context, iova + index * PAGE_SIZE,
-						 physical + index * PAGE_SIZE, PAGE_SIZE, protection));
-				if (result)
-					xa_erase(&dma->pages, key);
-			}
+			if (!result && pin)
+				xa_set_mark(&dma->pages, key, DMA_PAGE_PINNED);
 			if (result && pin)
 				put_page(page);
 		}
 		raw_spin_unlock_irqrestore(&dma->lock, flags);
 		xa_release(&dma->pages, key);
 		if (result)
-			return result > 0 ? -EIO : result;
-		*mapped += PAGE_SIZE;
+			goto rollback;
+		stored++;
 	}
+	result = kobox_host_call(host->map(host->context, iova, physical,
+					   length, protection));
+	if (result)
+		goto rollback;
+	raw_spin_lock_irqsave(&dma->lock, flags);
+	xa_set_mark(&dma->pages, iova >> PAGE_SHIFT, DMA_MAPPING_START);
+	xa_set_mark(&dma->pages, (iova >> PAGE_SHIFT) + count - 1,
+		    DMA_MAPPING_END);
+	raw_spin_unlock_irqrestore(&dma->lock, flags);
+	*mapped = length;
 	return 0;
+
+rollback:
+	release_hosted_pages(dma, iova, stored);
+	return result > 0 ? -EIO : result;
 }
 
 static size_t unmap_pages(struct iommu_domain *domain, unsigned long iova,
@@ -129,23 +164,45 @@ static size_t unmap_pages(struct iommu_domain *domain, unsigned long iova,
 	if (pgsize != PAGE_SIZE || !count || count > SIZE_MAX / PAGE_SIZE ||
 	    iova > ULONG_MAX - (count * PAGE_SIZE - 1))
 		return 0;
-	for (index = 0; index < count; index++) {
-		unsigned long key = (iova >> PAGE_SHIFT) + index;
-		struct page *page;
-		bool pinned;
+	for (index = 0; index < count;) {
+		unsigned long first = (iova >> PAGE_SHIFT) + index;
+		size_t last = index;
+		bool complete = false;
 
 		raw_spin_lock_irqsave(&dma->lock, flags);
-		page = xa_load(&dma->pages, key);
-		if (!page) {
+		if (!xa_load(&dma->pages, first) ||
+		    !xa_get_mark(&dma->pages, first, DMA_MAPPING_START)) {
 			raw_spin_unlock_irqrestore(&dma->lock, flags);
 			break;
 		}
-		if (kobox_host_call(host->unmap(host->context, iova + index * PAGE_SIZE, PAGE_SIZE)))
+		for (; last < count; last++) {
+			unsigned long key = (iova >> PAGE_SHIFT) + last;
+
+			if (!xa_load(&dma->pages, key) ||
+			    (last != index && xa_get_mark(&dma->pages, key,
+							 DMA_MAPPING_START)))
+				break;
+			if (xa_get_mark(&dma->pages, key, DMA_MAPPING_END)) {
+				complete = true;
+				break;
+			}
+		}
+		if (!complete) {
+			raw_spin_unlock_irqrestore(&dma->lock, flags);
+			break;
+		}
+		if (kobox_host_call(host->unmap(host->context,
+				iova + index * PAGE_SIZE,
+				(last - index + 1) * PAGE_SIZE)))
 			panic("host DMA invalidation failed; retaining RAM and IOVA\n");
-		pinned = xa_get_mark(&dma->pages, key, DMA_PAGE_PINNED);
-		xa_erase(&dma->pages, key);
-		if (pinned)
-			put_page(page);
+		for (; index <= last; index++) {
+			unsigned long key = (iova >> PAGE_SHIFT) + index;
+			struct page *page = xa_load(&dma->pages, key);
+
+			if (xa_get_mark(&dma->pages, key, DMA_PAGE_PINNED))
+				put_page(page);
+			xa_erase(&dma->pages, key);
+		}
 		raw_spin_unlock_irqrestore(&dma->lock, flags);
 	}
 	/* Every host unmap already completed its invalidation. No deferred

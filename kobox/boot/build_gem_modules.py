@@ -32,6 +32,7 @@ VIRTIO_GPU_OBJECTS = (
 )
 TEST_OBJECTS = ("kobox/gem/lifetime_test.o", "kobox/gem/resource_test.o",
                 "kobox/gem/dma_consumer_test.o")
+KOBOX_MODULE_OBJECTS = ("kobox/gem/drm_mapping.o",) + TEST_OBJECTS
 VIRTIO_REMOVE_SOURCES = tuple("drivers/gpu/drm/virtio/" + name for name in (
     "virtgpu_drv.h", "virtgpu_drv.c", "virtgpu_kms.c", "virtgpu_fence.c", "virtgpu_vq.c"))
 
@@ -160,12 +161,12 @@ def build(arguments):
                              "-fno-jump-tables", "-include",
                              str(arguments.source_tree /
                                  "kobox/boot/include/kobox/module_visibility.h")]
-    objects = native_objects + TEST_OBJECTS
+    objects = native_objects + KOBOX_MODULE_OBJECTS
     boot.memory.compile_linux_objects(arguments, native_objects,
                                       build_targets=[*native_objects, "modules_prepare"])
-    boot.memory.compile_linux_objects(arguments, TEST_OBJECTS,
+    boot.memory.compile_linux_objects(arguments, KOBOX_MODULE_OBJECTS,
                                       build_targets=[pathlib.PurePosixPath(name).name
-                                                     for name in TEST_OBJECTS],
+                                                     for name in KOBOX_MODULE_OBJECTS],
                                       external_module="kobox/gem")
     patched, source_patches = patched_module_inputs(arguments)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)

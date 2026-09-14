@@ -30,6 +30,7 @@
 struct dma_mapping {
 	struct dma_mapping *next;
 	uint64_t iova;
+	size_t length;
 	void *address;
 	unsigned int protection;
 };
@@ -220,13 +221,14 @@ static int engine_map(struct kobox_dma_fixture *fixture, uint64_t iova, uint64_t
 	struct dma_mapping *mapping;
 	int prot = 0;
 
-	if (length != 4096 || iova % 4096 || offset % 4096 ||
-	    iova < 0x40000000 || iova > 0x40ffffff - 4095 ||
+	if (!length || length % 4096 || iova % 4096 || offset % 4096 ||
+	    iova < 0x40000000 || length > 0x41000000 - iova ||
 	    offset > fixture->ram_size || length > fixture->ram_size - offset ||
 	    !protection || protection & ~(KOBOX_DMA_DEVICE_READ | KOBOX_DMA_DEVICE_WRITE))
 		return -EINVAL;
 	for (mapping = fixture->mappings; mapping; mapping = mapping->next)
-		if (mapping->iova == iova)
+		if (iova <= mapping->iova + mapping->length - 1 &&
+		    mapping->iova <= iova + length - 1)
 			return -EEXIST;
 	if (fixture->fail_after && !--fixture->fail_after)
 		return -ENOMEM;
@@ -245,6 +247,7 @@ static int engine_map(struct kobox_dma_fixture *fixture, uint64_t iova, uint64_t
 		return error;
 	}
 	mapping->iova = iova;
+	mapping->length = length;
 	mapping->protection = protection;
 	mapping->next = fixture->mappings;
 	fixture->mappings = mapping;
@@ -282,10 +285,10 @@ static int engine_unmap(struct kobox_dma_fixture *fixture, uint64_t iova, size_t
 {
 	struct dma_mapping **entry = &fixture->mappings, *mapping;
 
-	if (length != 4096)
+	if (!length || length % 4096)
 		return -EINVAL;
 	for (; (mapping = *entry); entry = &mapping->next) {
-		if (mapping->iova != iova)
+		if (mapping->iova != iova || mapping->length != length)
 			continue;
 		if (fixture->fail_unmap) {
 			fixture->unmap_failed = 1;
@@ -315,8 +318,8 @@ static int engine_transfer(struct kobox_dma_fixture *fixture, uint64_t iova, voi
 	if (!fixture->enabled)
 		return -EACCES;
 	for (mapping = fixture->mappings; mapping; mapping = mapping->next) {
-		if (iova < mapping->iova || iova - mapping->iova >= 4096 ||
-		    length > 4096 - (iova - mapping->iova))
+		if (iova < mapping->iova || iova - mapping->iova >= mapping->length ||
+		    length > mapping->length - (iova - mapping->iova))
 			continue;
 		if (!(mapping->protection & permission))
 			return -EACCES;

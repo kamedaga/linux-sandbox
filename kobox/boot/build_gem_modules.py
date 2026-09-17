@@ -7,8 +7,6 @@ import argparse
 import importlib.util
 import json
 import pathlib
-import shlex
-import shutil
 import sys
 
 
@@ -33,67 +31,6 @@ VIRTIO_GPU_OBJECTS = (
 TEST_OBJECTS = ("kobox/gem/lifetime_test.o", "kobox/gem/resource_test.o",
                 "kobox/gem/dma_consumer_test.o")
 KOBOX_MODULE_OBJECTS = ("kobox/gem/drm_mapping.o",) + TEST_OBJECTS
-VIRTIO_REMOVE_SOURCES = tuple("drivers/gpu/drm/virtio/" + name for name in (
-    "virtgpu_drv.h", "virtgpu_drv.c", "virtgpu_kms.c", "virtgpu_fence.c", "virtgpu_vq.c"))
-
-
-def patched_module_inputs(arguments):
-    """Apply a reviewable native driver fix without changing the pinned tree."""
-    if not arguments.virtio_gpu:
-        return {}, []
-    patch = SCRIPT_DIR.parent / "gem/patches/virtio-gpu-remove.patch"
-    root = arguments.output_dir / ".driver-sources"
-    records, replacements = [], {}
-    for name in VIRTIO_REMOVE_SOURCES:
-        source = arguments.source_tree / name
-        staged = root / name
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, staged)
-    boot.task.run(["patch", "--batch", "--fuzz=0", "--no-backup-if-mismatch",
-                   "-p1", "-d", root, "-i", patch])
-    for name in VIRTIO_REMOVE_SOURCES:
-        source, staged = arguments.source_tree / name, root / name
-        record = {"source": name, "source_sha256": boot.memory.sha256(source),
-                  "patch": "kobox/gem/patches/virtio-gpu-remove.patch",
-                  "patch_sha256": boot.memory.sha256(patch),
-                  "patched_source_sha256": boot.memory.sha256(staged)}
-        records.append(record)
-        if not name.endswith(".c"):
-            continue
-        owner = str(pathlib.PurePosixPath(name).with_suffix(".o"))
-        canonical = arguments.provider_build_dir / owner
-        saved = canonical.with_name("." + canonical.name + ".cmd").read_text()
-        saved = saved.splitlines()[0].split(" := ", 1)[1]
-        output = arguments.output_dir / ".driver-objects" / owner
-        output.parent.mkdir(parents=True, exist_ok=True)
-        commands = boot.memory.kbuild_compile_commands(saved, owner, source, staged, output)
-        # Local trace headers remain pinned; the changed driver header is
-        # resolved from the staged C file's directory first.
-        commands[0].extend(("-iquote", str(source.parent)))
-        for command in commands:
-            boot.task.run(command, cwd=arguments.provider_build_dir)
-        replacements[owner] = output
-        record["object_sha256"] = boot.memory.sha256(output)
-    owner = "drivers/gpu/drm/virtio/virtio-gpu.o"
-    canonical = arguments.provider_build_dir / owner
-    destination = arguments.output_dir / ".driver-objects" / owner
-    members = canonical.with_suffix(".mod").read_text().split()
-    if not set(replacements).issubset(members):
-        raise boot.BootBuildError("driver patch is outside the native module closure")
-    saved = canonical.with_name("." + canonical.name + ".cmd").read_text()
-    command = shlex.split(saved.splitlines()[0].split(" := ", 1)[1])
-    response = "@" + str(pathlib.PurePosixPath(owner).with_suffix(".mod"))
-    if command.count(owner) != 1 or command.count(response) != 1 or command.count("-r") != 1:
-        raise boot.BootBuildError("unexpected native module link recipe")
-    linked = []
-    for item in command:
-        if item == response:
-            linked.extend(str(replacements.get(member, arguments.provider_build_dir / member))
-                          for member in members)
-        else:
-            linked.append(str(destination) if item == owner else item)
-    boot.task.run(linked, cwd=arguments.provider_build_dir)
-    return {owner: destination}, records
 
 
 def module_objects(config, virtio_gpu):
@@ -168,7 +105,6 @@ def build(arguments):
                                       build_targets=[pathlib.PurePosixPath(name).name
                                                      for name in KOBOX_MODULE_OBJECTS],
                                       external_module="kobox/gem")
-    patched, source_patches = patched_module_inputs(arguments)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     exports = arguments.core_dir / ".module-exports/core-module.symvers"
     if not exports.is_file():
@@ -179,14 +115,14 @@ def build(arguments):
         arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
         "-i", arguments.canonical_build_dir / "vmlinux.symvers",
         "-i", exports, "-o", "gem.symvers",
-        *(patched.get(name, arguments.provider_build_dir / name) for name in objects),
+        *(arguments.provider_build_dir / name for name in objects),
     ], cwd=arguments.provider_build_dir)
     arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
     (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
     base_flags = arguments.extra_cflags
     records = []
     for name in objects:
-        source = patched.get(name, arguments.provider_build_dir / name)
+        source = arguments.provider_build_dir / name
         module_name = source.stem.replace("-", "_")
         arguments.extra_cflags = [*base_flags, "-DMODULE",
             f'-DKBUILD_MODNAME="{module_name}"',
@@ -212,7 +148,7 @@ def build(arguments):
                     "hosted_cflags": base_flags,
                     "core_sha256": boot.memory.sha256(
                         arguments.core_dir / "linux-boot-runtime.so"),
-                    "source_patches": source_patches,
+                    "source_patches": [],
                     "modules": records}, indent=2, sort_keys=True) + "\n"
     )
     print("Native DRM modules built with strict modpost; device/runtime Gate pending")

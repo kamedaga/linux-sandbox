@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
-/* Shared-object placement; Linux owns the boot tables and their ordering. */
+/* Fixed hosted placement; Linux owns the boot tables and their ordering. */
+#include "image_layout.h"
 #define LOAD_OFFSET 0
 #define RO_EXCEPTION_TABLE_ALIGN 16
 /* These pages become read-only at the architecture boot-end boundary. */
@@ -12,10 +13,10 @@
 #include <asm/page_types.h>
 #include <asm/cache.h>
 
-/* Program-header permissions are explicit. Native RO_DATA contains relocated
- * pointers; the loader needs write access until the boot-end protection hook.
- * Inheriting permissions from individual orphan sections can remap one page
- * read-only over a neighbouring relocation target during dlopen().
+/* Program-header permissions are explicit. Native RO_DATA contains
+ * address-valued tables that remain writable until the boot-end protection
+ * hook. Inheriting permissions from orphan sections can otherwise give one
+ * page conflicting permissions.
  */
 #undef NOTES_HEADERS
 #define NOTES_HEADERS :rodata :note
@@ -46,32 +47,21 @@ PHDRS
 	initdata PT_LOAD FLAGS(6);
 	loader PT_LOAD FLAGS(6);
 	zerodata PT_LOAD FLAGS(6);
-	dynamic PT_DYNAMIC FLAGS(6);
-	tls PT_TLS FLAGS(4);
 	note PT_NOTE FLAGS(4);
 	stack PT_GNU_STACK FLAGS(6);
 }
 
 SECTIONS
 {
-	. = SIZEOF_HEADERS;
+	. = KOBOX_CORE_LINK_BASE + SIZEOF_HEADERS;
 	/* The host aliases every PT_LOAD byte, including ELF headers, to RAM. */
+	PROVIDE(__ehdr_start = KOBOX_CORE_LINK_BASE);
 	_text = __ehdr_start;
 	__pi__text = _text;
 	.kobox.image : { BYTE(0); } :headers
-	/* Keep loader metadata out of executable pages: overlapping PT_LOAD
-	 * permissions on one page would make the text non-executable at dlopen.
+	/* Keep the fixed-image header out of executable pages: overlapping
+	 * PT_LOAD permissions on one page would violate the W^X loader contract.
 	 */
-	.dynsym : { *(.dynsym) }
-	.gnu.hash : { *(.gnu.hash) }
-	.hash : { *(.hash) }
-	.dynstr : { *(.dynstr) }
-	.gnu.version : { *(.gnu.version) }
-	.gnu.version_d : { *(.gnu.version_d) }
-	.gnu.version_r : { *(.gnu.version_r) }
-	.rela.dyn : { *(.rela.dyn) }
-	.rela.plt : { *(.rela.plt) }
-	.relr.dyn : { *(.relr.dyn) }
 	.text : ALIGN(PAGE_SIZE) {
 		_stext = .;
 		ENTRY_TEXT
@@ -158,10 +148,7 @@ SECTIONS
 		__init_end = .;
 	} :initdata
 
-	.dynamic : ALIGN(PAGE_SIZE) { *(.dynamic) } :loader :dynamic
 	.got : { *(.got .got.plt) } :loader
-	.tdata : ALIGN(16) { *(.tdata .tdata.*) } :loader :tls
-	.tbss : ALIGN(16) { *(.tbss .tbss.*) } :loader :tls
 	/* Keep the native early scratch reservation, not empty bound symbols.
 	 * Place it before BSS so the existing RAM image bound includes it.
 	 */
@@ -176,7 +163,7 @@ SECTIONS
 	__pi__end = _end;
 	__end_of_kernel_reserve = .;
 
-	/* Unlike a native vmlinux, retain ELF dynamic-link/version metadata. */
+	/* No runtime dynamic linker participates in this fixed ET_EXEC image. */
 	/DISCARD/ : {
 		EXIT_TEXT
 		EXIT_DATA

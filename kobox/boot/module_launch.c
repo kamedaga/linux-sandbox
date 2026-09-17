@@ -101,6 +101,11 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		if (result)
 			break;
 		report->loaded++;
+		if (device) {
+			result = kobox_linux_device_module_ready(device);
+			if (result)
+				break;
+		}
 	}
 	if (!result && device)
 		result = kobox_linux_device_ready(device, &report->device);

@@ -2,6 +2,7 @@
 
 #include "memory_gate.h"
 #include "host.h"
+#include "../memory/port.h"
 
 #include <linux/string.h>
 #include <linux/file.h>
@@ -46,10 +47,16 @@ static int page_allocator(struct kobox_linux_boot_memory_report *report)
 	unsigned long *address;
 	unsigned long pfn;
 
-	if (__pa(_text) != __pa_symbol(_text) || !virt_addr_valid(_text) ||
-	    !virt_addr_valid(empty_zero_page) ||
-	    page_to_pfn(ZERO_PAGE(0)) != (__pa_symbol(empty_zero_page) >> PAGE_SHIFT) ||
-	    memchr_inv(page_address(ZERO_PAGE(0)), 0, PAGE_SIZE))
+	if (__pa(_text) != __pa_symbol(_text))
+		return fail(report, __LINE__);
+	if (!virt_addr_valid(_text))
+		return fail(report, __LINE__);
+	if (!virt_addr_valid(empty_zero_page))
+		return fail(report, __LINE__);
+	if (page_to_pfn(ZERO_PAGE(0)) !=
+	    (__pa_symbol(empty_zero_page) >> PAGE_SHIFT))
+		return fail(report, __LINE__);
+	if (memchr_inv(page_address(ZERO_PAGE(0)), 0, PAGE_SIZE))
 		return fail(report, __LINE__);
 	for (order = 0; order <= 4; order++) {
 		pages = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
@@ -160,16 +167,16 @@ static int parent_permissions(unsigned long address,
 	/* Test the native helper on a copied root entry. Never change the live
 	 * ancestor shared by kernel mappings merely to exercise its attributes.
 	 */
-	if (!expected || lookup_address_in_pgd_attr(&root, address, &level, &nx, &rw) !=
+	if (!expected || kobox_linux_memory_lookup_address(&root, address, &level, &nx, &rw) !=
 	    expected || level != expected_level || !rw)
 		return fail(report, __LINE__);
 	report->parent_permission_cases++;
 	root = __pgd(pgd_val(original) & ~_PAGE_RW);
-	if (lookup_address_in_pgd_attr(&root, address, &level, &nx, &rw) != expected || rw)
+	if (kobox_linux_memory_lookup_address(&root, address, &level, &nx, &rw) != expected || rw)
 		return fail(report, __LINE__);
 	report->parent_permission_cases++;
 	root = __pgd(pgd_val(original) | _PAGE_NX);
-	if (lookup_address_in_pgd_attr(&root, address, &level, &nx, &rw) != expected || !nx)
+	if (kobox_linux_memory_lookup_address(&root, address, &level, &nx, &rw) != expected || !nx)
 		return fail(report, __LINE__);
 	report->parent_permission_cases++;
 	return 0;

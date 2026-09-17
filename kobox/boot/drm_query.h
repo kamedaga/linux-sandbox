@@ -12,7 +12,7 @@
 struct kobox_drm_query {
 	uint64_t generation, session_id, capability;
 	uint32_t command_set_id, command_id;
-	uint32_t object_id, mode_flags;
+	uint32_t object_id, object_type, mode_flags;
 	uint32_t poll_events;
 	size_t capacity[4], offset[4];
 	size_t output_size, aux_size;
@@ -36,6 +36,8 @@ struct kobox_drm_query_api {
 	int (*get_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t *);
 	int (*set_client_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t);
 	int (*master)(struct kobox_linux_drm_file *, bool);
+	int (*get_magic)(struct kobox_linux_drm_file *, uint32_t *);
+	int (*auth_magic)(struct kobox_linux_drm_file *, uint32_t);
 	int (*resources)(struct kobox_linux_drm_file *, uint32_t *, size_t,
 		uint32_t *, size_t, uint32_t *, size_t, uint32_t *, size_t,
 		struct kobox_linux_drm_resources *);
@@ -45,15 +47,24 @@ struct kobox_drm_query_api {
 		uint32_t *, size_t, struct kobox_linux_drm_connector *);
 	int (*encoder)(struct kobox_linux_drm_file *, uint32_t,
 		struct kobox_linux_drm_encoder *);
+	int (*get_crtc)(struct kobox_linux_drm_file *, uint32_t,
+		struct kobox_linux_drm_crtc *);
 	int (*set_crtc)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		uint32_t, uint32_t, const uint32_t *, size_t,
 		const struct kobox_linux_drm_mode *);
 	int (*page_flip)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		uint32_t, uint32_t, uint64_t);
+	int (*dirty_fb)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
+		uint32_t, const struct kobox_linux_drm_rectangle *, size_t);
 	int (*create_dumb)(struct kobox_linux_drm_file *,
 		struct kobox_linux_drm_dumb_buffer *);
+	int (*add_fb)(struct kobox_linux_drm_file *,
+		struct kobox_linux_drm_fb *);
+	int (*remove_fb)(struct kobox_linux_drm_file *, uint32_t);
 	int (*add_fb2)(struct kobox_linux_drm_file *,
 		struct kobox_linux_drm_fb2 *);
+	int (*object_properties)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
+		struct kobox_linux_drm_property_value *, size_t, uint32_t *);
 	int (*poll_events)(struct kobox_linux_drm_file *, uint32_t, uint32_t *);
 	int (*read_events)(struct kobox_linux_drm_file *, void *, size_t, size_t *);
 	int (*gem_close)(struct kobox_linux_drm_file *, uint32_t);

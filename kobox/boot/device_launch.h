@@ -16,6 +16,7 @@ struct kobox_linux_device_launch {
 	const struct kobox_linux_pci_host *pci;
 	const struct kobox_linux_dma_host *dma;
 	const struct kobox_linux_irq_host *irq;
+	const struct kobox_linux_drm_event_host *drm_events;
 	uint32_t render_file_limit;
 };
 
@@ -44,6 +45,7 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 			      struct kobox_linux_device_session **session);
 int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 			    struct kobox_linux_device_launch_report *report);
+int kobox_linux_device_module_ready(struct kobox_linux_device_session *session);
 /* Owner-task close/drain before any module unload, including READY failure. */
 int kobox_linux_device_quiesce(struct kobox_linux_device_session *session,
 			      struct kobox_linux_device_launch_report *report);

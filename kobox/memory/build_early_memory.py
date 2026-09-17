@@ -9,7 +9,6 @@ import importlib.util
 import json
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -309,62 +308,8 @@ def selected_definition(symbol, definitions, linked_symbols):
         raise MemoryBuildError(str(error)) from error
 
 
-def kbuild_compile_commands(saved, owner, original, staged, output):
-    """Replay native compiler/objtool commands without shell evaluation."""
-    tokens = shlex.split(saved)
-    if tokens.count(";") != 1:
-        raise MemoryBuildError(f"unexpected Kbuild compiler recipe: {owner}")
-    separator = tokens.index(";")
-    compiler, objtool = tokens[:separator], tokens[separator + 1:]
-    if (compiler.count(str(original)) != 1 or compiler.count(owner) != 1 or
-            not objtool or objtool[0] != "./tools/objtool/objtool" or
-            objtool[-1] != owner):
-        raise MemoryBuildError(f"unexpected Kbuild compiler inputs: {owner}")
-    return [[str(output) if item == owner else
-             str(staged) if item == str(original) else
-             "-Wp,-MMD," + str(output.with_suffix(".d")) if item.startswith("-Wp,-MMD,") else
-             item for item in command] for command in (compiler, objtool)]
-
-
-def stage_native_source(arguments, source_name):
-    original = arguments.source_tree / source_name
-    if source_name != "arch/x86/mm/pat/set_memory.c":
-        return original
-    patch = SCRIPT_DIR / "patches/ancestor-rw.patch"
-    staged = arguments.output_dir / ".native-sources" / source_name
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    run(["patch", "--batch", "--fuzz=0", "--no-backup-if-mismatch",
-         "--output", staged, original, patch])
-    if not hasattr(arguments, "native_source_patches"):
-        arguments.native_source_patches = {}
-    arguments.native_source_patches[source_name] = {
-        "source": source_name, "source_sha256": sha256(original),
-        "patch": "kobox/memory/patches/ancestor-rw.patch",
-        "patch_sha256": sha256(patch), "hosted_source_sha256": sha256(staged),
-    }
-    return staged
-
-
-def native_object(arguments, source_object):
-    source = arguments.provider_build_dir / source_object
-    if source_object != "arch/x86/mm/pat/set_memory.o":
-        return source
-    source_name = str(pathlib.PurePosixPath(source_object).with_suffix(".c"))
-    staged = stage_native_source(arguments, source_name)
-    output = arguments.output_dir / ".native-objects" / source_object
-    output.parent.mkdir(parents=True, exist_ok=True)
-    saved = source.with_name("." + source.name + ".cmd").read_text().splitlines()[0]
-    for command in kbuild_compile_commands(saved.split(" := ", 1)[1], source_object,
-            arguments.source_tree / source_name, staged, output):
-        run(command, cwd=arguments.provider_build_dir)
-    if defined_symbols(source, arguments.nm) != defined_symbols(output, arguments.nm):
-        raise MemoryBuildError(f"native patch changed definitions: {source_object}")
-    arguments.native_source_patches[source_name]["object_sha256"] = sha256(output)
-    return output
-
-
 def prepare_object(arguments, source_object, support_defined):
-    source = native_object(arguments, source_object)
+    source = arguments.provider_build_dir / source_object
     overlaps = defined_symbols(source, arguments.nm) & support_defined
     destination = arguments.output_dir / ".objects" / source_object
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -897,7 +842,7 @@ def build(arguments):
         "gate_symbols": GATE_SYMBOLS,
         "host_imports": sorted(HOST_IMPORTS),
         "hosted_architecture_symbols": sorted(support_defined),
-        "source_patches": getattr(arguments, "native_source_patches", {}),
+        "source_patches": {},
     }
     arguments.inventory.write_text(
         json.dumps(inventory, indent=2, sort_keys=True) + "\n",

@@ -10,7 +10,7 @@
 
 #define CHECK(value) do { \
 	if (!(value)) { \
-		fprintf(stderr, "core TLS check at %u: %s\n", __LINE__, #value); \
+		fprintf(stderr, "core thread-state check at %u: %s\n", __LINE__, #value); \
 		return 1; \
 	} \
 } while (0)
@@ -75,6 +75,6 @@ int main(int argc, char **argv)
 	CHECK(probe() == main_slot && *main_slot == 77);
 	CHECK(!pthread_barrier_destroy(&barrier));
 	CHECK(!kobox_posix_core_close(&native) && !native);
-	puts("Core loader: explicit TLS binding, initializer, alignment and thread isolation verified");
+	puts("Core loader: portable thread-state binding, initializer, alignment and isolation verified");
 	return 0;
 }

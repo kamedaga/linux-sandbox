@@ -18,6 +18,8 @@ import sys
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+CORE_LINK_BASE = 0x10000000
+CORE_PHYSICAL_BASE = 0x01000000
 SPEC = importlib.util.spec_from_file_location(
     "kobox_task_build", SCRIPT_DIR.parent / "task/build_task_smp.py"
 )
@@ -56,6 +58,7 @@ MACHINE_DEFINITIONS = {
     ),
     "arch/x86/kernel/fpu/core.o": ("fpu_thread_struct_whitelist",),
     "arch/x86/kernel/cpu/mtrr/generic.o": ("mtrr_type_lookup",),
+    "arch/x86/lib/iomem.o": ("memcpy_fromio", "memcpy_toio", "memset_io"),
     "arch/x86/kernel/fpu/init.o": ("fpu__init_cpu",),
     "arch/x86/kernel/alternative.o": ("text_poke_early",),
     "arch/x86/entry/entry_64.o": ("__switch_to_asm",),
@@ -72,6 +75,7 @@ MACHINE_DEFINITIONS = {
         "switch_mm", "switch_mm_irqs_off", "flush_tlb_mm_range", "arch_tlbbatch_flush",
     ),
     "arch/x86/mm/fault.o": ("pgd_lock",),
+    "arch/x86/mm/physaddr.o": ("__virt_addr_valid",),
     "arch/x86/kernel/tsc.o": ("sched_clock", "sched_clock_noinstr"),
     "arch/x86/kernel/smp.o": ("smp_ops",),
     "arch/x86/kernel/time.o": ("time_init",),
@@ -83,6 +87,16 @@ MACHINE_DEFINITIONS = {
 MACHINE_LOCAL_EXPORTS = {
     "arch/x86/kernel/traps.o": ("handle_bug", "do_int3"),
     "arch/x86/mm/fault.o": ("do_user_addr_fault",),
+}
+
+# Per-object compile overlays are machine-port input, not source patches.
+# Apply these after the complete canonical build so Kbuild recompiles only the
+# named unchanged source with the architecture contract it requires.
+MACHINE_COMPILE_OVERLAYS = {
+    "arch/x86/kernel/fpu/signal.o": (
+        "-include",
+        str(SCRIPT_DIR / "include/linux/kobox_fpu_signal_compile.h"),
+    ),
 }
 
 WEAK_MACHINE_HOOKS = {
@@ -102,22 +116,6 @@ SOURCES_SPEC = importlib.util.spec_from_file_location(
     "boot_sources", SCRIPT_DIR / "sources.py")
 sources = importlib.util.module_from_spec(SOURCES_SPEC)
 SOURCES_SPEC.loader.exec_module(sources)
-
-# Address formation and explicit hosted architecture/boot-end boundaries.
-# No service initialization or initcall membership changes are permitted.
-MACHINE_SOURCE_PATCHES = {
-    "arch/x86/lib/iomem.c": "iomem-transactions.patch",
-    "arch/x86/kernel/fpu/signal.c": "fpu-user-operand.patch",
-    "arch/x86/entry/calling.h": "calling-pic.patch",
-    "arch/x86/entry/entry_64.S": "entry_64-pic.patch",
-    "arch/x86/kernel/head_64.S": "head_64-pic.patch",
-    "arch/x86/kernel/traps.c": "traps-hosted-address.patch",
-    "arch/x86/kernel/process_64.c": "register-dump-hosted.patch",
-    "arch/x86/mm/pat/set_memory.c": "direct-map-publish.patch",
-    "arch/x86/mm/physaddr.c": "physaddr-hosted.patch",
-    "mm/vmalloc.c": "ioremap-publish.patch",
-    "init/main.c": "main-hosted-init.patch",
-}
 
 UPSTREAM_STARTUP_ONLY = {
     "kobox_linux_memory_early_boot", "kobox_linux_task_smp_boot",
@@ -295,60 +293,6 @@ def validate_startup_ownership(symbols):
         raise BootBuildError(f"machine port bypasses upstream startup: {forbidden[0]}")
 
 
-def machine_compile_commands(saved, owner, original, staged, output):
-    """Replay Kbuild's compiler and objtool without evaluating a shell recipe."""
-    try:
-        return memory.kbuild_compile_commands(saved, owner, original, staged, output)
-    except memory.MemoryBuildError as error:
-        raise BootBuildError(str(error)) from error
-
-
-def compile_machine_patches(arguments):
-    root = arguments.output_dir / ".sources"
-    patches, objects = [], {}
-    for source_name, patch_name in MACHINE_SOURCE_PATCHES.items():
-        original = arguments.source_tree / source_name
-        staged = root / source_name
-        patch = SCRIPT_DIR / "patches" / patch_name
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        corrected = memory.stage_native_source(arguments, source_name)
-        task.run(["patch", "--batch", "--fuzz=0", "--no-backup-if-mismatch",
-                  "--output", staged, corrected, patch])
-        patches.append({
-            "source": source_name, "source_sha256": memory.sha256(original),
-            "patch": "kobox/boot/patches/" + patch_name,
-            "patch_sha256": memory.sha256(patch),
-            "hosted_source_sha256": memory.sha256(staged),
-        })
-    for record in patches:
-        source_name = record["source"]
-        if pathlib.PurePosixPath(source_name).suffix not in (".S", ".c"):
-            continue
-        owner = str(pathlib.PurePosixPath(source_name).with_suffix(".o"))
-        canonical = arguments.provider_build_dir / owner
-        command_file = canonical.with_name("." + canonical.name + ".cmd")
-        saved = command_file.read_text().splitlines()[0].split(" := ", 1)[1]
-        output = arguments.output_dir / ".machine" / owner
-        output.parent.mkdir(parents=True, exist_ok=True)
-        commands = machine_compile_commands(
-            saved, owner, arguments.source_tree / source_name, root / source_name, output
-        )
-        for command in commands:
-            task.run(command, cwd=arguments.provider_build_dir)
-        # The boundary patches must not remove native entry points or exports.
-        def global_names(path):
-            return {line.split()[0] for line in task.run([
-                arguments.nm, "--extern-only", "--defined-only", "--format=posix", path
-            ]).splitlines() if line.split()}
-        if global_names(canonical) != global_names(output):
-            raise BootBuildError(f"machine patch changed native definitions: {owner}")
-        validate_initcalls(section_records(canonical, arguments.objdump),
-                           section_records(output, arguments.objdump), owner)
-        objects[owner] = output
-        record.update({"source_object": owner, "object_sha256": memory.sha256(output)})
-    return objects, patches
-
-
 def compile_module_exports(arguments, source_names, support):
     """Let native modpost generate exports for the already-linked arch port.
 
@@ -378,7 +322,7 @@ def compile_module_exports(arguments, source_names, support):
 
 
 def link_runtime(arguments):
-    """Strict development link; no unresolved-symbol boundary DSO or stubs."""
+    """Strict fixed-image link; no unresolved host boundary or source patches."""
     arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
     (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
     source_names = sources.support_sources(arguments.with_gates)
@@ -393,11 +337,11 @@ def link_runtime(arguments):
     validate_startup_ownership(support_defined | support_undefined)
     definitions = provider.parse_archive_definitions(arguments.provider_build_dir, arguments.nm)
     overrides = validate_machine_overrides(support_defined, definitions)
-    machine_objects, source_patches = compile_machine_patches(arguments)
     objects = []
     local_exports = []
+    relocation_bindings = []
     for owner in provider.canonical_object_order(arguments.provider_build_dir, arguments.ar):
-        source = machine_objects.get(owner, arguments.provider_build_dir / owner)
+        source = arguments.provider_build_dir / owner
         names = [item["symbol"] for item in overrides
                  if item["source_object"] == owner and not item["weak"]]
         exported = MACHINE_LOCAL_EXPORTS.get(owner, ())
@@ -409,15 +353,25 @@ def link_runtime(arguments):
                 if name not in local or name not in support_undefined:
                     raise BootBuildError(f"native machine helper changed: {owner}:{name}")
                 local_exports.append({"source_object": owner, "symbol": name})
-        if names or exported:
+        head_cr3_binding = owner == "arch/x86/kernel/head_64.o"
+        if names or exported or head_cr3_binding:
             destination = arguments.output_dir / ".objects" / owner
             destination.parent.mkdir(parents=True, exist_ok=True)
             task.run([
                 arguments.objcopy, *(f"--weaken-symbol={name}" for name in names),
                 *(f"--globalize-symbol={name}" for name in exported),
+                *(["--redefine-sym=init_top_pgt=__kobox_head_init_top_pgt"]
+                  if head_cr3_binding else []),
                 source, destination,
             ])
             objects.append(destination)
+            if head_cr3_binding:
+                relocation_bindings.append({
+                    "source_object": owner,
+                    "input_symbol": "init_top_pgt",
+                    "link_symbol": "__kobox_head_init_top_pgt",
+                    "purpose": "native-head CR3 physical address",
+                })
         else:
             objects.append(source)
     # Keep each input separate until the final link. Relinking a merged
@@ -427,19 +381,27 @@ def link_runtime(arguments):
                                   for path in [*objects, *support]) + "\n")
     (arguments.output_dir / "machine-bindings.json").write_text(
         json.dumps({"stage": "link-inputs-not-runtime-certified", "overrides": overrides,
-                    "source_patches": source_patches,
-                    "native_source_patches": getattr(arguments, "native_source_patches", {}),
+                    "source_patches": [],
+                    "native_source_patches": {},
+                    "relocation_bindings": relocation_bindings,
                     "local_exports": local_exports,
                     "support_sources": list(source_names),
                     "with_gates": arguments.with_gates,
                     "os_backend": arguments.os_backend, "cpu_arch": arguments.cpu_arch},
                    indent=2, sort_keys=True) + "\n"
     )
+    cr3_alias = (
+        "--defsym=__kobox_head_init_top_pgt=init_top_pgt-"
+        f"0x{CORE_LINK_BASE:x}+0x{CORE_PHYSICAL_BASE:x}-0x80000000"
+    )
     task.run([
-        arguments.cc, "-shared", "-nostdlib", "--ld-path=" + arguments.ld,
-        "-Wl,-Bsymbolic,-z,defs,-z,now,--build-id=none,--error-limit=20",
-        "-Wl,--script=" + str(arguments.output_dir / "runtime.lds"),
-        "-Wl,--soname=linux-boot-runtime.so",
+        arguments.ld, "-static", "-Bsymbolic", "-z", "defs",
+        "--wrap=kernel_execve", "--wrap=ioremap_page_range",
+        "--wrap=set_direct_map_invalid_noflush",
+        "--wrap=set_direct_map_default_noflush",
+        "--wrap=set_direct_map_valid_noflush",
+        "--build-id=none", cr3_alias,
+        "--script=" + str(arguments.output_dir / "runtime.lds"),
         "-o", arguments.output_dir / "linux-boot-runtime.so",
         "@" + str(response),
     ])
@@ -477,6 +439,11 @@ def build_inputs(arguments):
     memory.compile_linux_objects(
         arguments, ["vmlinux.a", "vmlinux.o"], build_targets=["vmlinux_o"]
     )
+    common_cflags = arguments.extra_cflags
+    for source_object, flags in MACHINE_COMPILE_OVERLAYS.items():
+        arguments.extra_cflags = [*common_cflags, *flags]
+        memory.compile_linux_objects(arguments, [source_object])
+    arguments.extra_cflags = common_cflags
     if provider.canonical_object_order(arguments.provider_build_dir, arguments.ar) != objects:
         raise BootBuildError("Kbuild changed canonical core membership or input order")
     if (arguments.provider_build_dir / ".config").read_bytes() != (
@@ -513,6 +480,7 @@ def build_inputs(arguments):
         "linux": identity,
         "required_memory_config": list(REQUIRED_MEMORY_CONFIG),
         "extra_cflags": arguments.extra_cflags,
+        "machine_compile_overlays": MACHINE_COMPILE_OVERLAYS,
         "linker_script": {
             "source": "kobox/boot/runtime.lds.S",
             "source_sha256": memory.sha256(

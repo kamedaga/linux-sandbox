@@ -13,6 +13,11 @@
 #include <linux/mm.h>
 #include <linux/pci.h>
 #include <linux/rcupdate.h>
+#include <linux/virtio.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#include <linux/virtio_config.h>
+#pragma GCC diagnostic pop
 
 static int transfer(const struct kobox_linux_dma_test *test, dma_addr_t iova,
 		    u32 *value, bool write)
@@ -36,6 +41,156 @@ static void fail_map(const struct kobox_linux_dma_test *test, unsigned int after
 	local_irq_save(flags);
 	test->fail_map(test->context, after);
 	local_irq_restore(flags);
+}
+
+static int shared_queue_page(struct device *dev,
+			     struct kobox_linux_dma_port *port,
+			     const struct kobox_linux_dma_test *test)
+{
+	struct virtio_device vdev = {.dev.parent = dev};
+	union virtio_map map = {.dma_dev = dev};
+	struct page *page = alloc_page(GFP_KERNEL);
+	dma_addr_t first = DMA_MAPPING_ERROR, peer = DMA_MAPPING_ERROR;
+	dma_addr_t read_only = DMA_MAPPING_ERROR;
+	u32 value = 0x97531246;
+	int references, result = -EINVAL;
+
+	if (!page)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&vdev.vqs);
+	if (kobox_linux_dma_bind_virtio(port, &vdev))
+		goto free_page;
+	references = page_count(page);
+	first = vdev.map->map_page(map, page, 128, 64, DMA_BIDIRECTIONAL, 0);
+	peer = vdev.map->map_page(map, page, 256, 128, DMA_BIDIRECTIONAL, 0);
+	if (dma_mapping_error(dev, first) || dma_mapping_error(dev, peer) ||
+	    peer != first + 128 || page_count(page) != references + 1 ||
+	    kobox_linux_dma_detach(port) != -EBUSY)
+		goto unmap;
+	read_only = vdev.map->map_page(map, page, 128, 64, DMA_TO_DEVICE, 0);
+	if (dma_mapping_error(dev, read_only) || read_only == first ||
+	    transfer(test, read_only, &value, true) != -EACCES)
+		goto unmap;
+	vdev.map->unmap_page(map, read_only, 64, DMA_TO_DEVICE, 0);
+	read_only = DMA_MAPPING_ERROR;
+	vdev.map->unmap_page(map, first, 64, DMA_BIDIRECTIONAL, 0);
+	first = DMA_MAPPING_ERROR;
+	if (page_count(page) != references + 1 ||
+	    transfer(test, peer, &value, true) ||
+	    *(u32 *)(page_address(page) + 256) != value)
+		goto unmap;
+	vdev.map->unmap_page(map, peer, 128, DMA_BIDIRECTIONAL, 0);
+	if (page_count(page) != references ||
+	    transfer(test, peer, &value, false) != -EFAULT) {
+		peer = DMA_MAPPING_ERROR;
+		goto unmap;
+	}
+	peer = DMA_MAPPING_ERROR;
+	/* Failed first publication must not install an entry for a later hit. */
+	fail_map(test, 1);
+	first = vdev.map->map_page(map, page, 128, 64, DMA_BIDIRECTIONAL, 0);
+	fail_map(test, 0);
+	if (!dma_mapping_error(dev, first) || page_count(page) != references)
+		goto unmap;
+	first = vdev.map->map_page(map, page, 128, 64, DMA_BIDIRECTIONAL, 0);
+	if (!dma_mapping_error(dev, first) &&
+	    !transfer(test, first, &value, true))
+		result = 0;
+unmap:
+	if (!dma_mapping_error(dev, read_only))
+		vdev.map->unmap_page(map, read_only, 64, DMA_TO_DEVICE, 0);
+	if (!dma_mapping_error(dev, peer))
+		vdev.map->unmap_page(map, peer, 128, DMA_BIDIRECTIONAL, 0);
+	if (!dma_mapping_error(dev, first))
+		vdev.map->unmap_page(map, first, 64, DMA_BIDIRECTIONAL, 0);
+free_page:
+	__free_page(page);
+	return result;
+}
+
+static int bounced_queue_buffer(struct device *dev,
+		struct kobox_linux_dma_port *port,
+		const struct kobox_linux_dma_test *test)
+{
+	struct virtio_device vdev = {.dev.parent = dev};
+	union virtio_map map = {.dma_dev = dev};
+	struct page *page = alloc_page(GFP_KERNEL);
+	dma_addr_t send = DMA_MAPPING_ERROR, receive = DMA_MAPPING_ERROR;
+	dma_addr_t saturation[129];
+	unsigned int allocated = 0;
+	u32 value = 0, *cpu;
+	int result = -EINVAL;
+
+	if (!page)
+		return -ENOMEM;
+	cpu = page_address(page);
+	memset(cpu, 0x3a, PAGE_SIZE);
+	INIT_LIST_HEAD(&vdev.vqs);
+	if (kobox_linux_dma_bind_virtio(port, &vdev))
+		goto out;
+	send = vdev.map->map_page(map, page, 128, 64, DMA_TO_DEVICE, 0);
+	receive = vdev.map->map_page(map, page, 256, 128, DMA_FROM_DEVICE, 0);
+	if (dma_mapping_error(dev, send) || dma_mapping_error(dev, receive) ||
+	    !vdev.map->need_sync(map, send) ||
+	    !vdev.map->need_sync(map, receive) ||
+	    kobox_linux_dma_detach(port) != -EBUSY ||
+	    transfer(test, send, &value, false) || value != 0x3a3a3a3a ||
+	    transfer(test, send, &value, true) != -EACCES ||
+	    transfer(test, receive, &value, false) != -EACCES)
+		goto out;
+	value = 0x12345678;
+	if (transfer(test, receive + 4, &value, true) ||
+	    cpu[65] != 0x3a3a3a3a)
+		goto out;
+	vdev.map->sync_single_for_cpu(map, receive + 4, sizeof(value),
+				      DMA_FROM_DEVICE);
+	if (cpu[65] != value || cpu[64] != 0x3a3a3a3a)
+		goto out;
+	cpu[32] = 0x87654321;
+	vdev.map->sync_single_for_device(map, send, sizeof(value), DMA_TO_DEVICE);
+	if (transfer(test, send, &value, false) || value != cpu[32])
+		goto out;
+	value = 0x76543210;
+	if (transfer(test, receive, &value, true) || cpu[64] != 0x3a3a3a3a)
+		goto out;
+	vdev.map->unmap_page(map, receive, 128, DMA_FROM_DEVICE, 0);
+	receive = DMA_MAPPING_ERROR;
+	if (cpu[64] != value || cpu[65] != 0x12345678 ||
+	    cpu[66] != 0x3a3a3a3a || page_count(page) != 1)
+		goto out;
+	vdev.map->unmap_page(map, send, 64, DMA_TO_DEVICE, 0);
+	/* An idle private slot is cleared; the caller's RAM is untouched. */
+	result = transfer(test, send, &value, false) || value ||
+		cpu[32] != 0x87654321 ? -EINVAL : 0;
+	send = DMA_MAPPING_ERROR;
+	if (result)
+		goto out;
+	/* Fill the bounded pool, then exercise the ordinary IOMMU fallback. */
+	while (allocated < ARRAY_SIZE(saturation)) {
+		dma_addr_t address = vdev.map->map_page(map, page, 128, 64,
+						     DMA_TO_DEVICE, 0);
+
+		if (dma_mapping_error(dev, address)) {
+			result = -ENOMEM;
+			goto out;
+		}
+		saturation[allocated++] = address;
+	}
+	if (vdev.map->need_sync(map, saturation[128]) || page_count(page) != 2)
+		result = -EINVAL;
+out:
+	while (allocated)
+		vdev.map->unmap_page(map, saturation[--allocated], 64,
+				     DMA_TO_DEVICE, 0);
+	if (!result && (page_count(page) != 1 ||
+	    transfer(test, saturation[128], &value, false) != -EFAULT))
+		result = -EINVAL;
+	if (!dma_mapping_error(dev, receive))
+		vdev.map->unmap_page(map, receive, 128, DMA_FROM_DEVICE, 0);
+	if (!dma_mapping_error(dev, send))
+		vdev.map->unmap_page(map, send, 64, DMA_TO_DEVICE, 0);
+	__free_page(page);
+	return result;
 }
 
 struct dma_panic_observer {
@@ -657,6 +812,12 @@ int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 	report->cases++;
 	report->phase = 10;
 	result = slab_buffers(&device->dev, test);
+	if (result)
+		goto out;
+	result = shared_queue_page(&device->dev, port, test);
+	if (result)
+		goto out;
+	result = bounced_queue_buffer(&device->dev, port, test);
 	if (result)
 		goto out;
 	report->cases++;

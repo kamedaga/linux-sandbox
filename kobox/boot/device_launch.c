@@ -9,6 +9,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/virtio.h>
 #include <drm/drm.h>
 #include <kobox2/gpu_layout.h>
 
@@ -17,6 +18,7 @@ struct kobox_linux_device_session {
 	struct pci_dev *pci;
 	struct kobox_linux_dma_port *dma;
 	struct kobox_linux_irq_port *irq;
+	struct kobox_linux_drm_event_host drm_events;
 	struct kobox_linux_drm_file *render;
 	struct kobox_linux_drm_service *service;
 	u32 render_file_limit;
@@ -37,7 +39,9 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 	int result;
 
 	if (!out || *out || !launch || launch->size != sizeof(*launch) ||
-	    !launch->pci || !launch->dma || !launch->irq ||
+	    !launch->pci || !launch->dma || !launch->irq || !launch->drm_events ||
+	    launch->drm_events->size != sizeof(*launch->drm_events) ||
+	    !launch->drm_events->context || !launch->drm_events->notify ||
 	    !launch->render_file_limit || launch->render_file_limit > 1024)
 		return -EINVAL;
 	session = kzalloc(sizeof(*session), GFP_KERNEL);
@@ -45,6 +49,7 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 		return -ENOMEM;
 	*out = session;
 	session->render_file_limit = launch->render_file_limit;
+	session->drm_events = *launch->drm_events;
 	result = kobox_linux_pci_scan(launch->pci, &session->bridge);
 	if (result)
 		return result;
@@ -61,6 +66,26 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 		return result;
 	pci_bus_add_devices(session->bridge->bus);
 	return 0;
+}
+
+static int bind_queue_dma(struct device *device, void *argument)
+{
+	struct kobox_linux_device_session *session = argument;
+
+	if (!device->bus || strcmp(device->bus->name, "virtio"))
+		return 0;
+	return kobox_linux_dma_bind_virtio(session->dma, dev_to_virtio(device));
+}
+
+int kobox_linux_device_module_ready(struct kobox_linux_device_session *session)
+{
+	if (!session || !session->pci)
+		return -EINVAL;
+	/* virtio-pci publishes its child before virtio_gpu is loaded. Install
+	 * the upstream mapping interface here, never into already-live queues.
+	 */
+	wait_for_device_probe();
+	return device_for_each_child(&session->pci->dev, session, bind_queue_dma);
 }
 
 static int is_virtio_gpu(struct device *device, const void *argument)
@@ -141,7 +166,8 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 		result = kobox_linux_drm_service_create(
 			MKDEV(candidate.primary_major, candidate.primary_minor),
 			MKDEV(candidate.render_major, candidate.render_minor),
-			session->render_file_limit, &session->service);
+			session->render_file_limit, &session->drm_events,
+			&session->service);
 	*report = candidate;
 	return result;
 }

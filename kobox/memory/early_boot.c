@@ -4,6 +4,7 @@
 
 #include "host.h"
 #include "../arch/x86_64/host_call.h"
+#include "../runtime/host.h"
 #include "port.h"
 #ifdef KOBOX_BOOT_RUNTIME
 #include "../mm/port.h"
@@ -112,15 +113,49 @@ unsigned long totalcma_pages;
 unsigned long max_pfn_mapped;
 DEFINE_SPINLOCK(pgd_lock);
 
-#ifdef KOBOX_TASK_PORT_PHASE
-__thread unsigned long kobox_percpu_offset;
-#else
-static __thread unsigned long kobox_percpu_offset;
-#endif
-#ifndef KOBOX_TASK_PORT_PHASE
-static __thread unsigned int kobox_irq_disable_depth = 1;
-#endif
 static const struct kobox_linux_memory_layout *memory_layout;
+
+pte_t *kobox_linux_memory_lookup_address(pgd_t *pgd, unsigned long address,
+					 unsigned int *level, bool *nx, bool *rw)
+{
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	*level = PG_LEVEL_256T;
+	*nx = false;
+	*rw = true;
+	if (pgd_none(*pgd))
+		return NULL;
+	*level = PG_LEVEL_512G;
+	*nx = *nx || !!(pgd_flags(*pgd) & _PAGE_NX);
+	*rw = *rw && !!(pgd_flags(*pgd) & _PAGE_RW);
+	p4d = p4d_offset(pgd, address);
+	if (p4d_none(*p4d))
+		return NULL;
+	if (p4d_leaf(*p4d) || !p4d_present(*p4d))
+		return (pte_t *)p4d;
+	*level = PG_LEVEL_1G;
+	*nx = *nx || !!(p4d_flags(*p4d) & _PAGE_NX);
+	*rw = *rw && !!(p4d_flags(*p4d) & _PAGE_RW);
+	pud = pud_offset(p4d, address);
+	if (pud_none(*pud))
+		return NULL;
+	if (pud_leaf(*pud) || !pud_present(*pud))
+		return (pte_t *)pud;
+	*level = PG_LEVEL_2M;
+	*nx = *nx || !!(pud_flags(*pud) & _PAGE_NX);
+	*rw = *rw && !!(pud_flags(*pud) & _PAGE_RW);
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd))
+		return NULL;
+	if (pmd_leaf(*pmd) || !pmd_present(*pmd))
+		return (pte_t *)pmd;
+	*level = PG_LEVEL_4K;
+	*nx = *nx || !!(pmd_flags(*pmd) & _PAGE_NX);
+	*rw = *rw && !!(pmd_flags(*pmd) & _PAGE_RW);
+	return pte_offset_kernel(pmd, address);
+}
 
 bool kobox_linux_memory_address_is_ram(unsigned long address)
 {
@@ -131,6 +166,17 @@ bool kobox_linux_memory_address_is_ram(unsigned long address)
 		address - page_offset_base < memory_layout->ram_size;
 }
 EXPORT_SYMBOL(kobox_linux_memory_address_is_ram);
+
+bool __virt_addr_valid(unsigned long address)
+{
+	unsigned long physical;
+
+	if (!kobox_linux_memory_address_is_ram(address))
+		return false;
+	physical = kobox_linux_memory_phys_addr(address);
+	return physical < memory_layout->ram_size &&
+		pfn_valid(physical >> PAGE_SHIFT);
+}
 
 unsigned long kobox_linux_memory_phys_addr(unsigned long address)
 {
@@ -163,7 +209,7 @@ static unsigned int early_cpuhp_registration_count;
 
 unsigned long kobox_provider_current_percpu_offset(void)
 {
-	return READ_ONCE(kobox_percpu_offset);
+	return READ_ONCE(kobox_runtime_thread_state()->percpu_offset);
 }
 
 #ifdef KOBOX_TASK_PORT_PHASE
@@ -171,7 +217,7 @@ void kobox_linux_memory_set_cpu(unsigned int cpu)
 {
 	if (cpu >= nr_cpu_ids)
 		BUG();
-	kobox_percpu_offset = __per_cpu_offset[cpu];
+	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[cpu];
 }
 #endif
 
@@ -187,19 +233,19 @@ unsigned long kobox_provider_get_task_size_limit(void)
 #ifndef KOBOX_TASK_PORT_PHASE
 unsigned long kobox_provider_irq_save_flags(void)
 {
-	return kobox_irq_disable_depth != 0;
+	return kobox_runtime_thread_state()->irq_disable_depth != 0;
 }
 
 void kobox_provider_irq_disable(void)
 {
-	kobox_irq_disable_depth++;
+	kobox_runtime_thread_state()->irq_disable_depth++;
 }
 
 void kobox_provider_irq_enable(void)
 {
-	if (!kobox_irq_disable_depth)
+	if (!kobox_runtime_thread_state()->irq_disable_depth)
 		BUG();
-	kobox_irq_disable_depth--;
+	kobox_runtime_thread_state()->irq_disable_depth--;
 }
 
 unsigned long kobox_provider_irq_save(void)
@@ -212,10 +258,10 @@ unsigned long kobox_provider_irq_save(void)
 
 void kobox_provider_irq_restore(unsigned long flags)
 {
-	if (kobox_irq_disable_depth)
-		kobox_irq_disable_depth--;
-	if (flags && !kobox_irq_disable_depth)
-		kobox_irq_disable_depth = 1;
+	if (kobox_runtime_thread_state()->irq_disable_depth)
+		kobox_runtime_thread_state()->irq_disable_depth--;
+	if (flags && !kobox_runtime_thread_state()->irq_disable_depth)
+		kobox_runtime_thread_state()->irq_disable_depth = 1;
 }
 
 int __cond_resched(void)
@@ -233,8 +279,8 @@ static pte_t kernel_pte(unsigned long address)
 	bool nx, rw;
 	pte_t *entry, pte;
 
-	entry = lookup_address_in_pgd_attr(pgd_offset_k(address), address,
-					   &level, &nx, &rw);
+	entry = kobox_linux_memory_lookup_address(pgd_offset_k(address), address,
+					  &level, &nx, &rw);
 	if (!entry)
 		return __pte(0);
 	switch (level) {
@@ -512,6 +558,46 @@ void kobox_linux_memory_sync_direct(struct page *page, unsigned int nr)
 	 */
 	flush_tlb_kernel_range(start, start + (unsigned long)nr * PAGE_SIZE);
 }
+
+/* Keep the host mapping in step with x86's no-flush direct-map updates.
+ *
+ * These wrappers are a hosted-machine boundary.  The native x86 helpers stay
+ * byte-for-byte upstream; the fixed-image linker redirects their external
+ * callers here so the host can publish the permission change before the page
+ * is reused through the direct map.
+ */
+int __real_set_direct_map_invalid_noflush(struct page *page);
+int __real_set_direct_map_default_noflush(struct page *page);
+int __real_set_direct_map_valid_noflush(struct page *page, unsigned int nr,
+					       bool valid);
+
+int __wrap_set_direct_map_invalid_noflush(struct page *page)
+{
+	int result = __real_set_direct_map_invalid_noflush(page);
+
+	if (!result)
+		kobox_linux_memory_sync_direct(page, 1);
+	return result;
+}
+
+int __wrap_set_direct_map_default_noflush(struct page *page)
+{
+	int result = __real_set_direct_map_default_noflush(page);
+
+	if (!result)
+		kobox_linux_memory_sync_direct(page, 1);
+	return result;
+}
+
+int __wrap_set_direct_map_valid_noflush(struct page *page, unsigned int nr,
+					      bool valid)
+{
+	int result = __real_set_direct_map_valid_noflush(page, nr, valid);
+
+	if (!result)
+		kobox_linux_memory_sync_direct(page, nr);
+	return result;
+}
 #endif
 
 void pcpu_populate_pte(unsigned long address)
@@ -607,7 +693,7 @@ void __init setup_per_cpu_areas(void)
 		per_cpu(cpu_number, cpu) = cpu;
 	}
 	/* start_kernel() invokes this hook before its boot-CPU setup hook. */
-	kobox_percpu_offset = __per_cpu_offset[0];
+	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[0];
 }
 
 static void __init setup_memory_zones(void)
@@ -809,7 +895,7 @@ static int prepare_percpu(void)
 	if (nr_cpu_ids != KOBOX_LINUX_MEMORY_LOGICAL_CPUS)
 		return -EINVAL;
 	setup_per_cpu_areas();
-	kobox_percpu_offset = __per_cpu_offset[0];
+	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[0];
 	return 0;
 }
 #endif

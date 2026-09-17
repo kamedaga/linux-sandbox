@@ -8,6 +8,7 @@
 #include "../task/time_port.h"
 
 #include <linux/console.h>
+#include <linux/binfmts.h>
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
 #include <linux/init.h>
@@ -52,6 +53,38 @@ void __noreturn kobox_linux_boot_run_init(void)
 		panic("invalid hosted PID 1 boot handoff");
 	boot_layout->kernel_main(boot_layout->kernel_argument);
 	panic("hosted PID 1 entry returned");
+}
+
+/* Keep upstream init/main.c untouched. The final link redirects external
+ * kernel_execve references here; only the fully initialized hosted PID 1 is
+ * handed to its host service. Every other caller uses Linux's real exec path.
+ */
+int __real_kernel_execve(const char *filename, const char *const *argv,
+			 const char *const *envp);
+
+int __wrap_kernel_execve(const char *filename, const char *const *argv,
+			 const char *const *envp)
+{
+	if (kobox_linux_boot_host_init() && task_pid_nr(current) == 1 &&
+	    system_state == SYSTEM_RUNNING && kernel_set_to_readonly &&
+	    rcu_inkernel_boot_has_ended())
+		kobox_linux_boot_run_init();
+	return __real_kernel_execve(filename, argv, envp);
+}
+
+/* Keep upstream mm/vmalloc.c unchanged. Once its ioremap page tables are
+ * complete, publish the authoritative PTEs to the host mapping backend. A
+ * failed publication is returned to the normal ioremap rollback path. */
+int __real_ioremap_page_range(unsigned long address, unsigned long end,
+			      phys_addr_t physical, pgprot_t protection);
+
+int __wrap_ioremap_page_range(unsigned long address, unsigned long end,
+			      phys_addr_t physical, pgprot_t protection)
+{
+	int result = __real_ioremap_page_range(address, end, physical,
+					       protection);
+
+	return result ?: kobox_linux_memory_publish(address, end);
 }
 
 static void protect_image(unsigned long begin, unsigned long end,
@@ -107,8 +140,9 @@ void mark_rodata_ro(void)
 		      PAGE_ALIGN((unsigned long)__end_rodata), KOBOX_IMAGE_READ);
 	protect_image((unsigned long)__start_ro_after_init,
 		      (unsigned long)__end_ro_after_init, KOBOX_IMAGE_READ);
-	/* ELF metadata, GOT and TLS retain their independently owned segments.
-	 * Native PMD-gap reclamation cannot describe this shared-object layout.
+	/* Fixed-image headers, address tables and writable data retain their own
+	 * PT_LOAD mappings. Native PMD-gap reclamation cannot describe those host
+	 * mappings.
 	 */
 	kernel_set_to_readonly = 1;
 }

@@ -8,6 +8,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+
 static int valid_range(size_t total, size_t offset, size_t size)
 {
 	return size && offset <= total && size <= total - offset;
@@ -159,22 +163,49 @@ int kobox_posix_memory_backing_destroy(
 	return 0;
 }
 
-int kobox_posix_memory_window_init(
+static int memory_window_init(
 	struct kobox_posix_memory_window *window,
+	void *requested,
 	size_t size)
 {
 	void *address;
+	int flags = MAP_PRIVATE | MAP_ANONYMOUS;
 
 	if (!window || !size || !page_aligned(size) || window->initialized)
 		return EINVAL;
-	address = mmap(NULL, size, PROT_NONE,
-		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (requested) {
+		if (!page_aligned((uintptr_t)requested))
+			return EINVAL;
+		flags |= MAP_FIXED_NOREPLACE;
+	}
+	address = mmap(requested, size, PROT_NONE, flags, -1, 0);
 	if (address == MAP_FAILED)
 		return errno;
+	if (requested && address != requested) {
+		(void)munmap(address, size);
+		return EADDRNOTAVAIL;
+	}
 	window->address = address;
 	window->size = size;
 	window->initialized = true;
 	return 0;
+}
+
+int kobox_posix_memory_window_init(
+	struct kobox_posix_memory_window *window,
+	size_t size)
+{
+	return memory_window_init(window, NULL, size);
+}
+
+int kobox_posix_memory_window_init_at(
+	struct kobox_posix_memory_window *window,
+	void *address,
+	size_t size)
+{
+	if (!address)
+		return EINVAL;
+	return memory_window_init(window, address, size);
 }
 
 int kobox_posix_memory_window_map(

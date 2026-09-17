@@ -2,6 +2,7 @@
 
 #include "bootstrap.h"
 #include "exception.h"
+#include "../../boot/image_layout.h"
 #include "../../task/posix_machine.h"
 
 #include <errno.h>
@@ -15,7 +16,10 @@ int kobox_posix_bootstrap_prepare(struct kobox_posix_bootstrap *bootstrap,
 
 	if (!bootstrap || bootstrap->attempted || !core || !backing ||
 	    !backing->initialized || !profile ||
-	    backing->size != profile->ram_size)
+	    backing->size != profile->ram_size ||
+	    profile->vmemmap_size != KOBOX_CORE_VMEMMAP_SIZE ||
+	    profile->vmalloc_size != KOBOX_CORE_VMALLOC_SIZE ||
+	    profile->image_physical_base != KOBOX_CORE_PHYSICAL_BASE)
 		return EINVAL;
 	bootstrap->attempted = true;
 	bootstrap->core = core;
@@ -23,12 +27,12 @@ int kobox_posix_bootstrap_prepare(struct kobox_posix_bootstrap *bootstrap,
 						profile->ram_size);
 	if (status)
 		return status;
-	status = kobox_posix_memory_window_init(&bootstrap->vmemmap,
-						profile->vmemmap_size);
+	status = kobox_posix_memory_window_init_at(&bootstrap->vmemmap,
+		(void *)(uintptr_t)KOBOX_CORE_VMEMMAP_BASE, profile->vmemmap_size);
 	if (status)
 		return status;
-	status = kobox_posix_memory_window_init(&bootstrap->vmalloc,
-						profile->vmalloc_size);
+	status = kobox_posix_memory_window_init_at(&bootstrap->vmalloc,
+		(void *)(uintptr_t)KOBOX_CORE_VMALLOC_BASE, profile->vmalloc_size);
 	if (status)
 		return status;
 	status = kobox_posix_memory_window_map(&bootstrap->direct, 0, backing, 0,
@@ -36,7 +40,7 @@ int kobox_posix_bootstrap_prepare(struct kobox_posix_bootstrap *bootstrap,
 		&direct_address);
 	if (status)
 		return status;
-	status = kobox_boot_image_alias(kobox_posix_core_library(core), backing,
+	status = kobox_boot_image_alias(core, backing,
 		direct_address, profile->image_physical_base, &bootstrap->image);
 	if (status)
 		return status;

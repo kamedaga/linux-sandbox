@@ -12,15 +12,21 @@ static struct execmem_info hosted_execmem __ro_after_init;
 
 struct execmem_info *__init execmem_arch_setup(void)
 {
-	unsigned long start, end;
+	const unsigned long reach = SZ_2G - PAGE_SIZE;
+	unsigned long image_end = PAGE_ALIGN((unsigned long)__bss_stop);
+	unsigned long reachable_start, reachable_end, start, end;
 
 	/* Inline assembly and native module metadata use signed PC-relative
 	 * relocations even with the large C code model. Keep the entire range
 	 * reachable from every core section, not merely from its entry point.
+	 * Saturate at the native address limits: a low fixed core must not turn
+	 * the lower-bound subtraction into an unsigned high address.
 	 */
-	start = max(VMALLOC_START,
-		    PAGE_ALIGN((unsigned long)__bss_stop - SZ_2G + PAGE_SIZE));
-	end = min(VMALLOC_END, (unsigned long)_text + SZ_2G - PAGE_SIZE);
+	reachable_start = image_end > reach ? image_end - reach : 0;
+	reachable_end = (unsigned long)_text > ULONG_MAX - reach ?
+		ULONG_MAX : (unsigned long)_text + reach;
+	start = max(VMALLOC_START, reachable_start);
+	end = min(VMALLOC_END, reachable_end);
 	if (start >= end)
 		panic("hosted vmalloc window is outside module relocation reach");
 	/* This machine exposes 4K PTEs, not the huge-page ROX cache. Native

@@ -8,20 +8,30 @@
 #include <stddef.h>
 #endif
 
-/* Process-local loader contract. The module cookie and offset come from the
- * selected architecture's TLS relocations, never from a client or the wire.
- * Bind once before core execution; context must outlive every core thread.
- * The backend returns this thread's storage, with the ELF TLS initializer and
- * alignment preserved. No guest service may be entered by this callback.
- */
+/* Core-private state for one host thread. It is explicit so the same linked
+ * core can run beside either libc TLS on POSIX or native adapter TLS on
+ * PachaOS. Keep this independent of Linux task_struct: a host thread can
+ * switch between Linux tasks while retaining its machine-entry state. */
+struct kobox_runtime_thread_state {
+	unsigned long percpu_offset;
+	void *current_task;
+	void *active_user_call;
+	unsigned long gate_value __attribute__((aligned(64)));
+	unsigned int cpu;
+	unsigned int irq_disable_depth;
+	unsigned char gate_initialized;
+};
+
+/* Process-local loader contract. Bind once before core execution; context
+ * must outlive every core thread. thread_state is a leaf callback: it may not
+ * allocate, block, enter a guest service, or use vector/FPU state. */
 struct kobox_runtime_host {
 	size_t size;
 	void *context;
-	void *(*tls_address)(void *context, unsigned long module,
-			     unsigned long offset);
+	struct kobox_runtime_thread_state *(*thread_state)(void *context);
 };
 
 int kobox_linux_runtime_bind(const struct kobox_runtime_host *host);
-void *kobox_runtime_tls_address(unsigned long module, unsigned long offset);
+struct kobox_runtime_thread_state *kobox_runtime_thread_state(void);
 
 #endif

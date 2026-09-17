@@ -4,6 +4,7 @@
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/list.h>
+#include <linux/kmsan-checks.h>
 #include <linux/mm.h>
 #include <linux/overflow.h>
 #include <linux/slab.h>
@@ -102,6 +103,42 @@ void kobox_mmio_write(volatile void __iomem *address, unsigned int width, u64 va
 	case 8: *(volatile u64 *)native = value; break;
 	}
 	barrier();
+}
+
+/* String I/O instructions cannot be forwarded as one device transaction.
+ * Keep callers unchanged and implement the x86 machine-port operations in
+ * terms of the same ordered byte accessors used for ordinary registers. */
+void memcpy_fromio(void *destination, const volatile void __iomem *source,
+		   size_t length)
+{
+	u8 *out = destination;
+	const volatile u8 __iomem *in = source;
+	size_t index;
+
+	for (index = 0; index < length; index++)
+		out[index] = kobox_mmio_read(in + index, 1);
+	kmsan_unpoison_memory(destination, length);
+}
+
+void memcpy_toio(volatile void __iomem *destination, const void *source,
+		 size_t length)
+{
+	volatile u8 __iomem *out = destination;
+	const u8 *in = source;
+	size_t index;
+
+	kmsan_check_memory(source, length);
+	for (index = 0; index < length; index++)
+		kobox_mmio_write(out + index, 1, in[index]);
+}
+
+void memset_io(volatile void __iomem *destination, int value, size_t length)
+{
+	volatile u8 __iomem *out = destination;
+	size_t index;
+
+	for (index = 0; index < length; index++)
+		kobox_mmio_write(out + index, 1, (u8)value);
 }
 
 u8 mtrr_type_lookup(u64 start, u64 end, u8 *uniform)

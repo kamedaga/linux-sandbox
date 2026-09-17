@@ -22,21 +22,32 @@ struct kobox_linux_dma_host {
 	void *context;
 	uint64_t aperture_start;
 	uint64_t aperture_end;
+	uint64_t ram_size;
 	unsigned int coherent;
 	int (*enable)(void *context, unsigned int enabled);
 	int (*map)(void *context, uint64_t iova, uint64_t ram_offset,
 		   size_t length, unsigned int protection);
+	/* Optional aggregate publication. The page indices name pages in the
+	 * registered RAM backing and are valid only for this call. One successful
+	 * call owns the complete contiguous IOVA range until unmap. */
+	int (*map_page_list)(void *context, uint64_t iova,
+			     const uint64_t *ram_pages, size_t page_count,
+			     unsigned int protection);
 	int (*unmap)(void *context, uint64_t iova, size_t length);
 };
 
 #ifdef __KERNEL__
 struct device;
+struct virtio_device;
 struct kobox_linux_dma_port;
 int kobox_linux_dma_attach(struct device *device,
 			   const struct kobox_linux_dma_host *host,
 			   struct kobox_linux_dma_port **out);
 /* Caller stops new DMA API calls first. EBUSY preserves live mappings. */
 int kobox_linux_dma_detach(struct kobox_linux_dma_port *port);
+/* Launch owner only, before driver binding/queue creation. Port outlives vdev. */
+int kobox_linux_dma_bind_virtio(struct kobox_linux_dma_port *port,
+			       struct virtio_device *device);
 #endif
 
 #endif

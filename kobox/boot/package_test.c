@@ -181,7 +181,7 @@ static void setup(struct fixture *fixture)
 		header->e_ident[EI_DATA] = ELFDATA2LSB;
 		header->e_ident[EI_VERSION] = EV_CURRENT;
 		header->e_version = EV_CURRENT;
-		header->e_type = index ? ET_REL : ET_DYN;
+		header->e_type = index ? ET_REL : ET_EXEC;
 		header->e_machine = EM_X86_64;
 		header->e_ehsize = sizeof(*header);
 		artifact->node_id = index + 1;
@@ -272,7 +272,7 @@ int main(void)
 	fixture.descriptors[1] = blob(&fixture.headers[1], sizeof(Elf64_Ehdr), 0);
 	expect_failure(&fixture, -EPERM);
 	close(fixture.descriptors[1]);
-	fixture.headers[1].e_type = ET_DYN;
+	fixture.headers[1].e_type = ET_EXEC;
 	fixture.descriptors[1] = blob(&fixture.headers[1], sizeof(Elf64_Ehdr), 1);
 	expect_failure(&fixture, -EBADMSG);
 	close(fixture.descriptors[1]);

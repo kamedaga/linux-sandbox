@@ -18,5 +18,5 @@ bool kobox_x86_64_elf_matches(const void *data, size_t size, bool core)
 	       header.e_ident[EI_VERSION] == EV_CURRENT &&
 	       header.e_version == EV_CURRENT && header.e_machine == EM_X86_64 &&
 	       header.e_ehsize == sizeof(header) &&
-	       header.e_type == (core ? ET_DYN : ET_REL);
+	       header.e_type == (core ? ET_EXEC : ET_REL);
 }

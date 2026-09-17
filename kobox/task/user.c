@@ -5,6 +5,7 @@
 #include "../arch/x86_64/fpu.h"
 #include "../arch/x86_64/registers.h"
 #include "../mm/port.h"
+#include "../runtime/host.h"
 
 #include <linux/entry-common.h>
 #include <linux/export.h>
@@ -26,8 +27,10 @@ struct user_call {
 	const struct kobox_linux_vm_event *event;
 };
 
-/* Native pthread-local machine entry, not a Linux current/task replacement. */
-static __thread struct user_call *active_call;
+#define active_call \
+	((struct user_call *)kobox_runtime_thread_state()->active_user_call)
+#define set_active_call(value) \
+	(kobox_runtime_thread_state()->active_user_call = (value))
 
 int kobox_user_syscall(struct kobox_vm_space *space, void *host_context,
 		       const struct kobox_linux_vm_event *event,
@@ -53,7 +56,7 @@ int kobox_user_syscall(struct kobox_vm_space *space, void *host_context,
 	result = kobox_user_fp_import(&fp);
 	if (result)
 		return result;
-	active_call = &call;
+	set_active_call(&call);
 	kobox_x86_user_syscall_dispatch();
 	/*
 	 * Remote user execution is host scheduled. This Linux task is in the
@@ -62,7 +65,7 @@ int kobox_user_syscall(struct kobox_vm_space *space, void *host_context,
 	kobox_x86_user_return_work();
 	kobox_user_fp_export(&fp);
 	local_irq_enable();
-	active_call = NULL;
+	set_active_call(NULL);
 	kobox_x86_user_export(output);
 	return kobox_host_call(space->operations->write_fpregs(host_context, event->sequence, &fp));
 }

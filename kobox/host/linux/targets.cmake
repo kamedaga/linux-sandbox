@@ -27,11 +27,11 @@ host/posix/timer.c
 
 target_link_libraries(kobox_posix_host PUBLIC kobox_machine)
 
-add_library(kobox_posix_core STATIC host/posix/core.c)
+add_library(kobox_posix_core STATIC host/posix/core.c boot/fixed_image.c)
 
 target_compile_options(kobox_posix_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-target_link_libraries(kobox_posix_core PUBLIC kobox_boot_core ${CMAKE_DL_LIBS})
+target_link_libraries(kobox_posix_core PUBLIC kobox_boot_core)
 
 add_library(kobox_posix_boot STATIC host/posix/image.c host/posix/exception.c)
 

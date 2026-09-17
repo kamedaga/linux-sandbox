@@ -176,6 +176,10 @@ int kobox_posix_memory_backing_destroy(
 int kobox_posix_memory_window_init(
 	struct kobox_posix_memory_window *window,
 	size_t size);
+int kobox_posix_memory_window_init_at(
+	struct kobox_posix_memory_window *window,
+	void *address,
+	size_t size);
 int kobox_posix_memory_window_map(
 	struct kobox_posix_memory_window *window,
 	size_t window_offset,

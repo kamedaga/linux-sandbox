@@ -3,6 +3,7 @@
 #include "host.h"
 #include "../arch/x86_64/host_call.h"
 #include "../arch/x86_64/task.h"
+#include "../runtime/host.h"
 #include "boot.h"
 #include "time_port.h"
 #if !defined(KOBOX_BOOT_RUNTIME) || defined(KOBOX_RUNTIME_GATES)
@@ -94,8 +95,6 @@ const struct kobox_linux_task_host_operations *kobox_task_host(void)
 {
 	return task_host;
 }
-static __thread struct task_struct *hosted_current;
-static __thread unsigned int hosted_cpu;
 static u64 clock_origin;
 static struct kobox_linux_task_report *task_report;
 #ifndef KOBOX_BOOT_RUNTIME
@@ -116,7 +115,7 @@ static struct kobox_task_port *task_port(const struct task_struct *task)
 
 static unsigned int port_cpu(void)
 {
-	unsigned int cpu = READ_ONCE(hosted_cpu);
+	unsigned int cpu = READ_ONCE(kobox_runtime_thread_state()->cpu);
 
 	if (cpu >= KOBOX_LINUX_MEMORY_LOGICAL_CPUS)
 		BUG();
@@ -130,7 +129,7 @@ unsigned int kobox_provider_current_cpu_id(void)
 
 struct task_struct *kobox_provider_current_task(void)
 {
-	return hosted_current;
+	return kobox_runtime_thread_state()->current_task;
 }
 
 unsigned long kobox_provider_preempt_save(void)
@@ -385,8 +384,8 @@ static void *task_bootstrap(void *argument)
 
 	if (READ_ONCE(port->aborted))
 		return NULL;
-	hosted_current = port->task;
-	hosted_cpu = port->resume_cpu;
+	kobox_runtime_thread_state()->current_task = port->task;
+	kobox_runtime_thread_state()->cpu = port->resume_cpu;
 	kobox_linux_memory_set_cpu(port->resume_cpu);
 	if (kobox_host_call(task_host->cpu_enter(port->resume_cpu, port->host_task)))
 		BUG();
@@ -604,8 +603,8 @@ struct task_struct *kobox_task_switch(
 		READ_ONCE(previous->__state) == TASK_DEAD));
 	if (status)
 		BUG();
-	hosted_cpu = previous_port->resume_cpu;
-	kobox_linux_memory_set_cpu(hosted_cpu);
+	kobox_runtime_thread_state()->cpu = previous_port->resume_cpu;
+	kobox_linux_memory_set_cpu(kobox_runtime_thread_state()->cpu);
 	if (kobox_host_call(task_host->cpu_enter(previous_port->resume_cpu,
 				 previous_port->host_task)))
 		BUG();
@@ -851,8 +850,8 @@ int kobox_linux_task_bind_boot(const struct kobox_linux_task_layout *layout,
 		return status;
 	task_host = layout->operations;
 	task_report = report;
-	hosted_current = &init_task;
-	hosted_cpu = 0;
+	kobox_runtime_thread_state()->current_task = &init_task;
+	kobox_runtime_thread_state()->cpu = 0;
 	boot_task_port.task = &init_task;
 	boot_task_port.host_task = layout->boot_task;
 	boot_task_port.idle = true;
@@ -883,7 +882,7 @@ int kobox_linux_task_smp_boot(
 	if (status)
 		return status;
 	task_host = layout->operations;
-	hosted_current = &init_task;
+	kobox_runtime_thread_state()->current_task = &init_task;
 	if (kobox_host_call(task_host->monotonic_ns(&clock_origin)))
 		return -EIO;
 	task_report = report;

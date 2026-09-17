@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-/* Linker/TLS test data only. This object is never part of a Linux runtime. */
+/* Fixed-image linker test data only. This object is never part of a runtime. */
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/percpu.h>
@@ -20,7 +20,6 @@ const unsigned long fixture_rodata = 0x12345678;
 unsigned long fixture_data = 0x87654321;
 unsigned long fixture_ro_after_init __ro_after_init = 99;
 unsigned long fixture_init_data __initdata = 101;
-static __thread unsigned int fixture_tls = 7;
 
 static int __init fixture_early(void)
 {
@@ -34,8 +33,8 @@ static int __init fixture_device(void)
 }
 device_initcall(fixture_device);
 
-unsigned int fixture_advance(void)
+unsigned int fixture_entry(void)
 {
 	sync_core();
-	return ++fixture_tls;
+	return 8;
 }

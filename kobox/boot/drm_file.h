@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 #else
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,10 +54,24 @@ struct kobox_linux_drm_encoder {
 	uint32_t possible_crtcs, possible_clones;
 };
 
+struct kobox_linux_drm_crtc {
+	uint32_t crtc_id, fb_id, x, y, gamma_size, mode_valid;
+	struct kobox_linux_drm_mode mode;
+};
+
+struct kobox_linux_drm_rectangle {
+	uint32_t x1, y1, x2, y2;
+};
+
 struct kobox_linux_drm_fb2 {
 	uint32_t fb_id, width, height, pixel_format, flags;
 	uint32_t handles[4], pitches[4], offsets[4];
 	uint64_t modifiers[4];
+};
+
+struct kobox_linux_drm_fb {
+	uint32_t fb_id, width, height, pitch;
+	uint32_t bits_per_pixel, depth, handle;
 };
 
 struct kobox_linux_drm_dumb_buffer {
@@ -99,11 +114,27 @@ struct kobox_linux_drm_mapping_operations {
 	void (*release)(void *private_mapping);
 };
 
+/* Private readiness observer for one hosted DRM open-file description.
+ * notify runs from the DRM waitqueue wake path and therefore may only publish
+ * fixed, nonblocking host state. Event payloads remain owner-task work. */
+struct kobox_linux_drm_event_observer {
+	wait_queue_entry_t wait;
+	struct kobox_linux_drm_file *file;
+	void *context;
+	void (*notify)(void *context);
+	bool attached;
+};
+
 int kobox_linux_drm_mapping_register(
 	const struct kobox_linux_drm_mapping_operations *operations,
 	struct module *owner);
 void kobox_linux_drm_mapping_unregister(
 	const struct kobox_linux_drm_mapping_operations *operations);
+int kobox_linux_drm_event_attach(struct kobox_linux_drm_file *file,
+				 struct kobox_linux_drm_event_observer *observer,
+				 void (*notify)(void *context), void *context);
+int kobox_linux_drm_event_detach(
+	struct kobox_linux_drm_event_observer *observer);
 #endif
 
 /* The caller must supply the render devt discovered under its authorized
@@ -127,6 +158,8 @@ int kobox_linux_drm_get_cap(struct kobox_linux_drm_file *file, uint64_t capabili
 int kobox_linux_drm_set_client_cap(struct kobox_linux_drm_file *file,
 				    uint64_t capability, uint64_t value);
 int kobox_linux_drm_master(struct kobox_linux_drm_file *file, bool acquire);
+int kobox_linux_drm_get_magic(struct kobox_linux_drm_file *file, uint32_t *magic);
+int kobox_linux_drm_auth_magic(struct kobox_linux_drm_file *file, uint32_t magic);
 int kobox_linux_drm_resources(struct kobox_linux_drm_file *file,
 		uint32_t *fbs, size_t fb_capacity,
 		uint32_t *crtcs, size_t crtc_capacity,
@@ -142,6 +175,8 @@ int kobox_linux_drm_connector(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_connector *out);
 int kobox_linux_drm_encoder(struct kobox_linux_drm_file *file,
 		uint32_t encoder_id, struct kobox_linux_drm_encoder *out);
+int kobox_linux_drm_get_crtc(struct kobox_linux_drm_file *file,
+		uint32_t crtc_id, struct kobox_linux_drm_crtc *out);
 int kobox_linux_drm_set_crtc(struct kobox_linux_drm_file *file,
 		uint32_t crtc_id, uint32_t fb_id, uint32_t x, uint32_t y,
 		const uint32_t *connectors, size_t connector_count,
@@ -149,8 +184,20 @@ int kobox_linux_drm_set_crtc(struct kobox_linux_drm_file *file,
 int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 		uint32_t crtc_id, uint32_t fb_id, uint32_t flags,
 		uint32_t sequence, uint64_t event_token);
+int kobox_linux_drm_dirty_fb(struct kobox_linux_drm_file *file,
+		uint32_t fb_id, uint32_t flags, uint32_t color,
+		const struct kobox_linux_drm_rectangle *rectangles,
+		size_t rectangle_count);
+int kobox_linux_drm_add_fb(struct kobox_linux_drm_file *file,
+		struct kobox_linux_drm_fb *framebuffer);
+int kobox_linux_drm_remove_fb(struct kobox_linux_drm_file *file,
+		uint32_t fb_id);
 int kobox_linux_drm_add_fb2(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_fb2 *framebuffer);
+int kobox_linux_drm_object_properties(struct kobox_linux_drm_file *file,
+		uint32_t object_id, uint32_t object_type,
+		struct kobox_linux_drm_property_value *properties,
+		size_t property_capacity, uint32_t *property_count);
 int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_dumb_buffer *buffer);
 int kobox_linux_drm_poll_events(struct kobox_linux_drm_file *file,

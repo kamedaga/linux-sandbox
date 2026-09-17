@@ -14,9 +14,11 @@ enum kobox_boot_core_result {
 	KOBOX_BOOT_CORE_ALREADY_STARTED,
 };
 
-/* The selected loader owns image relocation, TLS and symbol lookup. No OS
- * handle representation is exposed here. Caller serializes prepare/start;
- * initialized cores and loader contexts cannot be copied or unloaded live.
+/* The OS backend owns the fixed image mapping and symbol lookup. Per-thread
+ * runtime state is supplied explicitly through kobox_runtime_host, so this
+ * interface is independent of either libc's TLS or a PachaOS TLS layout.
+ * Caller serializes prepare/start; an initialized core cannot be copied or
+ * unloaded while its threads are live.
  */
 struct kobox_boot_core {
 	void *loader;

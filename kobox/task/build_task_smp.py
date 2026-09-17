@@ -23,15 +23,21 @@ provider = memory.provider
 
 ROOT_SYMBOL = "kobox_linux_task_smp_boot"
 DISPATCH_SYMBOL = "kobox_linux_task_dispatch"
+RUNTIME_BIND_SYMBOL = "kobox_linux_runtime_bind"
 SUPPORT_SOURCES = (
     "kobox/tests/gates/task_smp.c",
     "kobox/arch/x86_64/task.c",
     "kobox/memory/early_boot.c",
+    "kobox/runtime/host.c",
     "kobox/task/port.c",
     "kobox/task/time_port.c",
     "kobox/task/time_gate.c",
 )
-HOST_IMPORTS = {"_GLOBAL_OFFSET_TABLE_", "__tls_get_addr"}
+HOST_IMPORTS = {
+    "_GLOBAL_OFFSET_TABLE_",
+    "__tls_get_addr",
+    "kobox_linux_boot_diagnostic",
+}
 PERCPU_DATA_IMPORTS = {
     "cea_exception_stacks": "arch/x86/mm/cpu_entry_area.o",
     "cpu_tlbstate": "arch/x86/mm/init.o",
@@ -68,6 +74,7 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "kernel/events/hw_breakpoint.o",
     "kernel/exit.o",
     "kernel/fork.o",
+    "kernel/futex/core.o",
     "kernel/kthread.o",
     "kernel/module/main.o",
     "kernel/panic.o",
@@ -117,6 +124,7 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "lib/cpumask.o",
     "lib/ctype.o",
     "lib/crypto/blake2s.o",
+    "lib/fault-inject.o",
     "lib/hexdump.o",
     "lib/idr.o",
     "lib/irq_regs.o",
@@ -127,6 +135,8 @@ TASK_SOURCE_OBJECTS = memory.MEMORY_SOURCE_OBJECTS | frozenset({
     "lib/plist.o",
     "lib/timerqueue.o",
     "lib/vdso/datastore.o",
+    "mm/fail_page_alloc.o",
+    "mm/failslab.o",
     "mm/mmap.o",
     "mm/vma_init.o",
 })
@@ -241,7 +251,7 @@ def compile_support(arguments, source_name):
 
 
 def prepare_object(arguments, source_object, support_defined):
-    source = memory.native_object(arguments, source_object)
+    source = arguments.provider_build_dir / source_object
     overlaps = memory.defined_symbols(source, arguments.nm) & support_defined
     destination = arguments.output_dir / ".objects" / source_object
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +289,7 @@ def link_shared(arguments, objects):
         "  global:\n"
         f"    {ROOT_SYMBOL};\n"
         f"    {DISPATCH_SYMBOL};\n"
+        f"    {RUNTIME_BIND_SYMBOL};\n"
         "  local:\n"
         "    *;\n"
         "};\n",
@@ -306,6 +317,7 @@ def link_shared(arguments, objects):
         "--no-undefined-version",
         "-u", ROOT_SYMBOL,
         "-u", DISPATCH_SYMBOL,
+        "-u", RUNTIME_BIND_SYMBOL,
         "-u", "jiffies_64",
         "--defsym=jiffies=jiffies_64",
         f"--version-script={version}",
@@ -641,7 +653,7 @@ def build(arguments):
         "gate_symbols": GATE_SYMBOLS,
         "host_imports": sorted(HOST_IMPORTS),
         "hosted_architecture_symbols": sorted(support_defined),
-        "source_patches": getattr(arguments, "native_source_patches", {}),
+        "source_patches": {},
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

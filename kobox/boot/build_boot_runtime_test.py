@@ -22,6 +22,15 @@ LOAD_SPEC.loader.exec_module(boot_load)
 
 
 class BootBuildTest(unittest.TestCase):
+    def test_fpu_signal_uses_machine_compile_overlay(self):
+        self.assertEqual(
+            set(boot.MACHINE_COMPILE_OVERLAYS),
+            {"arch/x86/kernel/fpu/signal.o"},
+        )
+        flags = boot.MACHINE_COMPILE_OVERLAYS["arch/x86/kernel/fpu/signal.o"]
+        self.assertEqual(flags[0], "-include")
+        self.assertTrue(flags[1].endswith("kobox_fpu_signal_compile.h"))
+
     def test_gate_sources_are_explicit_and_disjoint(self):
         production = boot.sources.support_sources(False)
         testing = boot.sources.support_sources(True)
@@ -89,11 +98,14 @@ class BootBuildTest(unittest.TestCase):
                     boot.validate_config(config.replace(required, replacement))
 
     def test_load_segments_reject_page_permission_overlap(self):
-        header = "LOAD 0 0 0 0x800 0x800 R 0x1000\n"
-        code = "LOAD 0x1000 0x1000 0x1000 0x500 0x500 R E 0x1000\n"
+        base = boot.CORE_LINK_BASE
+        header = f"LOAD 0 {base:x} {base:x} 0x800 0x800 R 0x1000\n"
+        code = (f"LOAD 0x1000 {base + 0x1000:x} {base + 0x1000:x} "
+                "0x500 0x500 R E 0x1000\n")
         self.assertEqual(len(boot_load.load_segments(header + code, 4096)), 2)
         for changed in (
-            header + code.replace("0x1000 0x1000 0x1000", "0x800 0x800 0x800"),
+            header + code.replace(f"{base + 0x1000:x} {base + 0x1000:x}",
+                                  f"{base + 0x800:x} {base + 0x800:x}"),
             header + code.replace("R E", "RW E"),
             code,
         ):
@@ -122,12 +134,13 @@ class BootBuildTest(unittest.TestCase):
     def test_only_reviewed_machine_definitions_can_be_replaced(self):
         definitions = {
             "setup_arch": [{"source_object": "arch/x86/kernel/setup.o", "symbol_type": "T"}],
+            "memcpy_toio": [{"source_object": "arch/x86/lib/iomem.o", "symbol_type": "T"}],
             "arch_cpu_idle_exit": [{
                 "source_object": "kernel/sched/build_policy.o", "symbol_type": "W",
             }],
         }
         records = boot.validate_machine_overrides(set(definitions), definitions)
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 3)
         for symbol, owner, kind in (
             ("kernel_clone", "kernel/fork.o", "T"),
             ("get_signal", "kernel/signal.o", "T"),
@@ -279,47 +292,6 @@ class BootBuildTest(unittest.TestCase):
         for symbol in boot.UPSTREAM_STARTUP_ONLY:
             with self.subTest(symbol=symbol), self.assertRaises(boot.BootBuildError):
                 boot.validate_startup_ownership({symbol})
-
-    def test_machine_recipe_preserves_kbuild_checks(self):
-        recipe = ("clang-18 -Wp,-MMD,arch/.entry.o.d -D__ASSEMBLY__ "
-                  "-c -o arch/entry.o /source/entry.S ; "
-                  "./tools/objtool/objtool --static-call arch/entry.o")
-        commands = boot.machine_compile_commands(
-            recipe, "arch/entry.o", pathlib.Path("/source/entry.S"),
-            pathlib.Path("/staged/entry.S"), pathlib.Path("/output/entry.o")
-        )
-        self.assertEqual(commands[0][-1], "/staged/entry.S")
-        self.assertIn("-Wp,-MMD,/output/entry.d", commands[0])
-        self.assertEqual(commands[1], ["./tools/objtool/objtool", "--static-call",
-                                       "/output/entry.o"])
-        for changed in (recipe.replace(" ; ", " && "),
-                        recipe.replace("/source/entry.S", "/another/entry.S"),
-                        recipe.replace("./tools/objtool/objtool", "true")):
-            with self.subTest(changed=changed), self.assertRaises(boot.BootBuildError):
-                boot.machine_compile_commands(
-                    changed, "arch/entry.o", pathlib.Path("/source/entry.S"),
-                    pathlib.Path("/staged/entry.S"), pathlib.Path("/output/entry.o")
-                )
-
-    def test_ancestor_permission_patch_preserves_pinned_source(self):
-        source_tree = boot.SCRIPT_DIR.parents[1]
-        name = "arch/x86/mm/pat/set_memory.c"
-        original = (source_tree / name).read_bytes()
-        with tempfile.TemporaryDirectory() as directory:
-            arguments = types.SimpleNamespace(source_tree=source_tree,
-                                              output_dir=pathlib.Path(directory))
-            staged = boot.memory.stage_native_source(arguments, name)
-            self.assertEqual((source_tree / name).read_bytes(), original)
-            expected = original.decode()
-            for level in ("pgd", "p4d", "pud", "pmd"):
-                before = f"*rw &= {level}_flags(*{level}) & _PAGE_RW;"
-                after = f"*rw &= !!({level}_flags(*{level}) & _PAGE_RW);"
-                self.assertEqual(expected.count(before), 1)
-                expected = expected.replace(before, after)
-            self.assertEqual(staged.read_text(), expected)
-            record = arguments.native_source_patches[name]
-            self.assertEqual(record["source_sha256"], boot.memory.sha256(source_tree / name))
-            self.assertEqual(record["hosted_source_sha256"], boot.memory.sha256(staged))
 
     def test_isolated_image_bounds_include_large_model_bss(self):
         source = boot.SCRIPT_DIR.parent / "provider/provider.lds"

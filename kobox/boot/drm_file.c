@@ -11,6 +11,7 @@
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <linux/jiffies.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/sync_file.h>
@@ -97,6 +98,66 @@ static int check_owner(struct kobox_linux_drm_file *file)
 	if (installed)
 		fput(installed);
 	return matches ? 0 : -EBADF;
+}
+
+static int drm_event_observe(wait_queue_entry_t *entry, unsigned int mode,
+			     int flags, void *key)
+{
+	struct kobox_linux_drm_event_observer *observer =
+		container_of(entry, struct kobox_linux_drm_event_observer, wait);
+
+	(void)mode;
+	(void)flags;
+	(void)key;
+	if (READ_ONCE(observer->attached))
+		observer->notify(observer->context);
+	/* This is a non-exclusive observer, never the waitqueue's consumer. */
+	return 0;
+}
+
+int kobox_linux_drm_event_attach(struct kobox_linux_drm_file *file,
+				 struct kobox_linux_drm_event_observer *observer,
+				 void (*notify)(void *context), void *context)
+{
+	struct drm_file *drm_file;
+	int result = check_owner(file);
+
+	if (result)
+		return result;
+	if (!observer || observer->attached || observer->file || !notify)
+		return -EINVAL;
+	drm_file = file->guard->private_data;
+	if (!drm_file)
+		return -ENODEV;
+	observer->file = file;
+	observer->context = context;
+	observer->notify = notify;
+	init_waitqueue_func_entry(&observer->wait, drm_event_observe);
+	WRITE_ONCE(observer->attached, true);
+	add_wait_queue(&drm_file->event_wait, &observer->wait);
+	return 0;
+}
+
+int kobox_linux_drm_event_detach(
+	struct kobox_linux_drm_event_observer *observer)
+{
+	struct drm_file *drm_file;
+	int result;
+
+	if (!observer || !observer->attached || !observer->file)
+		return -EINVAL;
+	result = check_owner(observer->file);
+	if (result)
+		return result;
+	drm_file = observer->file->guard->private_data;
+	if (!drm_file)
+		return -ENODEV;
+	WRITE_ONCE(observer->attached, false);
+	/* remove_wait_queue synchronizes with an in-flight wake callback before
+	 * the file or the fixed observer slot can be retired. */
+	remove_wait_queue(&drm_file->event_wait, &observer->wait);
+	memset(observer, 0, sizeof(*observer));
+	return 0;
 }
 
 static int create_node(struct vfsmount *mount, dev_t device)
@@ -286,6 +347,27 @@ int kobox_linux_drm_set_client_cap(struct kobox_linux_drm_file *file,
 	return result ?: private_ioctl(file, DRM_IOCTL_SET_CLIENT_CAP, &argument);
 }
 
+int kobox_linux_drm_get_magic(struct kobox_linux_drm_file *file, u32 *magic)
+{
+	struct drm_auth argument = {};
+	int result = check_owner(file);
+
+	if (!magic)
+		return -EINVAL;
+	result = result ?: private_ioctl(file, DRM_IOCTL_GET_MAGIC, &argument);
+	if (!result)
+		*magic = argument.magic;
+	return result;
+}
+
+int kobox_linux_drm_auth_magic(struct kobox_linux_drm_file *file, u32 magic)
+{
+	struct drm_auth argument = { .magic = magic };
+	int result = check_owner(file);
+
+	return result ?: private_ioctl(file, DRM_IOCTL_AUTH_MAGIC, &argument);
+}
+
 int kobox_linux_drm_master(struct kobox_linux_drm_file *file, bool acquire)
 {
 	int result = check_owner(file);
@@ -431,6 +513,34 @@ int kobox_linux_drm_encoder(struct kobox_linux_drm_file *file,
 	return result;
 }
 
+int kobox_linux_drm_get_crtc(struct kobox_linux_drm_file *file,
+		u32 crtc_id, struct kobox_linux_drm_crtc *out)
+{
+	struct drm_mode_crtc argument = {.crtc_id = crtc_id};
+	int result;
+
+	static_assert(sizeof(struct kobox_linux_drm_mode) ==
+		      sizeof(struct drm_mode_modeinfo));
+	if (!crtc_id || !out)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result)
+		return result;
+	result = private_ioctl(file, DRM_IOCTL_MODE_GETCRTC, &argument);
+	if (!result) {
+		*out = (struct kobox_linux_drm_crtc) {
+			.crtc_id = argument.crtc_id,
+			.fb_id = argument.fb_id,
+			.x = argument.x,
+			.y = argument.y,
+			.gamma_size = argument.gamma_size,
+			.mode_valid = argument.mode_valid,
+		};
+		memcpy(&out->mode, &argument.mode, sizeof(out->mode));
+	}
+	return result;
+}
+
 int kobox_linux_drm_set_crtc(struct kobox_linux_drm_file *file,
 		u32 crtc_id, u32 fb_id, u32 x, u32 y,
 		const u32 *connectors, size_t connector_count,
@@ -486,6 +596,56 @@ int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 	return result;
 }
 
+int kobox_linux_drm_dirty_fb(struct kobox_linux_drm_file *file,
+		u32 fb_id, u32 flags, u32 color,
+		const struct kobox_linux_drm_rectangle *rectangles,
+		size_t rectangle_count)
+{
+	struct drm_mode_fb_dirty_cmd argument = {
+		.fb_id = fb_id,
+		.flags = flags,
+		.color = color,
+		.num_clips = rectangle_count,
+	};
+	struct drm_clip_rect *clips = NULL;
+	int result;
+
+	if (flags & ~DRM_MODE_FB_DIRTY_FLAGS ||
+	    rectangle_count > DRM_MODE_FB_DIRTY_MAX_CLIPS ||
+	    (!!rectangle_count != !!rectangles) ||
+	    ((flags & DRM_MODE_FB_DIRTY_ANNOTATE_COPY) &&
+	     (rectangle_count & 1)))
+		return -EINVAL;
+	result = check_owner(file);
+	if (result || !rectangle_count)
+		return result ?: private_ioctl(file, DRM_IOCTL_MODE_DIRTYFB,
+					       &argument);
+	clips = kmalloc_array(rectangle_count, sizeof(*clips), GFP_KERNEL);
+	if (!clips)
+		return -ENOMEM;
+	for (size_t index = 0; index < rectangle_count; index++) {
+		const struct kobox_linux_drm_rectangle *rectangle =
+			&rectangles[index];
+
+		if (rectangle->x1 > U16_MAX || rectangle->y1 > U16_MAX ||
+		    rectangle->x2 > U16_MAX || rectangle->y2 > U16_MAX) {
+			result = -ERANGE;
+			goto free_clips;
+		}
+		clips[index] = (struct drm_clip_rect) {
+			.x1 = rectangle->x1,
+			.y1 = rectangle->y1,
+			.x2 = rectangle->x2,
+			.y2 = rectangle->y2,
+		};
+	}
+	argument.clips_ptr = (uintptr_t)clips;
+	result = private_ioctl(file, DRM_IOCTL_MODE_DIRTYFB, &argument);
+free_clips:
+	kfree(clips);
+	return result;
+}
+
 int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_dumb_buffer *buffer)
 {
@@ -515,6 +675,45 @@ int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 	return result;
 }
 
+int kobox_linux_drm_add_fb(struct kobox_linux_drm_file *file,
+		struct kobox_linux_drm_fb *framebuffer)
+{
+	struct drm_mode_fb_cmd argument;
+	int result;
+
+	if (!framebuffer || framebuffer->fb_id || !framebuffer->width ||
+	    !framebuffer->height || !framebuffer->pitch ||
+	    !framebuffer->bits_per_pixel || !framebuffer->depth ||
+	    !framebuffer->handle)
+		return -EINVAL;
+	argument = (struct drm_mode_fb_cmd) {
+		.width = framebuffer->width,
+		.height = framebuffer->height,
+		.pitch = framebuffer->pitch,
+		.bpp = framebuffer->bits_per_pixel,
+		.depth = framebuffer->depth,
+		.handle = framebuffer->handle,
+	};
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_ADDFB, &argument);
+	if (!result)
+		framebuffer->fb_id = argument.fb_id;
+	return result;
+}
+
+int kobox_linux_drm_remove_fb(struct kobox_linux_drm_file *file, u32 fb_id)
+{
+	int result;
+
+	if (!fb_id)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_RMFB, &fb_id);
+	return result;
+}
+
 int kobox_linux_drm_add_fb2(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_fb2 *framebuffer)
 {
@@ -540,6 +739,56 @@ int kobox_linux_drm_add_fb2(struct kobox_linux_drm_file *file,
 		result = private_ioctl(file, DRM_IOCTL_MODE_ADDFB2, &argument);
 	if (!result)
 		framebuffer->fb_id = argument.fb_id;
+	return result;
+}
+
+int kobox_linux_drm_object_properties(struct kobox_linux_drm_file *file,
+		u32 object_id, u32 object_type,
+		struct kobox_linux_drm_property_value *properties,
+		size_t property_capacity, u32 *property_count)
+{
+	u32 *property_ids = NULL;
+	u64 *property_values = NULL;
+	struct drm_mode_obj_get_properties argument;
+	size_t copied, index;
+	int result;
+
+	if (!object_id || !object_type || !property_count ||
+	    (!properties && property_capacity) || property_capacity > U32_MAX)
+		return -EINVAL;
+	if (property_capacity) {
+		property_ids = kcalloc(property_capacity, sizeof(*property_ids),
+			GFP_KERNEL);
+		property_values = kcalloc(property_capacity,
+			sizeof(*property_values), GFP_KERNEL);
+		if (!property_ids || !property_values) {
+			result = -ENOMEM;
+			goto done;
+		}
+	}
+	argument = (struct drm_mode_obj_get_properties) {
+		.props_ptr = (uintptr_t)property_ids,
+		.prop_values_ptr = (uintptr_t)property_values,
+		.count_props = property_capacity,
+		.obj_id = object_id,
+		.obj_type = object_type,
+	};
+	result = check_owner(file);
+	if (result)
+		goto done;
+	result = private_ioctl(file, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &argument);
+	if (result)
+		goto done;
+	copied = min_t(size_t, property_capacity, argument.count_props);
+	for (index = 0; index < copied; index++)
+		properties[index] = (struct kobox_linux_drm_property_value) {
+			.property_id = property_ids[index],
+			.value = property_values[index],
+		};
+	*property_count = argument.count_props;
+done:
+	kfree(property_values);
+	kfree(property_ids);
 	return result;
 }
 
@@ -998,13 +1247,21 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 			if (!fence)
 				result = -EPROTO;
 			else {
-				result = dma_fence_wait(fence, true);
+				long waited = dma_fence_wait_timeout(
+						fence, true, msecs_to_jiffies(10000));
+
+				result = waited > 0 ? 0 : waited < 0 ? (int)waited : -ETIMEDOUT;
 				dma_fence_put(fence);
 			}
 			if (!result && closed)
 				result = closed;
 		}
 	}
+	if (result)
+		pr_err("kobox-drm: virtgpu execbuffer failed status=%d flags=0x%x "
+		       "command=%zu handles=%zu in-syncobjs=%zu out-syncobjs=%zu\n",
+		       result, flags, command_size, handle_count, input_count,
+		       output_count);
 	kvfree(private_output);
 free_input:
 	kvfree(private_input);

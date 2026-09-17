@@ -358,8 +358,15 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 			return -EPROTO;
 	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   (command.command_id == KB2_GPU_DRM_MODE_COMMAND_SET_MASTER ||
+		    command.command_id == KB2_GPU_DRM_MODE_COMMAND_GET_MAGIC ||
 		    command.command_id == KB2_GPU_DRM_MODE_COMMAND_DROP_MASTER)) {
 		if (length || command.counts[0] || command.counts[1] ||
+		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_AUTH_MAGIC) {
+		if (!data || length != KB2_GPU_DRM_MODE_RECORD_MAGIC_SIZE ||
+		    command.counts[0] != 1 || command.counts[1] ||
 		    command.counts[2] || command.deadline_ns)
 			return -EPROTO;
 	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
@@ -420,6 +427,20 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 		    command.counts[1] || command.counts[2] || command.deadline_ns)
 			return -EPROTO;
 		query.object_id = read_u32(data + 8);
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_GET_CRTC) {
+		if (!data ||
+		    length != KB2_GPU_DRM_MODE_RECORD_CRTC_GET_REQUEST_SIZE ||
+		    read_u64(data) != 1 || !read_u32(data + 8) ||
+		    read_u32(data + 12) || command.counts[0] != 2 ||
+		    command.counts[1] != 1 || command.counts[2] ||
+		    command.deadline_ns || output_span(&command, region, 2,
+			KB2_GPU_DRM_MODE_RECORD_MODE_INFO, 1,
+			KB2_GPU_DRM_MODE_RECORD_MODE_INFO_SIZE,
+			&query.offset[0], &query.output_size))
+			return -EPROTO;
+		query.object_id = read_u32(data + 8);
+		query.capacity[0] = 1;
 	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_SET_CRTC) {
 		size_t vector_index = 1;
@@ -483,6 +504,40 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 			read_u64(data + 24)))
 			return -EPROTO;
 	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_DIRTY_FB) {
+		uint32_t rectangle_count;
+		uint32_t flags;
+
+		if (!data || length != KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_SIZE ||
+		    read_u64(data +
+			KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_TOPOLOGY_EPOCH_OFFSET) != 1 ||
+		    command.deadline_ns || command.counts[2])
+			return -EPROTO;
+		flags = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_FLAGS_OFFSET);
+		rectangle_count = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_RECTANGLE_COUNT_OFFSET);
+		if ((flags & ~(KB2_GPU_DRM_MODE_DIRTY_FLAG_COPY |
+			KB2_GPU_DRM_MODE_DIRTY_FLAG_FILL)) ||
+		    rectangle_count >
+			KB2_GPU_DRM_MODE_COMMAND_DIRTY_FB_REQUEST_SPAN_RECTANGLES_MAXIMUM ||
+		    ((flags & KB2_GPU_DRM_MODE_DIRTY_FLAG_COPY) &&
+			(rectangle_count & 1)) ||
+		    command.counts[0] != 1u + !!rectangle_count ||
+		    command.counts[1] != !!rectangle_count)
+			return -EPROTO;
+		if (rectangle_count && input_span(&command, region, 1, 2,
+			KB2_GPU_DRM_MODE_RECORD_RECTANGLE, 0, rectangle_count,
+			KB2_GPU_DRM_MODE_RECORD_RECTANGLE_SIZE))
+			return -EPROTO;
+		query.object_id = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_FB_ID_OFFSET);
+		query.mode_flags = flags;
+		query.capacity[0] = rectangle_count;
+		query.aux_size = rectangle_count *
+			KB2_GPU_DRM_MODE_RECORD_RECTANGLE_SIZE;
+		query.aux_input = !!rectangle_count;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_CREATE_DUMB) {
 		if (!data ||
 		    length != KB2_GPU_DRM_MODE_RECORD_DUMB_CREATE_REQUEST_SIZE ||
@@ -492,6 +547,42 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 			KB2_GPU_DRM_MODE_RECORD_DUMB_CREATE_REQUEST_WIDTH_OFFSET) ||
 		    !read_u32(data +
 			KB2_GPU_DRM_MODE_RECORD_DUMB_CREATE_REQUEST_BITS_PER_PIXEL_OFFSET) ||
+		    command.counts[0] != 1 || command.counts[1] ||
+		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_ADD_FB) {
+		if (!data ||
+		    length != KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_SIZE ||
+		    read_u64(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_TOPOLOGY_EPOCH_OFFSET) != 1 ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_WIDTH_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_HEIGHT_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_PITCH_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_BITS_PER_PIXEL_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_DEPTH_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_HANDLE_OFFSET) ||
+		    read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_RESERVED_OFFSET) ||
+		    command.counts[0] != 1 || command.counts[1] ||
+		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_REMOVE_FB) {
+		if (!data ||
+		    length != KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_REQUEST_SIZE ||
+		    read_u64(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_REQUEST_TOPOLOGY_EPOCH_OFFSET) != 1 ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_REQUEST_OBJECT_ID_OFFSET) ||
+		    read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_REQUEST_RESERVED_OFFSET) ||
 		    command.counts[0] != 1 || command.counts[1] ||
 		    command.counts[2] || command.deadline_ns)
 			return -EPROTO;
@@ -518,6 +609,34 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 		    !read_u32(data + 44) || (read_u32(data + 24) & ~2U) ||
 		    command.counts[0] != 1 || command.counts[1] ||
 		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   command.command_id ==
+			KB2_GPU_DRM_MODE_COMMAND_OBJECT_GET_PROPERTIES) {
+		if (!data ||
+		    length != KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_SIZE ||
+		    read_u64(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_TOPOLOGY_EPOCH_OFFSET) != 1 ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_OBJECT_ID_OFFSET) ||
+		    !read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_OBJECT_TYPE_OFFSET) ||
+		    read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_RESERVED_OFFSET) ||
+		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+		query.object_id = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_OBJECT_ID_OFFSET);
+		query.object_type = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_OBJECT_TYPE_OFFSET);
+		query.capacity[0] = read_u32(data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_PROPERTIES_REQUEST_PROPERTY_CAPACITY_OFFSET);
+		if (output_span(&command, region, 2,
+			KB2_GPU_DRM_MODE_RECORD_PROPERTY_VALUE, query.capacity[0],
+			KB2_GPU_DRM_MODE_RECORD_PROPERTY_VALUE_SIZE,
+			&query.offset[0], &query.output_size) ||
+		    command.counts[0] != 1u + (uint32_t)!!query.capacity[0] ||
+		    command.counts[1] != (uint32_t)!!query.capacity[0])
 			return -EPROTO;
 	} else if (command.command_set_id == KB2_GPU_DRM_VIRTGPU_SET_ID) {
 		size_t expected = 0;
@@ -994,6 +1113,23 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			read_u64(query->inline_data +
 				KB2_GPU_DRM_CORE_RECORD_CLIENT_CAP_REQUEST_VALUE_OFFSET));
 	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_GET_MAGIC) {
+		uint32_t magic;
+
+		if (!api->get_magic)
+			return -EINVAL;
+		result = api->get_magic(file, &magic);
+		if (!result) {
+			write_u32(record, magic);
+			reply.record_schema_id = KB2_GPU_DRM_MODE_RECORD_MAGIC;
+			reply.length = KB2_GPU_DRM_MODE_RECORD_MAGIC_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_AUTH_MAGIC) {
+		if (!api->auth_magic)
+			return -EINVAL;
+		result = api->auth_magic(file, read_u32(query->inline_data));
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   (query->command_id == KB2_GPU_DRM_MODE_COMMAND_SET_MASTER ||
 		    query->command_id == KB2_GPU_DRM_MODE_COMMAND_DROP_MASTER)) {
 		if (!api->master)
@@ -1095,6 +1231,28 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			reply.length = KB2_GPU_DRM_MODE_RECORD_ENCODER_RESULT_SIZE;
 		}
 	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_GET_CRTC) {
+		struct kobox_linux_drm_crtc crtc;
+
+		if (!api->get_crtc)
+			return -EINVAL;
+		result = api->get_crtc(file, query->object_id, &crtc);
+		if (!result) {
+			if (crtc.crtc_id != query->object_id || crtc.mode_valid > 1)
+				return -EPROTO;
+			memcpy(output + query->offset[0], &crtc.mode,
+			       sizeof(crtc.mode));
+			write_u64(record, 1);
+			write_u32(record + 8, crtc.crtc_id);
+			write_u32(record + 12, crtc.fb_id);
+			write_u32(record + 16, crtc.x);
+			write_u32(record + 20, crtc.y);
+			write_u32(record + 24, crtc.gamma_size);
+			write_u32(record + 28, crtc.mode_valid);
+			reply.record_schema_id = KB2_GPU_DRM_MODE_RECORD_CRTC_RESULT;
+			reply.length = KB2_GPU_DRM_MODE_RECORD_CRTC_RESULT_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_SET_CRTC) {
 		struct kobox_linux_drm_mode mode;
 		const unsigned char *mode_bytes = query->mode_flags ? aux +
@@ -1141,6 +1299,17 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			read_u32(query->inline_data + 20),
 			read_u64(query->inline_data + 24));
 	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_DIRTY_FB) {
+		if (!api->dirty_fb)
+			return -EINVAL;
+		result = api->dirty_fb(file, query->object_id,
+			query->mode_flags,
+			read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_DIRTY_FB_REQUEST_COLOR_OFFSET),
+			query->capacity[0] ?
+				(const struct kobox_linux_drm_rectangle *)aux : NULL,
+			query->capacity[0]);
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_CREATE_DUMB) {
 		struct kobox_linux_drm_dumb_buffer buffer = {
 			.height = read_u32(query->inline_data +
@@ -1174,6 +1343,41 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 				KB2_GPU_DRM_MODE_RECORD_DUMB_CREATE_RESULT_SIZE;
 		}
 	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_ADD_FB) {
+		struct kobox_linux_drm_fb framebuffer = {
+			.width = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_WIDTH_OFFSET),
+			.height = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_HEIGHT_OFFSET),
+			.pitch = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_PITCH_OFFSET),
+			.bits_per_pixel = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_BITS_PER_PIXEL_OFFSET),
+			.depth = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_DEPTH_OFFSET),
+			.handle = read_u32(query->inline_data +
+				KB2_GPU_DRM_MODE_RECORD_FB_LEGACY_CREATE_HANDLE_OFFSET),
+		};
+
+		if (!api->add_fb)
+			return -EINVAL;
+		result = api->add_fb(file, &framebuffer);
+		if (!result) {
+			if (!framebuffer.fb_id)
+				return -EPROTO;
+			write_u64(record, 1);
+			write_u32(record + 8, framebuffer.fb_id);
+			reply.record_schema_id =
+				KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_RESULT;
+			reply.length = KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_RESULT_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_REMOVE_FB) {
+		if (!api->remove_fb)
+			return -EINVAL;
+		result = api->remove_fb(file, read_u32(query->inline_data +
+			KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_REQUEST_OBJECT_ID_OFFSET));
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_ADD_FB2) {
 		struct kobox_linux_drm_fb2 framebuffer = {
 			.width = read_u32(query->inline_data + 12),
@@ -1203,6 +1407,34 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			reply.record_schema_id =
 				KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_RESULT;
 			reply.length = KB2_GPU_DRM_MODE_RECORD_OBJECT_ID_RESULT_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   query->command_id ==
+			KB2_GPU_DRM_MODE_COMMAND_OBJECT_GET_PROPERTIES) {
+		uint32_t property_count = 0;
+
+		if (!api->object_properties)
+			return -EINVAL;
+		result = api->object_properties(file, query->object_id,
+			query->object_type,
+			query->capacity[0] ?
+				(struct kobox_linux_drm_property_value *)
+				(output + query->offset[0]) : NULL,
+			query->capacity[0], &property_count);
+		if (!result) {
+			const uint32_t count = property_count < query->capacity[0] ?
+				property_count : query->capacity[0];
+			write_u64(record, 1);
+			write_u32(record +
+				KB2_GPU_DRM_MODE_RECORD_TOPOLOGY_COUNT_RESULT_COUNT_OFFSET,
+				count);
+			write_u32(record +
+				KB2_GPU_DRM_MODE_RECORD_TOPOLOGY_COUNT_RESULT_REQUIRED_COUNT_OFFSET,
+				property_count);
+			reply.record_schema_id =
+				KB2_GPU_DRM_MODE_RECORD_TOPOLOGY_COUNT_RESULT;
+			reply.length =
+				KB2_GPU_DRM_MODE_RECORD_TOPOLOGY_COUNT_RESULT_SIZE;
 		}
 	} else if ((query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		    query->command_id == KB2_GPU_DRM_MODE_COMMAND_MAP_DUMB) ||

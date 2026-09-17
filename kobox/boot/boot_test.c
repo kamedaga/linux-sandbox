@@ -207,13 +207,16 @@ static void crash_handler(int number, siginfo_t *info, void *argument)
 	uintptr_t stack[128];
 	unsigned int index;
 	ssize_t length;
-	char message[128] = "boot fault: core+";
+	char message[160] = "boot fault: core+";
 	char *position = message + sizeof("boot fault: core+") - 1;
 
 	position = format_hex(position, context->uc_mcontext.gregs[REG_RIP] -
 			      core_base);
 	*position++ = ' ';
 	position = format_hex(position, (uintptr_t)info->si_addr);
+	memcpy(position, " error=", sizeof(" error=") - 1);
+	position += sizeof(" error=") - 1;
+	position = format_hex(position, context->uc_mcontext.gregs[REG_ERR]);
 	*position++ = '\n';
 	(void)write(STDERR_FILENO, message, position - message);
 	/* pread is async-signal-safe and reports EFAULT/EIO instead of causing

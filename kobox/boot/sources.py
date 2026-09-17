@@ -26,7 +26,6 @@ COMMON_SOURCES = (
 )
 
 ARCH_SOURCES = (
-    "kobox/arch/x86_64/tls.c",
     "kobox/arch/x86_64/fpu.c",
     "kobox/arch/x86_64/registers.c",
     "kobox/arch/x86_64/task.c",

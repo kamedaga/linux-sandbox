@@ -457,7 +457,8 @@ if(KOBOX_LINUX_BOOT_BUILD_DIR)
 		DEPENDS
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
-			"${CMAKE_CURRENT_SOURCE_DIR}/memory/patches/ancestor-rw.patch"
+			"${CMAKE_CURRENT_SOURCE_DIR}/runtime/host.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/runtime/host.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/../arch/x86/mm/pat/set_memory.c"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/port.h"
@@ -561,7 +562,8 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 			"${CMAKE_CURRENT_SOURCE_DIR}/task/include/asm/switch_to.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/build_early_memory.py"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/early_boot.c"
-			"${CMAKE_CURRENT_SOURCE_DIR}/memory/patches/ancestor-rw.patch"
+			"${CMAKE_CURRENT_SOURCE_DIR}/runtime/host.c"
+			"${CMAKE_CURRENT_SOURCE_DIR}/runtime/host.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/../arch/x86/mm/pat/set_memory.c"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/host.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/memory/port.h"
@@ -659,7 +661,7 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 			LABELS "linux-runtime;integration;pci" TIMEOUT 30)
 		add_executable(kobox_linux_resource_port_test boot/resource_port_test.c)
 		target_compile_options(kobox_linux_resource_port_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
-		target_link_libraries(kobox_linux_resource_port_test PRIVATE ${CMAKE_DL_LIBS})
+		target_link_libraries(kobox_linux_resource_port_test PRIVATE kobox_posix_core)
 		add_test(NAME kobox2.linux_resource_port_boundary
 			COMMAND kobox_linux_resource_port_test "${KOBOX_LINUX_BOOT_RUNTIME_CORE}")
 		get_filename_component(_kobox_boot_runtime_dir
@@ -1101,7 +1103,8 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 		PRIVATE kobox_posix_boot)
 	add_executable(kobox_linux_task_smp_test task/task_smp_test.c)
 	target_compile_features(kobox_linux_task_smp_test PRIVATE c_std_11)
-	set_target_properties(kobox_linux_task_smp_test PROPERTIES C_EXTENSIONS OFF)
+	set_target_properties(kobox_linux_task_smp_test PROPERTIES
+		C_EXTENSIONS OFF ENABLE_EXPORTS ON)
 	target_compile_options(kobox_linux_task_smp_test
 		PRIVATE -Wall -Wextra -Wpedantic -Werror)
 	target_include_directories(kobox_linux_task_smp_test
@@ -1133,13 +1136,15 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 			--provider-build-dir "${KOBOX_LINUX_TASK_BUILD_DIR}"
 			--output-dir "${CMAKE_CURRENT_BINARY_DIR}/linux-boot-layout-test")
 	set_tests_properties(kobox2.linux_boot_elf_layout PROPERTIES TIMEOUT 30)
-	add_test(NAME kobox2.linux_boot_image_alias
-		COMMAND kobox_linux_boot_image_test
-			"${CMAKE_CURRENT_BINARY_DIR}/linux-boot-layout-test/layout-fixture.so")
 	set_tests_properties(kobox2.linux_boot_elf_layout PROPERTIES
 		FIXTURES_SETUP kobox_boot_layout)
-	set_tests_properties(kobox2.linux_boot_image_alias PROPERTIES
-		FIXTURES_REQUIRED kobox_boot_layout TIMEOUT 30)
+	if(KOBOX_LINUX_BOOT_RUNTIME_CORE)
+		add_test(NAME kobox2.linux_boot_image_alias
+			COMMAND kobox_linux_boot_image_test
+				"${KOBOX_LINUX_BOOT_RUNTIME_CORE}")
+		set_tests_properties(kobox2.linux_boot_image_alias PROPERTIES
+			FIXTURES_REQUIRED kobox_full_boot_core TIMEOUT 30)
+	endif()
 endif()
 
 add_executable(kobox_provider_arena_test provider/arena.c provider/arena_test.c)

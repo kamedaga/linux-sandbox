@@ -6,6 +6,15 @@
 
 struct kobox_linux_drm_service;
 
+/* Process-local host port. slot is the fixed service entry and cookie guards
+ * slot reuse. notify is waitqueue context: atomic publication and a
+ * preallocated nonblocking doorbell only. */
+struct kobox_linux_drm_event_host {
+	size_t size;
+	void *context;
+	int (*notify)(void *context, uint32_t slot, uint64_t cookie);
+};
+
 /* Process-local Linux ownership ledger. Cookies are not GPU session IDs and
  * must never be accepted directly from wire requests. All operations run on
  * the creating Linux task; the device launcher remains the final owner.
@@ -35,6 +44,7 @@ struct kobox_linux_drm_service_prime {
 #ifdef __KERNEL__
 int kobox_linux_drm_service_create(dev_t primary, dev_t render,
 				   unsigned int limit,
+				   const struct kobox_linux_drm_event_host *events,
 				   struct kobox_linux_drm_service **out);
 /* Stops admission, synchronously closes every retained file, and preserves
  * the first close error even when a failed close consumed its file pointer.

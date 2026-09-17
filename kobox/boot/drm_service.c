@@ -10,10 +10,16 @@
 #include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <kobox2/gpu_layout.h>
+#include "../arch/x86_64/host_call.h"
+
+struct kobox_linux_drm_service;
 
 struct drm_owned_file {
 	u64 cookie;
 	struct kobox_linux_drm_file *file;
+	struct kobox_linux_drm_service *service;
+	struct kobox_linux_drm_event_observer observer;
+	u32 slot;
 	int close_error;
 };
 
@@ -37,6 +43,7 @@ struct kobox_linux_drm_service {
 	struct drm_owned_mapping mappings[DRM_MAPPING_LIMIT];
 	struct drm_owned_prime primes[DRM_PRIME_LIMIT];
 	struct kobox_linux_drm_service_report report;
+	struct kobox_linux_drm_event_host events;
 	dev_t primary, render;
 	unsigned int limit;
 	u64 sequence;
@@ -44,6 +51,16 @@ struct kobox_linux_drm_service {
 	u64 prime_sequence;
 	bool stopping;
 };
+
+static void notify_event(void *context)
+{
+	struct drm_owned_file *entry = context;
+	u64 cookie = READ_ONCE(entry->cookie);
+
+	if (cookie)
+		(void)kobox_host_call(entry->service->events.notify(
+			entry->service->events.context, entry->slot, cookie));
+}
 
 static int release_mapping(struct drm_owned_mapping *mapping)
 {
@@ -97,11 +114,14 @@ static struct drm_owned_file *find_file(struct kobox_linux_drm_service *service,
 
 int kobox_linux_drm_service_create(dev_t primary, dev_t render,
 				   unsigned int limit,
+				   const struct kobox_linux_drm_event_host *events,
 				   struct kobox_linux_drm_service **out)
 {
 	struct kobox_linux_drm_service *service;
+	unsigned int index;
 
-	if (!out || *out || !limit || limit > 1024 ||
+	if (!out || *out || !limit || limit > 64 || !events ||
+	    events->size != sizeof(*events) || !events->context || !events->notify ||
 	    MAJOR(primary) != DRM_MAJOR || MAJOR(render) != DRM_MAJOR)
 		return -EINVAL;
 	if (current->mm || !current->files || in_interrupt() || irqs_disabled() ||
@@ -121,6 +141,11 @@ int kobox_linux_drm_service_create(dev_t primary, dev_t render,
 	service->primary = primary;
 	service->render = render;
 	service->limit = limit;
+	service->events = *events;
+	for (index = 0; index < limit; index++) {
+		service->entries[index].service = service;
+		service->entries[index].slot = index;
+	}
 	*out = service;
 	return 0;
 }
@@ -161,6 +186,14 @@ int kobox_linux_drm_service_open(struct kobox_linux_drm_service *service,
 	if (result) {
 		entry->cookie = 0;
 		return result;
+	}
+	result = kobox_linux_drm_event_attach(entry->file, &entry->observer,
+					      notify_event, entry);
+	if (result) {
+		int closed = kobox_linux_drm_close(&entry->file);
+
+		entry->cookie = 0;
+		return closed ? closed : result;
 	}
 	service->report.opened++;
 	service->report.active++;
@@ -207,7 +240,11 @@ int kobox_linux_drm_service_file(struct kobox_linux_drm_service *service,
 static int close_entry(struct kobox_linux_drm_service *service,
 		       struct drm_owned_file *entry)
 {
-	int result = kobox_linux_drm_close(&entry->file);
+	int result = entry->observer.attached ?
+		kobox_linux_drm_event_detach(&entry->observer) : 0;
+
+	if (!result)
+		result = kobox_linux_drm_close(&entry->file);
 
 	entry->close_error = result;
 	if (result && !service->report.close_error)

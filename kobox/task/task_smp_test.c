@@ -4,11 +4,13 @@
 
 #include "posix_machine.h"
 #include "../host/posix/host.h"
+#include "../runtime/host.h"
 
 #include <dlfcn.h>
 #include <errno.h>
 #include <execinfo.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +33,26 @@
 
 static kobox_linux_task_notification_fn task_dispatch;
 static uintptr_t task_core_base;
+static _Thread_local struct kobox_runtime_thread_state runtime_thread;
+
+static struct kobox_runtime_thread_state *thread_state(void *context)
+{
+	(void)context;
+	return &runtime_thread;
+}
+
+/* The standalone task closure has no boot console. Keep diagnostics at the
+ * Linux test-host boundary; the fixed core supplies its own portable console
+ * bridge through boot/port.c. */
+void kobox_linux_boot_diagnostic(const char *format, ...)
+{
+	va_list arguments;
+
+	va_start(arguments, format);
+	(void)vfprintf(stderr, format, arguments);
+	va_end(arguments);
+	(void)fflush(stderr);
+}
 
 static void crash_handler(int signal_number, siginfo_t *info, void *argument)
 {
@@ -118,6 +140,11 @@ int main(int argument_count, char **arguments)
 	};
 	struct kobox_linux_task_layout layout;
 	kobox_linux_task_boot_fn entry;
+	int (*runtime_bind)(const struct kobox_runtime_host *);
+	struct kobox_runtime_host runtime = {
+		.size = sizeof(runtime),
+		.thread_state = thread_state,
+	};
 	void *direct_address;
 	void *boundary_handle;
 	void *handle;
@@ -146,6 +173,8 @@ int main(int argument_count, char **arguments)
 		return 1;
 	}
 	CHECK(load_function(handle, "kobox_linux_task_smp_boot", &entry) == 0);
+	CHECK(load_function(handle, "kobox_linux_runtime_bind", &runtime_bind) == 0);
+	CHECK(runtime_bind(&runtime) == 0);
 	{
 		Dl_info info;
 		void *address;

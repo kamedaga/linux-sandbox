@@ -22,7 +22,7 @@ def require(condition, detail):
         raise boot.BootBuildError(detail)
 
 
-def load_segments(headers, page_size):
+def load_segments(headers, page_size, expected_base=boot.CORE_LINK_BASE):
     segments = []
     previous_end = 0
     for line in headers.splitlines():
@@ -39,23 +39,25 @@ def load_segments(headers, page_size):
         require("R" in flags, "unreadable PT_LOAD")
         previous_end = (start + size + page_size - 1) & ~(page_size - 1)
         segments.append((start, start + size, flags))
-    require(segments and segments[0][0] == 0, "ELF headers are outside the core image")
+    require(segments and segments[0][0] == expected_base,
+            "ELF headers are outside the fixed core image")
     return segments
 
 
 def verify(arguments):
     headers = boot.task.run([arguments.readelf, "--program-headers", "--wide", arguments.core])
     segments = load_segments(headers, 4096)
-    dynamic = boot.task.run([arguments.readelf, "--dynamic", "--wide", arguments.core])
-    require("TEXTREL" not in dynamic, "core requires dynamic text relocations")
-    require("NEEDED" not in dynamic, "core directly depends on a host library")
-    versions = boot.task.run([arguments.readelf, "--version-info", arguments.core])
-    require("GLIBC_" not in versions, "core retains a glibc ABI dependency")
+    elf_header = boot.task.run([arguments.readelf, "--file-header", "--wide", arguments.core])
+    require("EXEC (Executable file)" in elf_header, "core is not a fixed ET_EXEC image")
+    require(" DYNAMIC " not in headers and " TLS " not in headers,
+            "fixed core retains dynamic-loader or compiler-TLS state")
     undefined = boot.task.run([arguments.nm, "--undefined-only", "--format=posix", arguments.core])
     require(not undefined.strip(), "core has an implicit host symbol dependency")
     symbols = boot.task.run([arguments.nm, "--defined-only", "--format=posix", arguments.core])
     offsets = {fields[0]: int(fields[2], 16) for line in symbols.splitlines()
                if len(fields := line.split()) >= 3}
+    require(offsets.get("_text") == boot.CORE_LINK_BASE,
+            "core link base differs from the loader contract")
     for symbol in ("start_kernel", "schedule", "try_to_wake_up", "mm_core_init",
                    "kthreadd", "kobox_linux_boot_start", "kobox_linux_task_dispatch",
                    "shmem_mapping", "shmem_get_folio", "shmem_file_setup",

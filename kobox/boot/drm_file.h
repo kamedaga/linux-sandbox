@@ -15,6 +15,7 @@
 
 struct kobox_linux_drm_file;
 struct kobox_linux_drm_mapping;
+struct dma_fence;
 
 /* Private, typed results, never a wire layout or a userspace pointer table. */
 struct kobox_linux_drm_version {
@@ -61,6 +62,13 @@ struct kobox_linux_drm_crtc {
 
 struct kobox_linux_drm_rectangle {
 	uint32_t x1, y1, x2, y2;
+};
+
+struct kobox_linux_drm_cursor {
+	uint32_t flags, crtc_id;
+	int32_t x, y;
+	uint32_t width, height, handle;
+	int32_t hot_x, hot_y;
 };
 
 struct kobox_linux_drm_fb2 {
@@ -184,6 +192,8 @@ int kobox_linux_drm_set_crtc(struct kobox_linux_drm_file *file,
 int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 		uint32_t crtc_id, uint32_t fb_id, uint32_t flags,
 		uint32_t sequence, uint64_t event_token);
+int kobox_linux_drm_cursor(struct kobox_linux_drm_file *file,
+		const struct kobox_linux_drm_cursor *cursor);
 int kobox_linux_drm_dirty_fb(struct kobox_linux_drm_file *file,
 		uint32_t fb_id, uint32_t flags, uint32_t color,
 		const struct kobox_linux_drm_rectangle *rectangles,
@@ -240,7 +250,8 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 				       const void *command, size_t command_size,
 				       const void *handle_bytes, size_t handle_count,
 				       const void *input_syncobjs, size_t input_count,
-				       const void *output_syncobjs, size_t output_count);
+				       const void *output_syncobjs, size_t output_count,
+				       struct dma_fence **completion);
 int kobox_linux_drm_virtgpu_resource_create(
 	struct kobox_linux_drm_file *file,
 	struct kobox_linux_virtgpu_resource_create *resource);

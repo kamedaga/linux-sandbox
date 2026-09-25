@@ -65,6 +65,16 @@ static int config_write(struct pci_bus *bus, unsigned int devfn,
 
 static struct pci_ops hosted_ops = {.read = config_read, .write = config_write};
 
+static void release_memory_windows(struct hosted_pci *pci)
+{
+	unsigned int index;
+
+	for (index = 0; index < pci->host.window_count; index++) {
+		if (pci->memory[index].parent)
+			release_resource(&pci->memory[index]);
+	}
+}
+
 int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 			struct pci_host_bridge **bridge_out)
 {
@@ -122,6 +132,14 @@ int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 			.name = "host PCI memory", .start = window->start,
 			.end = window->start + window->length - 1, .flags = IORESOURCE_MEM,
 		};
+		/* PCI root-bus setup coalesces adjacent windows by releasing the
+		 * superseded resource. Register it first so Linux has a valid parent. */
+		result = request_resource(&iomem_resource, &pci->memory[index]);
+		if (result) {
+			release_memory_windows(pci);
+			pci_free_host_bridge(bridge);
+			return result;
+		}
 		pci_add_resource(&bridge->windows, &pci->memory[index]);
 	}
 	pci->bus_numbers = (struct resource) {
@@ -133,6 +151,7 @@ int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 	bridge->busnr = host->bus;
 	pci_add_resource(&bridge->windows, &pci->bus_numbers);
 	if (list_count_nodes(&bridge->windows) != host->window_count + 1) {
+		release_memory_windows(pci);
 		pci_free_resource_list(&bridge->windows);
 		pci_free_host_bridge(bridge);
 		return -ENOMEM;
@@ -143,6 +162,7 @@ int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 		pci_bus_claim_resources(bridge->bus);
 	pci_unlock_rescan_remove();
 	if (result) {
+		release_memory_windows(pci);
 		pci_free_host_bridge(bridge);
 		return result;
 	}
@@ -201,6 +221,7 @@ int kobox_linux_pci_remove(struct pci_host_bridge *bridge)
 	pci_stop_root_bus(bridge->bus);
 	pci_remove_root_bus(bridge->bus);
 	pci_unlock_rescan_remove();
+	release_memory_windows(pci);
 	pci_free_host_bridge(bridge);
 	return 0;
 }

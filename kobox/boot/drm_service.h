@@ -3,6 +3,7 @@
 #define KOBOX_BOOT_DRM_SERVICE_H
 
 #include "drm_file.h"
+#include "drm_fence.h"
 
 struct kobox_linux_drm_service;
 
@@ -13,6 +14,7 @@ struct kobox_linux_drm_event_host {
 	size_t size;
 	void *context;
 	int (*notify)(void *context, uint32_t slot, uint64_t cookie);
+	int (*notify_fences)(void *context);
 };
 
 /* Process-local Linux ownership ledger. Cookies are not GPU session IDs and
@@ -62,6 +64,13 @@ int kobox_linux_drm_service_file(struct kobox_linux_drm_service *service,
 				 struct kobox_linux_drm_file **file_out);
 int kobox_linux_drm_service_close(struct kobox_linux_drm_service *service,
 				  uint64_t cookie);
+int kobox_linux_drm_service_execbuffer(struct kobox_linux_drm_service *service,
+	uint64_t cookie, uint64_t session, uint64_t correlation,
+	uint32_t flags, uint32_t ring_index, const void *command, size_t command_size,
+	const void *handles, size_t handle_count,
+	const void *input, size_t input_count, const void *output, size_t output_count);
+int kobox_linux_drm_service_take_fence(struct kobox_linux_drm_service *service,
+	struct kobox_drm_fence_result *result);
 int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
 				uint64_t cookie, uint32_t handle,
 				uint32_t mapping_rights,

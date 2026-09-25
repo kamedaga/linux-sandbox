@@ -7,7 +7,9 @@
 #include <asm/preempt.h>
 #include <asm/io.h>
 #include "../mm/port.h"
+#if !defined(KOBOX_BOOT_GPU) || KOBOX_BOOT_GPU
 #include "drm_file.h"
+#endif
 #include "resource_port.h"
 
 /* Hosted module instructions use the same arch boundary as built-in code.
@@ -15,7 +17,14 @@
  */
 EXPORT_SYMBOL_GPL(kobox_provider_current_task);
 EXPORT_SYMBOL_GPL(kobox_provider_current_percpu_offset);
+/* Loadable drivers use these hosted CPU/IRQ hooks through the same header
+ * overlays as the boot core; modpost must see their real core exports. */
+EXPORT_SYMBOL_GPL(kobox_provider_current_cpu_id);
 EXPORT_SYMBOL_GPL(kobox_provider_irq_save_flags);
+EXPORT_SYMBOL_GPL(kobox_provider_irq_save);
+EXPORT_SYMBOL_GPL(kobox_provider_irq_restore);
+EXPORT_SYMBOL_GPL(kobox_provider_irq_disable);
+EXPORT_SYMBOL_GPL(kobox_provider_irq_enable);
 EXPORT_SYMBOL_GPL(kobox_provider_preempt_save);
 EXPORT_SYMBOL_GPL(kobox_provider_preempt_restore);
 EXPORT_SYMBOL_GPL(kobox_vm_space_create);
@@ -23,9 +32,11 @@ EXPORT_SYMBOL_GPL(kobox_vm_space_bind);
 EXPORT_SYMBOL_GPL(kobox_vm_space_destroy);
 EXPORT_SYMBOL_GPL(kobox_vm_resolve_fault);
 EXPORT_SYMBOL_GPL(kobox_linux_resource_bind);
+#if !defined(KOBOX_BOOT_GPU) || KOBOX_BOOT_GPU
 EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_register);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_unregister);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_poll_events);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_read_events);
+#endif
 EXPORT_SYMBOL_GPL(kobox_mmio_read);
 EXPORT_SYMBOL_GPL(kobox_mmio_write);

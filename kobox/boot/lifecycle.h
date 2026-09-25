@@ -22,6 +22,13 @@ struct kobox_linux_lifecycle {
 	 * process-local resource, never a peer pointer. No call after loop exit.
 	 */
 	int (*dispatch)(void *context, void *service);
+	/* Optional pair, both called only by the opening task. poll may prepare
+	 * work without blocking and returns the same states as pending. idle
+	 * relinquishes polling ownership before the task sleeps. pending must
+	 * remain IRQ-safe; neither callback may wait for another Linux task.
+	 */
+	int (*poll)(void *context);
+	void (*idle)(void *context);
 };
 
 #ifdef __KERNEL__

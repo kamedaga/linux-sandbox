@@ -81,6 +81,21 @@ class ClosureInventoryTest(unittest.TestCase):
         self.assertTrue(all(root.endswith(".ko") for root in profile["roots"]))
         self.assertNotIn("shared_providers", profile)
 
+    def test_usb_hid_closure_is_separate_from_gpu_and_legacy_kobox(self):
+        profile = json.loads((SCRIPT.parent / "profiles/usb_hid_xhci.json").read_text())
+        inventory = json.loads((SCRIPT.parent / "generated/usb_hid_xhci.json").read_text())
+        closure_inventory.validate_profile(profile)
+        self.assertEqual(inventory["profile"], profile["name"])
+        self.assertEqual(inventory["summary"]["module_count"], 9)
+        self.assertEqual(set(inventory["roots"]), set(profile["roots"]))
+        modules = set(inventory["load_order"])
+        self.assertEqual(modules, set(inventory["cleanup_order"]))
+        self.assertFalse(any("/drm/" in path or "/virtio/" in path
+                             for path in modules))
+        self.assertIn("drivers/usb/core/usbcore.ko", modules)
+        self.assertIn("drivers/usb/host/xhci-pci.ko", modules)
+        self.assertIn("drivers/hid/usbhid/usbhid.ko", modules)
+
     def test_profile_rejects_upper_api_override(self):
         profile_path = SCRIPT.parent / "profiles/virtio_gpu_virgl.json"
         profile = json.loads(profile_path.read_text(encoding="utf-8"))

@@ -5,6 +5,7 @@
 #include <linux/irq-entry-common.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/bug.h>
 #include <linux/string.h>
 
@@ -90,11 +91,19 @@ enum kobox_linux_exception_result kobox_linux_exception_dispatch(
 	bool handled;
 	bool early;
 
-	if (!frame || frame->size != sizeof(*frame) || !current ||
-	    frame->cpu != raw_smp_processor_id() ||
-	    current != raw_cpu_read(current_task) ||
-	    !kernel_text_address(frame->ip))
+	if (!frame || frame->size != sizeof(*frame))
 		return KOBOX_EXCEPTION_FATAL;
+	if (!current || frame->cpu != raw_smp_processor_id() ||
+	    current != raw_cpu_read(current_task) ||
+	    !kernel_text_address(frame->ip)) {
+		/* A native fault bypasses Linux's normal trap entry. Report which
+		 * execution-domain invariant rejected it before host teardown. */
+		pr_err("kobox: fault domain mismatch ip=%px frame_cpu=%u cpu=%u current=%px owner=%px text=%d\n",
+		       (void *)frame->ip, frame->cpu, raw_smp_processor_id(),
+		       current, raw_cpu_read(current_task),
+		       kernel_text_address(frame->ip));
+		return KOBOX_EXCEPTION_FATAL;
+	}
 	for (index = 0; index < KOBOX_EXCEPTION_REGISTERS; index++)
 		*(unsigned long *)((char *)&regs + register_offset[index]) =
 			frame->registers[index];
@@ -112,6 +121,13 @@ enum kobox_linux_exception_result kobox_linux_exception_dispatch(
 		handled = handle_bug(&regs);
 		if (handled)
 			record_warning(frame->ip, frame->cpu);
+		else {
+			/* The native fault handoff has no Linux trap printer. Preserve
+			 * the interrupted Linux stack when a BUG cannot be resumed. */
+			pr_err("kobox: fatal invalid opcode ip=%px preempt_count=%x\n",
+			       (void *)frame->ip, preempt_count());
+			show_stack(current, (unsigned long *)frame->sp, KERN_ERR);
+		}
 	} else if (frame->vector == X86_TRAP_BP) {
 		handled = smp_text_poke_int3_handler(&regs);
 		if (!handled) {

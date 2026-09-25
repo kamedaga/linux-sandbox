@@ -480,6 +480,23 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 			KB2_GPU_DRM_MODE_RECORD_MODE_INFO_SIZE;
 		query.aux_input = !!query.aux_size;
 	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   (command.command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR ||
+		    command.command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR2)) {
+		bool cursor2 = command.command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR2;
+		size_t expected = cursor2 ? KB2_GPU_DRM_MODE_RECORD_CURSOR2_REQUEST_SIZE :
+			KB2_GPU_DRM_MODE_RECORD_CURSOR_REQUEST_SIZE;
+		uint32_t flags;
+
+		if (!data || length != expected || read_u64(data) != 1 ||
+		    !read_u32(data + 12) || command.counts[0] != 1 ||
+		    command.counts[1] || command.counts[2] || command.deadline_ns ||
+		    (!cursor2 && read_u32(data + 36)))
+			return -EPROTO;
+		flags = read_u32(data + 8);
+		if (!flags || (flags & ~(KB2_GPU_DRM_MODE_CURSOR_FLAG_BUFFER |
+			KB2_GPU_DRM_MODE_CURSOR_FLAG_MOVE)))
+			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   command.command_id == KB2_GPU_DRM_MODE_COMMAND_PAGE_FLIP) {
 		uint32_t flags;
 		uint32_t target;
@@ -949,8 +966,7 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			return -EINVAL;
 		result = api->get_cap(file, query->capability, &value);
 		if (!result) {
-			write_u32(record, value);
-			write_u32(record + 4, value >> 32);
+			write_u64(record, value);
 			reply.record_schema_id = KB2_GPU_DRM_CORE_RECORD_SCALAR_U64;
 			reply.length = KB2_GPU_DRM_CORE_RECORD_SCALAR_U64_SIZE;
 		}
@@ -1289,6 +1305,25 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			query->capacity[0] ? (const uint32_t *)aux : NULL,
 			query->capacity[0], query->mode_flags ? &mode : NULL);
 	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
+		   (query->command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR ||
+		    query->command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR2)) {
+		bool cursor2 = query->command_id == KB2_GPU_DRM_MODE_COMMAND_CURSOR2;
+		struct kobox_linux_drm_cursor cursor = {
+			.flags = read_u32(query->inline_data + 8),
+			.crtc_id = read_u32(query->inline_data + 12),
+			.x = (int32_t)read_u32(query->inline_data + 16),
+			.y = (int32_t)read_u32(query->inline_data + 20),
+			.width = read_u32(query->inline_data + 24),
+			.height = read_u32(query->inline_data + 28),
+			.handle = read_u32(query->inline_data + 32),
+			.hot_x = cursor2 ? (int32_t)read_u32(query->inline_data + 36) : 0,
+			.hot_y = cursor2 ? (int32_t)read_u32(query->inline_data + 40) : 0,
+		};
+
+		if (!api->cursor)
+			return -EINVAL;
+		result = api->cursor(file, &cursor);
+	} else if (query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		   query->command_id == KB2_GPU_DRM_MODE_COMMAND_PAGE_FLIP) {
 		if (!api->page_flip)
 			return -EINVAL;
@@ -1545,7 +1580,8 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			(aux_size - query->output_syncobjs_offset) /
 			KB2_GPU_DRM_VIRTGPU_RECORD_EXEC_SYNCOBJ_SIZE)))
 			return -EINVAL;
-		result = api->virtgpu_execbuffer(file, query->exec_flags,
+		result = api->virtgpu_execbuffer(service, file_cookie,
+			query->session_id, query->fence_correlation, query->exec_flags,
 			query->ring_index, aux, query->command_size,
 			query->handle_count ? aux + query->handles_offset : NULL,
 			query->handle_count,

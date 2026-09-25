@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "device_launch.h"
+#include "device_port.h"
 #include "drm_file.h"
 #include "drm_file_gate.h"
 
@@ -14,10 +15,7 @@
 #include <kobox2/gpu_layout.h>
 
 struct kobox_linux_device_session {
-	struct pci_host_bridge *bridge;
-	struct pci_dev *pci;
-	struct kobox_linux_dma_port *dma;
-	struct kobox_linux_irq_port *irq;
+	struct kobox_linux_device_port *port;
 	struct kobox_linux_drm_event_host drm_events;
 	struct kobox_linux_drm_file *render;
 	struct kobox_linux_drm_service *service;
@@ -50,22 +48,14 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 	*out = session;
 	session->render_file_limit = launch->render_file_limit;
 	session->drm_events = *launch->drm_events;
-	result = kobox_linux_pci_scan(launch->pci, &session->bridge);
-	if (result)
-		return result;
-	pci_assign_unassigned_bus_resources(session->bridge->bus);
-	session->pci = pci_get_slot(session->bridge->bus, launch->pci->devfn);
-	if (!session->pci || session->pci->driver)
-		return -ENODEV;
-	result = kobox_linux_dma_attach(&session->pci->dev, launch->dma,
-				       &session->dma);
-	if (result)
-		return result;
-	result = kobox_linux_irq_attach(session->pci, launch->irq, &session->irq);
-	if (result)
-		return result;
-	pci_bus_add_devices(session->bridge->bus);
-	return 0;
+	const struct kobox_linux_device_port_config config = {
+		.size = sizeof(config),
+		.pci = launch->pci,
+		.dma = launch->dma,
+		.irq = launch->irq,
+	};
+	result = kobox_linux_device_port_prepare(&config, &session->port);
+	return result;
 }
 
 static int bind_queue_dma(struct device *device, void *argument)
@@ -74,18 +64,22 @@ static int bind_queue_dma(struct device *device, void *argument)
 
 	if (!device->bus || strcmp(device->bus->name, "virtio"))
 		return 0;
-	return kobox_linux_dma_bind_virtio(session->dma, dev_to_virtio(device));
+	return kobox_linux_dma_bind_virtio(
+		kobox_linux_device_port_dma(session->port), dev_to_virtio(device));
 }
 
 int kobox_linux_device_module_ready(struct kobox_linux_device_session *session)
 {
-	if (!session || !session->pci)
+	struct pci_dev *pci = session ?
+		kobox_linux_device_port_pci(session->port) : NULL;
+
+	if (!pci)
 		return -EINVAL;
 	/* virtio-pci publishes its child before virtio_gpu is loaded. Install
 	 * the upstream mapping interface here, never into already-live queues.
 	 */
 	wait_for_device_probe();
-	return device_for_each_child(&session->pci->dev, session, bind_queue_dma);
+	return device_for_each_child(&pci->dev, session, bind_queue_dma);
 }
 
 static int is_virtio_gpu(struct device *device, const void *argument)
@@ -118,6 +112,8 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 			    struct kobox_linux_device_launch_report *report)
 {
 	struct kobox_linux_device_launch_report candidate = {0};
+	struct pci_dev *pci = session ?
+		kobox_linux_device_port_pci(session->port) : NULL;
 	struct device *gpu;
 	struct kobox_linux_drm_version version;
 	const size_t capacity[] = {sizeof(version.name), sizeof(version.date),
@@ -125,17 +121,16 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 	u64 prime;
 	int result;
 
-	if (!session || !session->pci || session->render || !report)
+	if (!pci || session->render || !report)
 		return -EINVAL;
 	wait_for_device_probe();
-	if (!session->pci->driver ||
-	    strcmp(session->pci->driver->name, "virtio-pci"))
+	if (!pci->driver || strcmp(pci->driver->name, "virtio-pci"))
 		return -ENODEV;
-	gpu = device_find_child(&session->pci->dev, NULL, is_virtio_gpu);
+	gpu = device_find_child(&pci->dev, NULL, is_virtio_gpu);
 	if (!gpu)
 		return -ENODEV;
 	/* DRM minors are children of this PCI function, not a global name scan. */
-	result = device_for_each_child(&session->pci->dev, &candidate,
+	result = device_for_each_child(&pci->dev, &candidate,
 				       find_drm_node);
 	put_device(gpu);
 	if (result)
@@ -200,35 +195,24 @@ int kobox_linux_device_finish(struct kobox_linux_device_session *session,
 			     struct kobox_linux_device_launch_report *report)
 {
 	int result;
+	struct pci_dev *pci = session ?
+		kobox_linux_device_port_pci(session->port) : NULL;
 
 	if (!session || !report)
 		return -EINVAL;
 	if (session->close_error || session->render ||
-	    (session->pci && session->pci->driver))
+	    (pci && pci->driver))
 		return -EBUSY;
 	if (session->service) {
 		result = kobox_linux_drm_service_destroy(&session->service);
 		if (result)
 			return result;
 	}
-	if (session->irq) {
-		result = kobox_linux_irq_detach(session->irq);
+	if (session->port) {
+		result = kobox_linux_device_port_finish(session->port);
 		if (result)
 			return result;
-		session->irq = NULL;
-	}
-	if (session->dma) {
-		result = kobox_linux_dma_detach(session->dma);
-		if (result)
-			return result;
-		session->dma = NULL;
-	}
-	pci_dev_put(session->pci);
-	session->pci = NULL;
-	if (session->bridge) {
-		result = kobox_linux_pci_remove(session->bridge);
-		if (result)
-			return result;
+		session->port = NULL;
 	}
 	kfree(session);
 	report->drained = 1;

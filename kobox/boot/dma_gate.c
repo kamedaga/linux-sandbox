@@ -193,6 +193,99 @@ out:
 	return result;
 }
 
+static int bounced_queue_span(struct device *dev,
+		struct kobox_linux_dma_port *port,
+		const struct kobox_linux_dma_test *test)
+{
+	struct virtio_device vdev = {.dev.parent = dev};
+	union virtio_map map = {.dma_dev = dev};
+	struct page *page = alloc_pages(GFP_KERNEL | __GFP_COMP, 2);
+	const unsigned int offset = PAGE_SIZE - 32, size = 2 * PAGE_SIZE;
+	const unsigned int probes[] = {0, 28, 32, PAGE_SIZE, size - 4};
+	dma_addr_t addresses[33], address = DMA_MAPPING_ERROR;
+	unsigned int allocated = 0, i;
+	u32 value = 0, *cpu;
+	int result = -EINVAL;
+
+	if (!page)
+		return -ENOMEM;
+	cpu = page_address(page) + offset;
+	memset(page_address(page), 0x6b, 4 * PAGE_SIZE);
+	INIT_LIST_HEAD(&vdev.vqs);
+	if (kobox_linux_dma_bind_virtio(port, &vdev))
+		goto out;
+	address = vdev.map->map_page(map, page, offset, size, DMA_TO_DEVICE, 0);
+	if (dma_mapping_error(dev, address) ||
+	    !vdev.map->need_sync(map, address) || page_count(page) != 1 ||
+	    transfer(test, address, &value, true) != -EACCES ||
+	    kobox_linux_dma_detach(port) != -EBUSY)
+		goto out;
+	for (i = 0; i < ARRAY_SIZE(probes); i++)
+		if (transfer(test, address + probes[i], &value, false) ||
+		    value != 0x6b6b6b6b)
+			goto out;
+	/* A range sync crossing the source page boundary must copy both pages. */
+	cpu[7] = 0x12345678;
+	cpu[8] = 0x87654321;
+	vdev.map->sync_single_for_device(map, address + 28, 8, DMA_TO_DEVICE);
+	if (transfer(test, address + 28, &value, false) || value != cpu[7] ||
+	    transfer(test, address + 32, &value, false) || value != cpu[8])
+		goto out;
+	vdev.map->unmap_page(map, address, size, DMA_TO_DEVICE, 0);
+	for (i = 0; i < ARRAY_SIZE(probes); i++) {
+		if (transfer(test, address + probes[i], &value, false) || value) {
+			address = DMA_MAPPING_ERROR;
+			goto out;
+		}
+	}
+	address = DMA_MAPPING_ERROR;
+	if (cpu[7] != 0x12345678 || cpu[8] != 0x87654321)
+		goto out;
+	/* Attributes and other directions retain the ordinary DMA contract. */
+	address = vdev.map->map_page(map, page, offset, size, DMA_TO_DEVICE,
+				   DMA_ATTR_SKIP_CPU_SYNC);
+	if (dma_mapping_error(dev, address))
+		goto out;
+	i = vdev.map->need_sync(map, address);
+	vdev.map->unmap_page(map, address, size, DMA_TO_DEVICE,
+			     DMA_ATTR_SKIP_CPU_SYNC);
+	address = DMA_MAPPING_ERROR;
+	if (i || page_count(page) != 1)
+		goto out;
+	address = vdev.map->map_page(map, page, offset, size, DMA_FROM_DEVICE, 0);
+	if (dma_mapping_error(dev, address))
+		goto out;
+	i = vdev.map->need_sync(map, address);
+	vdev.map->unmap_page(map, address, size, DMA_FROM_DEVICE, 0);
+	address = DMA_MAPPING_ERROR;
+	if (i || page_count(page) != 1)
+		goto out;
+	/* Saturation falls back to a live-only mapping of the original span. */
+	while (allocated < ARRAY_SIZE(addresses)) {
+		address = vdev.map->map_page(map, page, offset, size,
+					   DMA_TO_DEVICE, 0);
+		if (dma_mapping_error(dev, address))
+			goto out;
+		addresses[allocated++] = address;
+		address = DMA_MAPPING_ERROR;
+	}
+	if (!vdev.map->need_sync(map, addresses[31]) ||
+	    vdev.map->need_sync(map, addresses[32]) || page_count(page) <= 1)
+		goto out;
+	result = 0;
+out:
+	while (allocated)
+		vdev.map->unmap_page(map, addresses[--allocated], size,
+				     DMA_TO_DEVICE, 0);
+	if (!dma_mapping_error(dev, address))
+		vdev.map->unmap_page(map, address, size, DMA_TO_DEVICE, 0);
+	if (!result && (page_count(page) != 1 ||
+	    transfer(test, addresses[32], &value, false) != -EFAULT))
+		result = -EINVAL;
+	__free_pages(page, 2);
+	return result;
+}
+
 struct dma_panic_observer {
 	struct notifier_block notifier;
 	struct page *page;
@@ -262,6 +355,43 @@ out:
 		dma_unmap_page(dev, address, 512, DMA_BIDIRECTIONAL);
 	atomic_notifier_chain_unregister(&panic_notifier_list, &observer.notifier);
 	__free_page(page);
+	return result;
+}
+
+static int noncompound_rx_buffer(struct device *dev,
+				 const struct kobox_linux_dma_test *test)
+{
+	const size_t length = 4 * PAGE_SIZE - 1;
+	const size_t probe = 4 * PAGE_SIZE - 8;
+	struct page *head = alloc_pages(GFP_KERNEL, 2);
+	dma_addr_t address = DMA_MAPPING_ERROR;
+	u32 value = 0x81726354;
+	int result = -EINVAL;
+
+	if (!head)
+		return -ENOMEM;
+	/* Drivers such as r8169 use order-2 pages without __GFP_COMP. Only
+	 * the allocation head has a reference; the three tails must still map. */
+	if (page_count(head) != 1 || page_count(head + 1) ||
+	    page_count(head + 2) || page_count(head + 3))
+		goto out;
+	address = dma_map_page(dev, head, 0, length, DMA_FROM_DEVICE);
+	if (dma_mapping_error(dev, address) || page_count(head) != 2)
+		goto out;
+	if (transfer(test, address + probe, &value, true))
+		goto out;
+	dma_sync_single_for_cpu(dev, address, length, DMA_FROM_DEVICE);
+	if (*(u32 *)(page_address(head) + probe) != value)
+		goto out;
+	dma_unmap_page(dev, address, length, DMA_FROM_DEVICE);
+	if (page_count(head) == 1 &&
+	    transfer(test, address, &value, false) == -EFAULT)
+		result = 0;
+	address = DMA_MAPPING_ERROR;
+out:
+	if (!dma_mapping_error(dev, address))
+		dma_unmap_page(dev, address, length, DMA_FROM_DEVICE);
+	__free_pages(head, 2);
 	return result;
 }
 
@@ -809,6 +939,9 @@ int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 	result = streaming(&device->dev, port, test);
 	if (result)
 		goto out;
+	result = noncompound_rx_buffer(&device->dev, test);
+	if (result)
+		goto out;
 	report->cases++;
 	report->phase = 10;
 	result = slab_buffers(&device->dev, test);
@@ -818,6 +951,9 @@ int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 	if (result)
 		goto out;
 	result = bounced_queue_buffer(&device->dev, port, test);
+	if (result)
+		goto out;
+	result = bounced_queue_span(&device->dev, port, test);
 	if (result)
 		goto out;
 	report->cases++;

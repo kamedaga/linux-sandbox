@@ -10,7 +10,7 @@
  * execute runs in the opening Linux task, with its borrowed render file.
  */
 struct kobox_drm_query {
-	uint64_t generation, session_id, capability;
+	uint64_t generation, session_id, capability, fence_correlation;
 	uint32_t command_set_id, command_id;
 	uint32_t object_id, object_type, mode_flags;
 	uint32_t poll_events;
@@ -54,6 +54,8 @@ struct kobox_drm_query_api {
 		const struct kobox_linux_drm_mode *);
 	int (*page_flip)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		uint32_t, uint32_t, uint64_t);
+	int (*cursor)(struct kobox_linux_drm_file *,
+		const struct kobox_linux_drm_cursor *);
 	int (*dirty_fb)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		uint32_t, const struct kobox_linux_drm_rectangle *, size_t);
 	int (*create_dumb)(struct kobox_linux_drm_file *,
@@ -84,7 +86,8 @@ struct kobox_drm_query_api {
 		void *, size_t);
 	int (*virtgpu_context_init)(struct kobox_linux_drm_file *, uint32_t,
 		uint32_t, uint32_t, uint64_t, const void *, size_t);
-	int (*virtgpu_execbuffer)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
+	int (*virtgpu_execbuffer)(struct kobox_linux_drm_service *, uint64_t,
+		uint64_t, uint64_t, uint32_t, uint32_t,
 		const void *, size_t, const void *, size_t,
 		const void *, size_t, const void *, size_t);
 	int (*virtgpu_resource_create)(struct kobox_linux_drm_file *,

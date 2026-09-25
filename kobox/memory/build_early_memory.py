@@ -551,7 +551,7 @@ def include_overlay_identity(arguments):
 
 
 def compile_linux_objects(arguments, source_objects, *, build_targets=None,
-                          external_module=None):
+                          external_module=None, extra_make_args=()):
     namespace = types.SimpleNamespace(
         make=arguments.make,
         source_tree=arguments.source_tree,
@@ -574,6 +574,8 @@ def compile_linux_objects(arguments, source_objects, *, build_targets=None,
     if external_module is not None:
         command.insert(-len(targets), f"M={arguments.source_tree / external_module}")
         command.insert(-len(targets), f"MO={arguments.provider_build_dir / external_module}")
+    for argument in extra_make_args:
+        command.insert(-len(targets), argument)
     if getattr(arguments, "kernel_release", None):
         command.insert(-len(targets), f"KERNELRELEASE={arguments.kernel_release}")
     for index, item in enumerate(command):

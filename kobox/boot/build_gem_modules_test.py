@@ -3,6 +3,7 @@
 
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 
 
@@ -59,6 +60,22 @@ class GemModuleBuildTest(unittest.TestCase):
                 {"linux": {**identity, key: "different"}} for key in identity)):
             with self.subTest(record=record), self.assertRaises(gem.boot.BootBuildError):
                 gem.validate_core_identity(record, identity)
+
+    def test_single_object_module_manifest_is_completed_without_replacing_compound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            build = pathlib.Path(temporary)
+            simple = build / "drivers/simple.o"
+            compound = build / "drivers/compound.o"
+            simple.parent.mkdir(parents=True)
+            simple.touch()
+            compound.touch()
+            compound.with_suffix(".mod").write_text("drivers/part-a.o\ndrivers/part-b.o\n")
+
+            gem.ensure_module_manifests(build, ("drivers/simple.o", "drivers/compound.o"))
+
+            self.assertEqual(simple.with_suffix(".mod").read_text(), "drivers/simple.o\n")
+            self.assertEqual(compound.with_suffix(".mod").read_text(),
+                             "drivers/part-a.o\ndrivers/part-b.o\n")
 
 
 if __name__ == "__main__":

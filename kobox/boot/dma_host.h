@@ -40,6 +40,13 @@ struct kobox_linux_dma_host {
 struct device;
 struct virtio_device;
 struct kobox_linux_dma_port;
+struct kobox_linux_dma_snapshot {
+	uint64_t attempts;
+	uint64_t published;
+	uint64_t failures;
+	uint64_t last_failure_bytes;
+	int last_error;
+};
 int kobox_linux_dma_attach(struct device *device,
 			   const struct kobox_linux_dma_host *host,
 			   struct kobox_linux_dma_port **out);
@@ -48,6 +55,11 @@ int kobox_linux_dma_detach(struct kobox_linux_dma_port *port);
 /* Launch owner only, before driver binding/queue creation. Port outlives vdev. */
 int kobox_linux_dma_bind_virtio(struct kobox_linux_dma_port *port,
 			       struct virtio_device *device);
+/* Failure path only; caller keeps the device bound and its domain alive. */
+void kobox_linux_dma_diagnose(struct device *device);
+/* Allocation-path accounting for diagnostics; never exposes DMA addresses. */
+int kobox_linux_dma_snapshot(struct device *device,
+			     struct kobox_linux_dma_snapshot *snapshot);
 #endif
 
 #endif

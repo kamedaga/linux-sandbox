@@ -51,6 +51,18 @@ def validate_core_identity(core_inputs, identity):
         raise boot.BootBuildError("GEM modules and boot core have different canonical inputs")
 
 
+def ensure_module_manifests(build_dir, objects):
+    for name in objects:
+        object_path = build_dir / name
+        if not object_path.is_file():
+            raise boot.BootBuildError(f"native module object was not built: {name}")
+        manifest = object_path.with_suffix(".mod")
+        if not manifest.exists():
+            # A direct Kbuild target emits the object but, unlike a compound
+            # module target, does not emit its one-line modpost membership.
+            manifest.write_text(name + "\n")
+
+
 def validate_relocations(record):
     sections = {entry["Section"]["Index"]: entry["Section"]
                 for entry in record["Sections"]}
@@ -105,6 +117,7 @@ def build(arguments):
                                       build_targets=[pathlib.PurePosixPath(name).name
                                                      for name in KOBOX_MODULE_OBJECTS],
                                       external_module="kobox/gem")
+    ensure_module_manifests(arguments.provider_build_dir, objects)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     exports = arguments.core_dir / ".module-exports/core-module.symvers"
     if not exports.is_file():

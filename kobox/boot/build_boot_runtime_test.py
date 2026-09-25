@@ -42,6 +42,16 @@ class BootBuildTest(unittest.TestCase):
         self.assertIn("kobox/tests/gates/task_smp.c", boot.sources.GATE_SOURCES)
         self.assertIn("kobox/boot/vm_lifetime.c", boot.sources.GATE_SOURCES)
 
+    def test_usb_hid_runtime_keeps_device_ports_without_drm(self):
+        production = boot.sources.support_sources(False, "usb-hid")
+        self.assertIn("kobox/boot/device_port.c", production)
+        self.assertIn("kobox/boot/module_launch.c", production)
+        self.assertIn("kobox/boot/input_port.c", production)
+        self.assertFalse(any("drm_" in source or "device_launch.c" in source
+                             for source in production))
+        testing = boot.sources.support_sources(True, "usb-hid")
+        self.assertNotIn("kobox/boot/drm_file_gate.c", testing)
+
     def test_new_provider_overlay_invalidates_existing_kbuild_objects(self):
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory)

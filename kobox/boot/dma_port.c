@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "dma_host.h"
+#include "diagnostic.h"
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/dma-map-ops.h>
@@ -26,7 +27,17 @@ struct hosted_dma_domain;
 
 #define QUEUE_BOUNCE_SIZE 128U
 #define QUEUE_BOUNCE_SLOTS 128U
-#define QUEUE_BOUNCE_BYTES (QUEUE_BOUNCE_SIZE * QUEUE_BOUNCE_SLOTS)
+
+static const struct queue_bounce_config {
+	unsigned int size;
+	unsigned int slots;
+	enum dma_data_direction direction;
+} queue_bounce_configs[] = {
+	{ QUEUE_BOUNCE_SIZE, QUEUE_BOUNCE_SLOTS, DMA_TO_DEVICE },
+	{ QUEUE_BOUNCE_SIZE, QUEUE_BOUNCE_SLOTS, DMA_FROM_DEVICE },
+	/* Bounded command-buffer tier; never retain caller pages when idle. */
+	{ 2 * PAGE_SIZE, 32, DMA_TO_DEVICE },
+};
 
 struct queue_bounce_slot {
 	struct page *page;
@@ -50,11 +61,44 @@ struct kobox_linux_dma_port {
 	struct kobox_linux_dma_host host;
 	struct hosted_dma_domain *active;
 	atomic_t domains;
+	atomic64_t map_attempts;
+	atomic64_t map_published;
+	atomic64_t map_failures;
+	atomic64_t last_failure_bytes;
+	atomic_t last_map_error;
 	raw_spinlock_t queue_lock;
 	DECLARE_HASHTABLE(queue_pages, 6);
 	DECLARE_HASHTABLE(queue_iovas, 6);
-	struct queue_bounce_pool bounce[2];
+	struct queue_bounce_pool bounce[ARRAY_SIZE(queue_bounce_configs)];
 };
+
+static void record_map_failure(struct kobox_linux_dma_port *port,
+			       size_t bytes, int error)
+{
+	atomic64_inc(&port->map_failures);
+	atomic64_set(&port->last_failure_bytes, bytes);
+	atomic_set(&port->last_map_error, error);
+}
+
+int kobox_linux_dma_snapshot(struct device *device,
+			     struct kobox_linux_dma_snapshot *snapshot)
+{
+	struct kobox_linux_dma_port *port;
+
+	if (!device || !snapshot)
+		return -EINVAL;
+	port = dev_iommu_priv_get(device);
+	if (!port || port->device != device)
+		return -ENODEV;
+	*snapshot = (struct kobox_linux_dma_snapshot) {
+		.attempts = atomic64_read(&port->map_attempts),
+		.published = atomic64_read(&port->map_published),
+		.failures = atomic64_read(&port->map_failures),
+		.last_failure_bytes = atomic64_read(&port->last_failure_bytes),
+		.last_error = atomic_read(&port->last_map_error),
+	};
+	return 0;
+}
 
 /* Only simultaneous users share a mapping; zero references always unmap.
  * Coherent, same-direction sub-page buffers already expose this entire page
@@ -75,20 +119,39 @@ static void queue_bounce_init(struct kobox_linux_dma_port *port)
 
 	for (i = 0; i < ARRAY_SIZE(port->bounce); i++) {
 		struct queue_bounce_pool *pool = &port->bounce[i];
+		const struct queue_bounce_config *config = &queue_bounce_configs[i];
+		size_t bytes = config->size * config->slots;
 
 		if (pool->page)
 			continue;
 		pool->page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_COMP |
 					__GFP_NOWARN,
-					get_order(QUEUE_BOUNCE_BYTES));
+					get_order(bytes));
 		if (!pool->page)
 			continue;
 		pool->address = dma_map_page(port->device, pool->page, 0,
-					     QUEUE_BOUNCE_BYTES, i + DMA_TO_DEVICE);
+					     bytes, config->direction);
 		if (dma_mapping_error(port->device, pool->address)) {
-			__free_pages(pool->page, get_order(QUEUE_BOUNCE_BYTES));
+			__free_pages(pool->page, get_order(bytes));
 			pool->page = NULL;
 		}
+	}
+}
+
+/* map_page may describe a physically contiguous span crossing page boundaries. */
+static void queue_bounce_copy_from(void *target, struct page *page,
+				   size_t offset, size_t size)
+{
+	while (size) {
+		size_t in_page = offset_in_page(offset);
+		size_t length = min(size, PAGE_SIZE - in_page);
+
+		memcpy_from_page(target,
+				 pfn_to_page(page_to_pfn(page) + (offset >> PAGE_SHIFT)),
+				 in_page, length);
+		target += length;
+		offset += length;
+		size -= length;
 	}
 }
 
@@ -97,29 +160,33 @@ static dma_addr_t queue_bounce_map(struct kobox_linux_dma_port *port,
 		enum dma_data_direction direction)
 {
 	struct queue_bounce_pool *pool;
-	unsigned int i;
-	void *source;
+	const struct queue_bounce_config *config;
+	unsigned int i, tier;
 
-	if (size > QUEUE_BOUNCE_SIZE ||
+	if (!size || offset >= PAGE_SIZE ||
 	    (direction != DMA_TO_DEVICE && direction != DMA_FROM_DEVICE))
 		return DMA_MAPPING_ERROR;
-	pool = &port->bounce[direction - DMA_TO_DEVICE];
+	/* Do not consume large slots when the small tier is full. */
+	tier = size <= QUEUE_BOUNCE_SIZE ? direction - DMA_TO_DEVICE : 2;
+	config = &queue_bounce_configs[tier];
+	if (size > config->size || direction != config->direction ||
+	    (direction == DMA_FROM_DEVICE && size > PAGE_SIZE - offset))
+		return DMA_MAPPING_ERROR;
+	pool = &port->bounce[tier];
 	if (!pool->page)
 		return DMA_MAPPING_ERROR;
-	for (i = 0; i < QUEUE_BOUNCE_SLOTS; i++)
+	for (i = 0; i < config->slots; i++)
 		if (!pool->slots[i].page)
 			break;
-	if (i == QUEUE_BOUNCE_SLOTS)
+	if (i == config->slots)
 		return DMA_MAPPING_ERROR;
 	pool->slots[i] = (struct queue_bounce_slot) {
 		.page = page, .offset = offset, .length = size,
 	};
 	/* Preserve bytes the device does not overwrite, including FROM buffers. */
-	source = kmap_local_page(page);
-	memcpy(page_address(pool->page) + i * QUEUE_BOUNCE_SIZE,
-	       source + offset, size);
-	kunmap_local(source);
-	return pool->address + i * QUEUE_BOUNCE_SIZE;
+	queue_bounce_copy_from(page_address(pool->page) + i * config->size,
+			       page, offset, size);
+	return pool->address + i * config->size;
 }
 
 enum queue_bounce_operation {
@@ -139,30 +206,33 @@ static bool queue_bounce_sync(struct kobox_linux_dma_port *port,
 
 	for (i = 0; i < ARRAY_SIZE(port->bounce); i++) {
 		struct queue_bounce_pool *pool = &port->bounce[i];
+		const struct queue_bounce_config *config = &queue_bounce_configs[i];
 		struct queue_bounce_slot *slot;
 		size_t displacement, offset;
 		void *original, *bounce;
 
 		if (!pool->page || address < pool->address ||
-		    address - pool->address >= QUEUE_BOUNCE_BYTES)
+		    address - pool->address >= config->size * config->slots)
 			continue;
 		displacement = address - pool->address;
-		offset = displacement % QUEUE_BOUNCE_SIZE;
-		slot = &pool->slots[displacement / QUEUE_BOUNCE_SIZE];
-		if (!slot->page || direction != i + DMA_TO_DEVICE ||
+		offset = displacement % config->size;
+		slot = &pool->slots[displacement / config->size];
+		if (!slot->page || direction != config->direction ||
 		    offset > slot->length || size > slot->length - offset ||
 		    (operation == QUEUE_BOUNCE_RELEASE &&
 		     (offset || size != slot->length)))
 			panic("invalid bounced virtqueue DMA access\n");
 		bounce = page_address(pool->page) + displacement;
-		original = kmap_local_page(slot->page);
-		if (operation == QUEUE_BOUNCE_FOR_DEVICE)
-			memcpy(bounce, original + slot->offset + offset, size);
-		else if (direction == DMA_FROM_DEVICE)
+		if (operation == QUEUE_BOUNCE_FOR_DEVICE) {
+			queue_bounce_copy_from(bounce, slot->page,
+					       slot->offset + offset, size);
+		} else if (direction == DMA_FROM_DEVICE) {
+			original = kmap_local_page(slot->page);
 			memcpy(original + slot->offset + offset, bounce, size);
-		kunmap_local(original);
+			kunmap_local(original);
+		}
 		if (operation == QUEUE_BOUNCE_RELEASE) {
-			memset(bounce, 0, QUEUE_BOUNCE_SIZE);
+			memset(bounce, 0, config->size);
 			memset(slot, 0, sizeof(*slot));
 		}
 		return true;
@@ -183,12 +253,13 @@ static int queue_bounce_destroy(struct kobox_linux_dma_port *port)
 				return -EBUSY;
 	for (i = 0; i < ARRAY_SIZE(port->bounce); i++) {
 		struct queue_bounce_pool *pool = &port->bounce[i];
+		const struct queue_bounce_config *config = &queue_bounce_configs[i];
+		size_t bytes = config->size * config->slots;
 
 		if (!pool->page)
 			continue;
-		dma_unmap_page(port->device, pool->address, QUEUE_BOUNCE_BYTES,
-			       i + DMA_TO_DEVICE);
-		__free_pages(pool->page, get_order(QUEUE_BOUNCE_BYTES));
+		dma_unmap_page(port->device, pool->address, bytes, config->direction);
+		__free_pages(pool->page, get_order(bytes));
 		pool->page = NULL;
 	}
 	return 0;
@@ -204,13 +275,18 @@ static dma_addr_t queue_map_page(union virtio_map map, struct page *page,
 	unsigned long flags;
 	dma_addr_t address;
 
-	if (attrs || !size || offset >= PAGE_SIZE || size > PAGE_SIZE - offset)
+	if (attrs || !size || offset >= PAGE_SIZE)
 		return dma_map_page_attrs(map.dma_dev, page, offset, size,
 					  direction, attrs);
 	raw_spin_lock_irqsave(&port->queue_lock, flags);
 	address = queue_bounce_map(port, page, offset, size, direction);
 	if (address != DMA_MAPPING_ERROR)
 		goto unlock;
+	if (size > PAGE_SIZE - offset) {
+		raw_spin_unlock_irqrestore(&port->queue_lock, flags);
+		return dma_map_page_attrs(map.dma_dev, page, offset, size,
+					  direction, attrs);
+	}
 	hash_for_each_possible(port->queue_pages, entry, physical_node,
 			       page_to_pfn(page)) {
 		if (entry->page != page || entry->direction != direction)
@@ -338,7 +414,8 @@ static bool queue_need_sync(union virtio_map map, dma_addr_t address)
 
 	for (i = 0; i < ARRAY_SIZE(port->bounce); i++)
 		if (port->bounce[i].page && address >= port->bounce[i].address &&
-		    address - port->bounce[i].address < QUEUE_BOUNCE_BYTES)
+		    address - port->bounce[i].address <
+		    queue_bounce_configs[i].size * queue_bounce_configs[i].slots)
 			return true;
 	return dma_need_sync(map.dma_dev, address);
 }
@@ -389,9 +466,10 @@ struct hosted_dma_domain {
 	raw_spinlock_t lock;
 };
 
-/* Ordinary RAM carries a port reference until invalidation. SLUB (including
- * large kmalloc) owns frozen pages instead: the DMA API caller must retain
- * its allocation until unmap, and the IOMMU must not change SLUB's refcount.
+/* Ordinary RAM carries a port reference until invalidation. A non-compound
+ * high-order allocation has zero-refcount tail pages: its allocation head
+ * retains the whole block, while the DMA API caller owns any mapped subset
+ * through unmap. SLUB (including large kmalloc) owns frozen pages instead.
  */
 #define DMA_PAGE_PINNED XA_MARK_0
 #define DMA_MAPPING_START XA_MARK_1
@@ -463,9 +541,10 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		protection |= KOBOX_DMA_DEVICE_WRITE;
 	if (!protection)
 		return -EINVAL;
+	atomic64_inc(&dma->port->map_attempts);
 	/* Aggregate hosts publish in iotlb_sync_map(), after iommu_map_sg() has
 	 * collected every physical run. Until then these xarray entries are
-	 * pending pins which upstream rollback may discard without host work. */
+	 * pending metadata which upstream rollback may discard without host work. */
 	for (index = 0; index < count; index++) {
 		unsigned long key = (iova >> PAGE_SHIFT) + index;
 		unsigned long pfn = PHYS_PFN(physical) + index;
@@ -489,7 +568,11 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		}
 		page = pfn_to_page(pfn);
 		folio = page_folio(page);
-		pin = !folio_test_slab(folio) && !folio_test_large_kmalloc(folio);
+		/* Non-compound high-order tails have no standalone reference.
+		 * The owner retains the allocation through dma_unmap_*(). */
+		pin = !folio_test_slab(folio) &&
+		      !folio_test_large_kmalloc(folio) &&
+		      folio_ref_count(folio) != 0;
 		raw_spin_lock_irqsave(&dma->lock, flags);
 		if (xa_load(&dma->pages, key) ||
 		    (host->map_page_list && xa_load(&dma->states, key))) {
@@ -530,6 +613,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 					   length, protection));
 	if (result)
 		goto rollback;
+	atomic64_inc(&dma->port->map_published);
 	raw_spin_lock_irqsave(&dma->lock, flags);
 	xa_set_mark(&dma->pages, iova >> PAGE_SHIFT, DMA_MAPPING_START);
 	xa_set_mark(&dma->pages, (iova >> PAGE_SHIFT) + count - 1,
@@ -539,6 +623,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 	return 0;
 
 rollback:
+	record_map_failure(dma->port, length, result);
 	release_hosted_pages(dma, iova, stored);
 	return result > 0 ? -EIO : result;
 }
@@ -597,6 +682,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	raw_spin_unlock_irqrestore(&dma->lock, flags);
 	if (!valid) {
 		put_cpu();
+		record_map_failure(dma->port, size, -EINVAL);
 		return -EINVAL;
 	}
 
@@ -606,6 +692,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	local_irq_restore(flags);
 	if (result) {
 		put_cpu();
+		record_map_failure(dma->port, size, result);
 		return result > 0 ? -EIO : result;
 	}
 
@@ -644,8 +731,10 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 		if (result)
 			panic("host DMA rollback invalidation failed\n");
 		put_cpu();
+		record_map_failure(dma->port, size, -EIO);
 		return -EIO;
 	}
+	atomic64_inc(&dma->port->map_published);
 	put_cpu();
 	return 0;
 }
@@ -795,6 +884,44 @@ static const struct iommu_domain_ops domain_ops = {
 	.iova_to_phys = iova_to_phys,
 	.free = free_domain,
 };
+
+void kobox_linux_dma_diagnose(struct device *device)
+{
+	static atomic_t reports = ATOMIC_INIT(0);
+	struct iommu_domain *domain = iommu_get_domain_for_dev(device);
+	struct hosted_dma_domain *dma;
+	unsigned long first, last, next, index, flags;
+	unsigned long pages = 0, ranges = 0, pending = 0, gap = 0;
+	struct page *page;
+
+	if (!domain || domain->ops != &domain_ops ||
+	    !atomic_add_unless(&reports, 1, 8))
+		return;
+	dma = hosted(domain);
+	first = domain->geometry.aperture_start >> PAGE_SHIFT;
+	last = domain->geometry.aperture_end >> PAGE_SHIFT;
+	next = first;
+	/* Snapshot translations, not the upstream IOVA allocator's private
+	 * reservation/cache tree. An unmapped gap is only an upper bound on
+	 * allocatable space. Never reclaim or retry allocations for diagnosis.
+	 */
+	raw_spin_lock_irqsave(&dma->lock, flags);
+	xa_for_each_range(&dma->pages, index, page, first, last) {
+		gap = max(gap, index - next);
+		next = index + 1;
+		pages++;
+		if (xa_get_mark(&dma->pages, index, DMA_MAPPING_START))
+			ranges++;
+		if (dma->port->host.map_page_list &&
+		    !(mapping_state_value(xa_load(&dma->states, index)) &
+		      DMA_MAPPING_PUBLISHED))
+			pending++;
+	}
+	gap = max(gap, last + 1 - next);
+	raw_spin_unlock_irqrestore(&dma->lock, flags);
+	kobox_linux_boot_diagnostic("kobox-dma: failure snapshot aperture-pages=%lu mapped-pages=%lu ranges=%lu pending-pages=%lu largest-unmapped-gap-pages=%lu\n",
+				    last - first + 1, pages, ranges, pending, gap);
+}
 
 static struct iommu_domain *allocate_domain(struct device *device)
 {

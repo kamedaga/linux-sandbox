@@ -65,3 +65,33 @@ Linux core cleanupは行いません。
 
 旧shared-provider builderとclosure-link fixtureはPoC toolingとして残しますが、このprofileと
 CMake integration gateには含めません。
+
+## USB HID用の独立profile
+
+`usb-hid-xhci`はGPU/DRM moduleも旧`_kobox` moduleもclosureに含めません。
+PCI機能、DMA、IRQのhost資源をKobox2のdevice-neutral portへ渡し、USB列挙と
+HID/inputの所有者は無改変のupstream Linuxです。`tinyconfig`から同じconfigを
+再生成する手順は次の通りです（`linux-sandbox` rootで実行）。
+
+```sh
+usb_build=/absolute/path/to/usb-build
+python3 kobox/boot/prepare_kconfig.py --source-tree . --build-dir "$usb_build"
+make LLVM=-18 O="$usb_build" ARCH=x86 \
+    KBUILD_KCONFIG="$usb_build/.kobox/Kconfig" tinyconfig
+scripts/kconfig/merge_config.sh -m -r -O "$usb_build" "$usb_build/.config" \
+    kobox/task/config kobox/boot/config \
+    kobox/manifest/profiles/usb_hid_xhci.config
+make LLVM=-18 O="$usb_build" ARCH=x86 \
+    KBUILD_KCONFIG="$usb_build/.kobox/Kconfig" olddefconfig
+make LLVM=-18 O="$usb_build" ARCH=x86 \
+    KBUILD_KCONFIG="$usb_build/.kobox/Kconfig" vmlinux modules
+python3 kobox/manifest/generate_closure_inventory.py \
+    --source-tree . --build-dir "$usb_build" \
+    --profile kobox/manifest/profiles/usb_hid_xhci.json \
+    --nm llvm-nm-18 --output kobox/manifest/generated/usb_hid_xhci.json
+```
+
+`--device-profile usb-hid`を指定したhosted runtimeはDRM bridge sourceをlinkせず、
+device-neutral PCI portとmodule lifecycleだけを含めます。closure inventoryの9つの
+`.ko`は依存順でloadします。manifest生成やlink成功はUSB HIDの実イベントが届いたことを
+証明しないため、QEMU上の列挙・入力・抜き差しは別の実行gateにします。

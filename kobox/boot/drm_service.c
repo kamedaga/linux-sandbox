@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "drm_service.h"
+#include "drm_limits.h"
 
 #include <drm/drm.h>
 #include <drm/drm_ioctl.h>
+#include <drm/virtgpu_drm.h>
 #include <linux/fdtable.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/slab.h>
+#include <linux/task_work.h>
 #include <kobox2/gpu_layout.h>
 #include "../arch/x86_64/host_call.h"
 
@@ -23,7 +26,8 @@ struct drm_owned_file {
 	int close_error;
 };
 
-enum { DRM_MAPPING_LIMIT = 64, DRM_PRIME_LIMIT = 64 };
+enum { DRM_MAPPING_LIMIT = KOBOX_DRM_MAPPING_LIMIT,
+       DRM_PRIME_LIMIT = KOBOX_DRM_PRIME_LIMIT };
 
 struct drm_owned_mapping {
 	u64 id;
@@ -44,6 +48,7 @@ struct kobox_linux_drm_service {
 	struct drm_owned_prime primes[DRM_PRIME_LIMIT];
 	struct kobox_linux_drm_service_report report;
 	struct kobox_linux_drm_event_host events;
+	struct kobox_drm_fences fences;
 	dev_t primary, render;
 	unsigned int limit;
 	u64 sequence;
@@ -60,6 +65,14 @@ static void notify_event(void *context)
 	if (cookie)
 		(void)kobox_host_call(entry->service->events.notify(
 			entry->service->events.context, entry->slot, cookie));
+}
+
+static int notify_fences(void *context)
+{
+	struct kobox_linux_drm_service *service = context;
+
+	return service->events.notify_fences ?
+		service->events.notify_fences(service->events.context) : -EOPNOTSUPP;
 }
 
 static int release_mapping(struct drm_owned_mapping *mapping)
@@ -85,6 +98,9 @@ static int release_prime(struct drm_owned_prime *prime)
 		if (!result)
 			result = released;
 	}
+	/* close_fd may queue the dma-buf's last fput on hosted PID 1, which
+	 * has no Linux exit-to-user path. All object/FD locks are released. */
+	task_work_run();
 	if (!result)
 		prime->id = 0;
 	return result;
@@ -142,6 +158,12 @@ int kobox_linux_drm_service_create(dev_t primary, dev_t render,
 	service->render = render;
 	service->limit = limit;
 	service->events = *events;
+	if (kobox_drm_fences_init(&service->fences, notify_fences, service)) {
+		put_task_struct(service->owner);
+		kfree(service->entries);
+		kfree(service);
+		return -EINVAL;
+	}
 	for (index = 0; index < limit; index++) {
 		service->entries[index].service = service;
 		service->entries[index].slot = index;
@@ -271,6 +293,52 @@ int kobox_linux_drm_service_close(struct kobox_linux_drm_service *service,
 	if (!entry || !entry->file)
 		return -ENOENT;
 	return close_entry(service, entry);
+}
+
+int kobox_linux_drm_service_execbuffer(struct kobox_linux_drm_service *service,
+	u64 cookie, u64 session, u64 correlation, u32 flags, u32 ring_index,
+	const void *command, size_t command_size, const void *handles, size_t handle_count,
+	const void *input, size_t input_count, const void *output, size_t output_count)
+{
+	struct kobox_linux_drm_file *file = NULL;
+	struct kobox_drm_fence_entry *entry = NULL;
+	struct dma_fence *fence = NULL;
+	int result = kobox_linux_drm_service_file(service, cookie, &file);
+
+	if (result)
+		return result;
+	if (flags & VIRTGPU_EXECBUF_FENCE_FD_OUT) {
+		if (!service->events.notify_fences)
+			return -EOPNOTSUPP;
+		result = kobox_drm_fence_reserve(&service->fences,
+			session, correlation, &entry);
+		if (result)
+			return result;
+	}
+	result = kobox_linux_drm_virtgpu_execbuffer(file, flags, ring_index,
+		command, command_size, handles, handle_count,
+		input, input_count, output, output_count, &fence);
+	if (!result && entry) {
+		result = fence ? kobox_drm_fence_arm(entry, fence) : -EPROTO;
+		if (!result) {
+			/* The service, not the submitting file, now owns completion. */
+			fence = NULL;
+			entry = NULL;
+		}
+	}
+	if (fence)
+		dma_fence_put(fence);
+	if (entry)
+		(void)kobox_drm_fence_cancel(&entry);
+	return result;
+}
+
+int kobox_linux_drm_service_take_fence(struct kobox_linux_drm_service *service,
+	struct kobox_drm_fence_result *result)
+{
+	int error = check_owner(service);
+
+	return error ? error : kobox_drm_fences_take(&service->fences, result);
 }
 
 int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
@@ -423,6 +491,9 @@ int kobox_linux_drm_service_quiesce(struct kobox_linux_drm_service *service,
 	if (!report)
 		return -EINVAL;
 	service->stopping = true;
+	result = kobox_drm_fences_quiesce(&service->fences);
+	if (result && !service->report.close_error)
+		service->report.close_error = result;
 	for (index = 0; index < DRM_MAPPING_LIMIT; index++) {
 		if (service->mappings[index].owner) {
 			result = release_mapping(&service->mappings[index]);

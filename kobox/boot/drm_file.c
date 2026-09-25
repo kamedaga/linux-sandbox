@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "drm_file.h"
+#include "diagnostic.h"
+#include "dma_host.h"
+#include "drm_memory_policy.h"
 
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -8,6 +11,7 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/mutex.h>
+#include <linux/mm.h>
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
@@ -15,10 +19,12 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/sync_file.h>
+#include <linux/task_work.h>
 #include <linux/vmalloc.h>
 #include <drm/drm_file.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_gem.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_mode.h>
 #include <drm/virtgpu_drm.h>
@@ -33,7 +39,46 @@ struct kobox_linux_drm_file {
 	struct task_struct *owner;
 	struct files_struct *files;
 	int fd;
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	/* Each file has one checked owner; separate counters avoid a lock on the
+	 * measured path and distinguish clients without inspecting commands. */
+	struct {
+		u64 calls, copy_cycles, ioctl_cycles, fence_cycles, errors;
+	} exec_profile[2];
+#endif
 };
+
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+static u64 exec_profile_stamp(void)
+{
+	u32 low, high;
+	asm volatile("lfence; rdtsc" : "=a"(low), "=d"(high) :: "memory");
+	return (u64)high << 32 | low;
+}
+
+static void exec_profile_record(struct kobox_linux_drm_file *file, u32 flags,
+			       u64 start, u64 copied, u64 submitted, int result)
+{
+	unsigned int bucket = !!(flags & VIRTGPU_EXECBUF_FENCE_FD_OUT);
+	u64 finished = exec_profile_stamp();
+	u64 calls = ++file->exec_profile[bucket].calls;
+
+	file->exec_profile[bucket].copy_cycles += copied - start;
+	file->exec_profile[bucket].ioctl_cycles += submitted - copied;
+	file->exec_profile[bucket].fence_cycles += finished - submitted;
+	file->exec_profile[bucket].errors += result != 0;
+	/* A few aggregate checkpoints suffice to separate copying/submission
+	 * from the compatibility fence wait without per-command console traffic. */
+	if (calls > 16384 || (calls != 1 && (calls < 256 || (calls & (calls - 1)))))
+		return;
+	kobox_linux_boot_diagnostic("KOBOX_DRM_SUBMIT file=%d fence_out=%u calls=%llu "
+		"copy_cycles=%llu ioctl_cycles=%llu fence_export_cycles=%llu errors=%llu\n",
+		file->fd, bucket, calls, file->exec_profile[bucket].copy_cycles,
+		file->exec_profile[bucket].ioctl_cycles,
+		file->exec_profile[bucket].fence_cycles,
+		file->exec_profile[bucket].errors);
+}
+#endif
 
 struct kobox_linux_drm_mapping {
 	const struct kobox_linux_drm_mapping_operations *operations;
@@ -277,7 +322,13 @@ static int private_ioctl(struct kobox_linux_drm_file *file, unsigned int cmd,
 		.dx = (unsigned long)argument,
 	};
 
-	return __x64_sys_ioctl(&regs);
+	int result = __x64_sys_ioctl(&regs);
+
+	/* Hosted PID 1 never returns through Linux's exit-to-user boundary.
+	 * GEM_CLOSE can queue final dma-buf/shmem fputs on its task work list.
+	 * Drain only this task, after the ioctl has released its driver locks. */
+	task_work_run();
+	return result;
 }
 
 int kobox_linux_drm_version(struct kobox_linux_drm_file *file,
@@ -596,6 +647,30 @@ int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 	return result;
 }
 
+int kobox_linux_drm_cursor(struct kobox_linux_drm_file *file,
+		const struct kobox_linux_drm_cursor *cursor)
+{
+	struct drm_mode_cursor2 argument;
+	int result;
+
+	if (!cursor)
+		return -EINVAL;
+	argument = (struct drm_mode_cursor2) {
+		.flags = cursor->flags,
+		.crtc_id = cursor->crtc_id,
+		.x = cursor->x, .y = cursor->y,
+		.width = cursor->width, .height = cursor->height,
+		.handle = cursor->handle,
+		.hot_x = cursor->hot_x, .hot_y = cursor->hot_y,
+	};
+	/* Keep DRM's master/lease, GEM ownership and device checks intact.
+	 * Legacy CURSOR has the same semantics with a zero hotspot. */
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_CURSOR2, &argument);
+	return result;
+}
+
 int kobox_linux_drm_dirty_fb(struct kobox_linux_drm_file *file,
 		u32 fb_id, u32 flags, u32 color,
 		const struct kobox_linux_drm_rectangle *rectangles,
@@ -646,10 +721,79 @@ free_clips:
 	return result;
 }
 
+static void diagnose_backing_owners(struct drm_file *requester)
+{
+	struct drm_device *device = requester->minor->dev;
+	struct drm_file *file;
+	unsigned int files = 0;
+	u64 handles = 0, render_bytes = 0, display_bytes = 0;
+	u64 largest_file = 0, requester_bytes = 0;
+	static unsigned int reports;
+
+	/* Real multi-tab use exhausted the hosted RAM pool. On only the first
+	 * two denials, distinguish live handle ownership from memory retained
+	 * outside handle tables. Imported objects can be counted more than once:
+	 * these sums describe references, not unique physical resident bytes. */
+	if (reports >= 2)
+		return;
+	reports++;
+	mutex_lock(&device->filelist_mutex);
+	list_for_each_entry(file, &device->filelist, lhead) {
+		struct drm_gem_object *object;
+		unsigned long flags;
+		u64 bytes = 0;
+		int id;
+
+		spin_lock_irqsave(&file->table_lock, flags);
+		idr_for_each_entry(&file->object_idr, object, id) {
+			bytes += object->size;
+			handles++;
+		}
+		spin_unlock_irqrestore(&file->table_lock, flags);
+		files++;
+		if (drm_is_render_client(file))
+			render_bytes += bytes;
+		else
+			display_bytes += bytes;
+		largest_file = max(largest_file, bytes);
+		if (file == requester)
+			requester_bytes = bytes;
+	}
+	mutex_unlock(&device->filelist_mutex);
+	kobox_linux_boot_diagnostic("kobox-drm: memory handle-references files=%u "
+		"handles=%llu render-bytes=%llu display-bytes=%llu largest-file-bytes=%llu "
+		"requester-bytes=%llu\n", files, handles, render_bytes, display_bytes,
+		largest_file, requester_bytes);
+}
+
+static int admit_backing_memory(struct kobox_linux_drm_file *file, u64 bytes)
+{
+	struct sysinfo memory;
+	struct drm_file *drm_file;
+	int result = check_owner(file);
+
+	if (result)
+		return result;
+	drm_file = file->guard->private_data;
+	if (!drm_file || !drm_file->minor)
+		return -ENODEV;
+	si_meminfo(&memory);
+	if (kobox_drm_memory_admit((u64)memory.freeram * memory.mem_unit,
+				   bytes, drm_is_render_client(drm_file)))
+		return 0;
+	kobox_linux_boot_diagnostic(
+		"kobox-drm: backing admission denied bytes=%llu free-pages=%lu "
+		"shmem-pages=%lu render=%u\n", bytes, memory.freeram,
+		memory.sharedram, drm_is_render_client(drm_file));
+	diagnose_backing_owners(drm_file);
+	return -ENOMEM;
+}
+
 int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_dumb_buffer *buffer)
 {
 	struct drm_mode_create_dumb argument;
+	u64 stride;
 	int result;
 
 	if (!buffer || !buffer->height || !buffer->width ||
@@ -662,7 +806,14 @@ int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 		.bpp = buffer->bits_per_pixel,
 		.flags = buffer->flags,
 	};
-	result = check_owner(file);
+	/*
+	 * Use wide arithmetic before admission; the driver still validates its
+	 * supported formats and computes the final pitch/size.
+	 */
+	stride = (u64)buffer->width * DIV_ROUND_UP((u64)buffer->bits_per_pixel, 8);
+	if (stride > U64_MAX / buffer->height)
+		return -EINVAL;
+	result = admit_backing_memory(file, stride * buffer->height);
 	if (!result)
 		result = private_ioctl(file, DRM_IOCTL_MODE_CREATE_DUMB, &argument);
 	if (!result) {
@@ -1189,7 +1340,8 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 				       const void *command, size_t command_size,
 				       const void *handle_bytes, size_t handle_count,
 				       const void *input_bytes, size_t input_count,
-				       const void *output_bytes, size_t output_count)
+				       const void *output_bytes, size_t output_count,
+				       struct dma_fence **completion)
 {
 	struct drm_virtgpu_execbuffer argument = {0};
 	void *private_command;
@@ -1197,8 +1349,12 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 	struct drm_virtgpu_execbuffer_syncobj *private_input = NULL;
 	struct drm_virtgpu_execbuffer_syncobj *private_output = NULL;
 	int result;
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	u64 profile_start, profile_copied, profile_submitted;
+#endif
 
-	if ((flags & ~(VIRTGPU_EXECBUF_FENCE_FD_OUT |
+	if (!completion || *completion ||
+	    (flags & ~(VIRTGPU_EXECBUF_FENCE_FD_OUT |
 		     VIRTGPU_EXECBUF_RING_IDX)) ||
 	    (!(flags & VIRTGPU_EXECBUF_RING_IDX) && ring_index) ||
 	    !command || !command_size || command_size > SZ_16M ||
@@ -1209,6 +1365,9 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 	result = check_owner(file);
 	if (result)
 		return result;
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	profile_start = exec_profile_stamp();
+#endif
 	private_command = kvmemdup(command, command_size, GFP_KERNEL);
 	if (!private_command)
 		return -ENOMEM;
@@ -1234,7 +1393,13 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 	argument.num_out_syncobjs = output_count;
 	argument.in_syncobjs = (uintptr_t)private_input;
 	argument.out_syncobjs = (uintptr_t)private_output;
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	profile_copied = exec_profile_stamp();
+#endif
 	result = virtgpu_ioctl(file, DRM_IOCTL_VIRTGPU_EXECBUFFER, &argument);
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	profile_submitted = exec_profile_stamp();
+#endif
 	if (!result && (flags & VIRTGPU_EXECBUF_FENCE_FD_OUT)) {
 		struct dma_fence *fence;
 		int closed;
@@ -1246,17 +1411,21 @@ int kobox_linux_drm_virtgpu_execbuffer(struct kobox_linux_drm_file *file,
 			closed = close_fd(argument.fence_fd);
 			if (!fence)
 				result = -EPROTO;
-			else {
-				long waited = dma_fence_wait_timeout(
-						fence, true, msecs_to_jiffies(10000));
-
-				result = waited > 0 ? 0 : waited < 0 ? (int)waited : -ETIMEDOUT;
-				dma_fence_put(fence);
-			}
+			else
+				*completion = fence;
 			if (!result && closed)
 				result = closed;
 		}
 	}
+	if (result && *completion) {
+		dma_fence_put(*completion);
+		*completion = NULL;
+	}
+
+#if defined(KOBOX_DRM_EXEC_PROFILE)
+	exec_profile_record(file, flags, profile_start, profile_copied,
+			    profile_submitted, result);
+#endif
 	if (result)
 		pr_err("kobox-drm: virtgpu execbuffer failed status=%d flags=0x%x "
 		       "command=%zu handles=%zu in-syncobjs=%zu out-syncobjs=%zu\n",
@@ -1281,6 +1450,9 @@ int kobox_linux_drm_virtgpu_resource_create(
 
 	if (!resource)
 		return -EINVAL;
+	result = admit_backing_memory(file, resource->size);
+	if (result)
+		return result;
 	argument = (struct drm_virtgpu_resource_create) {
 		.target = resource->target, .format = resource->format,
 		.bind = resource->bind, .width = resource->width,
@@ -1291,6 +1463,18 @@ int kobox_linux_drm_virtgpu_resource_create(
 		.stride = resource->stride,
 	};
 	result = virtgpu_ioctl(file, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &argument);
+	if (result == -ENOMEM) {
+		struct drm_file *drm_file = file->guard->private_data;
+		struct sysinfo memory;
+
+		si_meminfo(&memory);
+		kobox_linux_boot_diagnostic("kobox-drm: resource memory failure size=%u dimensions=%ux%ux%u "
+		       "free-pages=%lu total-pages=%lu shmem-pages=%lu\n",
+		       resource->size, resource->width, resource->height,
+		       resource->depth, memory.freeram, memory.totalram,
+		       memory.sharedram);
+		kobox_linux_dma_diagnose(drm_file->minor->dev->dev);
+	}
 	if (!result) {
 		resource->bo_handle = argument.bo_handle;
 		resource->resource_handle = argument.res_handle;
@@ -1409,6 +1593,8 @@ int kobox_linux_drm_mapping_release(
 	    current->files != mapping->files)
 		return -EPERM;
 	mapping->operations->release(mapping->private_mapping);
+	/* The final GEM reference can enqueue the backing file's last fput. */
+	task_work_run();
 	module_put(mapping->module);
 	put_task_struct(mapping->owner);
 	kfree(mapping);
@@ -1433,6 +1619,7 @@ int kobox_linux_drm_close(struct kobox_linux_drm_file **owner)
 	 */
 	result = close_fd(file->fd);
 	__fput_sync(file->guard);
+	task_work_run();
 	kern_unmount(file->mount);
 	put_task_struct(file->owner);
 	kfree(file);

@@ -325,8 +325,16 @@ def link_runtime(arguments):
     """Strict fixed-image link; no unresolved host boundary or source patches."""
     arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
     (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
-    source_names = sources.support_sources(arguments.with_gates)
-    support = [task.compile_support(arguments, source) for source in source_names]
+    source_names = sources.support_sources(arguments.with_gates,
+                                           arguments.device_profile)
+    support = []
+    common_cflags = arguments.extra_cflags
+    for source in source_names:
+        arguments.extra_cflags = common_cflags
+        if arguments.drm_exec_profile and source == "kobox/boot/drm_file.c":
+            arguments.extra_cflags = [*common_cflags, "-DKOBOX_DRM_EXEC_PROFILE=1"]
+        support.append(task.compile_support(arguments, source))
+    arguments.extra_cflags = common_cflags
     support.extend(compile_module_exports(arguments, source_names, support))
     support_defined = set().union(*(
         memory.defined_symbols(path, arguments.nm) for path in support
@@ -387,6 +395,7 @@ def link_runtime(arguments):
                     "local_exports": local_exports,
                     "support_sources": list(source_names),
                     "with_gates": arguments.with_gates,
+                    "drm_exec_profile": arguments.drm_exec_profile,
                     "os_backend": arguments.os_backend, "cpu_arch": arguments.cpu_arch},
                    indent=2, sort_keys=True) + "\n"
     )
@@ -428,7 +437,9 @@ def build_inputs(arguments):
     arguments.kernel_release = (
         arguments.canonical_build_dir / "include/config/kernel.release"
     ).read_text().strip()
-    arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1"]
+    arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1",
+                              f"-DKOBOX_BOOT_GPU={int(arguments.device_profile == 'gpu')}",
+                              f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network'))}"]
     if arguments.with_gates:
         arguments.extra_cflags.append("-DKOBOX_RUNTIME_GATES=1")
 
@@ -495,6 +506,98 @@ def build_inputs(arguments):
     )
     if arguments.link:
         link_runtime(arguments)
+    if arguments.module_inventory:
+        if not arguments.link:
+            raise BootBuildError("hosted modules require a linked boot runtime")
+        compile_hosted_modules(arguments)
+
+
+def compile_hosted_modules(arguments):
+    inventory = json.loads(arguments.module_inventory.read_text(encoding="utf-8"))
+    expected = {"usb-hid": "usb-hid-xhci", "virtio-net": "virtio-net",
+                "network": "network"}
+    if inventory.get("format") != "kobox-linux-driver-closure-inventory-dev" or \
+            inventory.get("profile") != expected.get(arguments.device_profile):
+        raise BootBuildError("hosted module inventory does not match the runtime profile")
+    modules = inventory.get("modules")
+    if not isinstance(modules, list) or not modules:
+        raise BootBuildError("hosted module inventory is empty")
+    symvers = arguments.output_dir / ".module-exports/core-module.symvers"
+    if not symvers.is_file():
+        raise BootBuildError("hosted core export table is missing")
+    output = arguments.output_dir / "modules"
+    seen = set()
+    module_objects = []
+    for item in modules:
+        path = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path.endswith(".ko") or \
+                pathlib.PurePosixPath(path).is_absolute() or \
+                ".." in pathlib.PurePosixPath(path).parts or path in seen or \
+                not (arguments.canonical_build_dir / path).is_file():
+            raise BootBuildError(f"invalid hosted module path: {path}")
+        seen.add(path)
+        module_objects.append(str(pathlib.PurePosixPath(path).with_suffix(".o")))
+    # In-tree Kbuild modpost does not consume KBUILD_EXTRA_SYMBOLS. Compile the
+    # unchanged sources with hosted headers, then invoke upstream modpost with
+    # the complete closure and port exports. Missing imports remain fatal.
+    base_flags = arguments.extra_cflags
+    # The in-kernel module loader accepts direct PC-relative relocations, not
+    # the large-model GOT entries emitted by the boot-core support build.
+    arguments.extra_cflags = [*base_flags, "-fPIE", "-mcmodel=small",
+                              "-fdirect-access-external-data", "-fno-jump-tables",
+                              "-include", str(arguments.source_tree /
+                                  "kobox/boot/include/kobox/module_visibility.h")]
+    memory.compile_linux_objects(arguments, module_objects,
+                                 build_targets=[*module_objects, "modules_prepare"])
+    for name in module_objects:
+        source = arguments.provider_build_dir / name
+        if not source.with_suffix(".mod").is_file():
+            raise BootBuildError(f"hosted module manifest is missing: {name}")
+        if "%gs:" in task.run([arguments.objdump, "-d", source]):
+            raise BootBuildError(f"hosted module still uses host GS: {name}")
+    task.run([
+        arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
+        "-i", arguments.output_dir / ".module-exports/native/native.symvers",
+        "-i", symvers, "-o", "hosted-modules.symvers",
+        *(arguments.provider_build_dir / name for name in module_objects),
+    ], cwd=arguments.provider_build_dir)
+    arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
+    (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
+    module_flags = arguments.extra_cflags
+    for path in sorted(seen):
+        source = arguments.provider_build_dir / pathlib.PurePosixPath(path).with_suffix(".o")
+        name = source.stem.replace("-", "_")
+        arguments.extra_cflags = [*module_flags, "-DMODULE", f'-DKBUILD_MODNAME="{name}"',
+                                  f'-DKBUILD_BASENAME="{name}"',
+                                  f"-D__KBUILD_MODNAME=kmod_{name}"]
+        metadata = task.compile_support(arguments, str(source.with_suffix(".mod.c")))
+        common = task.compile_support(arguments, "scripts/module-common.c")
+        destination = output / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        task.run([arguments.ld, "-r", "-T",
+                  arguments.provider_build_dir / "scripts/module.lds", "-o",
+                  destination, source, metadata, common])
+        if "%gs:" in task.run([arguments.objdump, "-d", destination]):
+            raise BootBuildError(f"hosted module still uses host GS: {path}")
+        record = json.loads(task.run([
+            "llvm-readobj" + arguments.llvm, "--elf-output-style=JSON",
+            "--sections", "--relocations", destination,
+        ]))[0]
+        sections = {entry["Section"]["Index"]: entry["Section"]
+                    for entry in record["Sections"]}
+        allowed = {"R_X86_64_NONE", "R_X86_64_64", "R_X86_64_PC32",
+                   "R_X86_64_PLT32", "R_X86_64_PC64"}
+        for group in record["Relocations"]:
+            section = sections[group["SectionIndex"]]
+            if not section["Flags"]["Value"] & 2:  # SHF_ALLOC
+                continue
+            for entry in group["Relocs"]:
+                kind = entry["Relocation"]["Type"]["Name"]
+                if kind not in allowed:
+                    raise BootBuildError(
+                        f"hosted module relocation {kind} in {path} "
+                        f"section {section['Name']['Name']} is unsupported")
+    arguments.extra_cflags = base_flags
 
 
 def parse_arguments():
@@ -505,6 +608,10 @@ def parse_arguments():
     parser.add_argument("--cpu-arch", choices=("x86_64",), default="x86_64")
     parser.add_argument("--with-gates", action="store_true",
                         help="Link test workloads; omitted for the production core")
+    parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "virtio-net", "network"),
+                        default="gpu", help="Select the hosted PCI device service")
+    parser.add_argument("--drm-exec-profile", action="store_true",
+                        help="Opt-in bounded EXECBUFFER stage timing in the owned DRM bridge")
     parser.add_argument("--cc", default="clang-18")
     parser.add_argument("--ld", default="ld.lld")
     parser.add_argument("--llvm", default="-18")
@@ -513,11 +620,15 @@ def parse_arguments():
     parser.add_argument("--nm", default="llvm-nm-18")
     parser.add_argument("--objcopy", default="llvm-objcopy-18")
     parser.add_argument("--link", action="store_true", help="attempt the strict runtime link")
+    parser.add_argument("--module-inventory", type=pathlib.Path,
+                        help="compile the declared .ko closure with hosted arch headers")
     parser.add_argument("--make", default="make")
     parser.add_argument("--jobs", type=int, default=4)
     arguments = parser.parse_args()
     for name in ("source_tree", "canonical_build_dir", "provider_build_dir", "output_dir"):
         setattr(arguments, name, getattr(arguments, name).resolve())
+    if arguments.module_inventory:
+        arguments.module_inventory = arguments.module_inventory.resolve()
     return arguments
 
 

@@ -1,0 +1,6833 @@
+{
+  "cleanup_order": [
+    "drivers/usb/host/xhci-pci.ko",
+    "drivers/usb/host/xhci-hcd.ko",
+    "drivers/hid/usbhid/usbhid.ko",
+    "drivers/usb/core/usbcore.ko",
+    "fs/nls/nls_base.ko",
+    "drivers/usb/common/usb-common.ko",
+    "drivers/input/evdev.ko",
+    "drivers/hid/hid-generic.ko",
+    "drivers/hid/hid.ko"
+  ],
+  "dependencies": [
+    {
+      "consumer": "drivers/hid/hid-generic.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/hid/hid.ko",
+      "symbol_count": 6
+    },
+    {
+      "consumer": "drivers/hid/usbhid/usbhid.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/hid/hid.ko",
+      "symbol_count": 12
+    },
+    {
+      "consumer": "drivers/hid/usbhid/usbhid.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/usb/core/usbcore.ko",
+      "symbol_count": 18
+    },
+    {
+      "consumer": "drivers/usb/core/usbcore.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/usb/common/usb-common.ko",
+      "symbol_count": 4
+    },
+    {
+      "consumer": "drivers/usb/core/usbcore.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "fs/nls/nls_base.ko",
+      "symbol_count": 1
+    },
+    {
+      "consumer": "drivers/usb/host/xhci-hcd.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/usb/core/usbcore.ko",
+      "symbol_count": 16
+    },
+    {
+      "consumer": "drivers/usb/host/xhci-pci.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/usb/core/usbcore.ko",
+      "symbol_count": 9
+    },
+    {
+      "consumer": "drivers/usb/host/xhci-pci.ko",
+      "kinds": [
+        "modinfo",
+        "symbol"
+      ],
+      "provider": "drivers/usb/host/xhci-hcd.ko",
+      "symbol_count": 8
+    }
+  ],
+  "format": "kobox-linux-driver-closure-inventory-dev",
+  "kernel_runtime": {
+    "artifact": "vmlinux",
+    "name": "linux-runtime",
+    "required_exports": [
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "USER_PTR_MAX"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "___ratelimit"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__const_udelay"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "__dev_fwnode"
+      },
+      {
+        "consumers": [
+          "drivers/usb/common/usb-common.ko"
+        ],
+        "name": "__dev_fwnode_const"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__devm_add_action"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__devm_request_region"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__dma_sync_sg_for_cpu"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__dma_sync_sg_for_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__get_user_1"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__get_user_4"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__init_swait_queue_head"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__init_waitqueue_head"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__kmalloc_cache_node_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__kmalloc_cache_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "__kmalloc_large_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__kmalloc_node_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__kmalloc_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/input/evdev.ko"
+        ],
+        "name": "__kvmalloc_node_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__msecs_to_jiffies"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__mutex_init"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "__num_online_cpus"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "__pci_register_driver"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__preempt_count"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__put_cred"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "__put_user_1"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "__put_user_2"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__put_user_4"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__put_user_8"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "__rcu_read_lock"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "__rcu_read_unlock"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__register_chrdev"
+      },
+      {
+        "consumers": [
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "__request_module"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__sw_hweight32"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__unregister_chrdev"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__vma_start_write"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "__wake_up"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "__warn_printk"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "_copy_from_user"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "_copy_to_user"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "_ctype"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "_find_next_zero_bit"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko",
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "_raw_spin_lock"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "_raw_spin_lock_irq"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "_raw_spin_lock_irqsave"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko",
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "_raw_spin_unlock"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "_raw_spin_unlock_irq"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "_raw_spin_unlock_irqrestore"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "add_device_randomness"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "add_uevent_var"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "add_wait_queue"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "alloc_workqueue_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bcmp"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "bitmap_alloc"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "bitmap_free"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "bitmap_zalloc"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "blocking_notifier_call_chain"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "blocking_notifier_chain_register"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "blocking_notifier_chain_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_find_device"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_for_each_dev"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid-generic.ko",
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_for_each_drv"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_register"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_register_notifier"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "bus_rescan_devices"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "bus_unregister_notifier"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "cancel_delayed_work"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "cancel_delayed_work_sync"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "cancel_work_sync"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "cdev_add"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "cdev_del"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "cdev_device_add"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "cdev_device_del"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "cdev_init"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "class_register"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "class_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "complete"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "complete_all"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "component_del"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "current_task"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "current_time"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "default_wake_function"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "delayed_work_timer_fn"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "destroy_workqueue"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dev_driver_string"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dev_set_name"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_add"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_attach"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_bind_driver"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_create"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_create_file"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "device_create_managed_software_node"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_del"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_destroy"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_initialize"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_link_del"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_match_devt"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "device_property_read_bool"
+      },
+      {
+        "consumers": [
+          "drivers/usb/common/usb-common.ko"
+        ],
+        "name": "device_property_read_string"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_register"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_release_driver"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_remove_file"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_reprobe"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "device_set_node"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_set_of_node_from_dev"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "device_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "devm_gen_pool_create"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "devm_ioremap"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "devm_memremap"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "devres_open_group"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "devres_release_group"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_alloc_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_alloc_noncontiguous"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_free_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_free_noncontiguous"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_map_page_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_map_sg_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_mmap_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_pool_alloc"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_pool_create_node"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_pool_destroy"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_pool_free"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_set_coherent_mask"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_set_mask"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "dma_unmap_page_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_unmap_sg_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_vmap_noncontiguous"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dma_vunmap_noncontiguous"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "dmam_alloc_attrs"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "down"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "down_interruptible"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "down_read"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "down_trylock"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "down_write"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "driver_attach"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "driver_create_file"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "driver_register"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "driver_remove_file"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "driver_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "fasync_helper"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "finish_wait"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "flush_delayed_work"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "flush_work"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "free_irq"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "free_pages"
+      },
+      {
+        "consumers": [
+          "drivers/usb/common/usb-common.ko"
+        ],
+        "name": "fwnode_property_match_property_string"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "gen_pool_add_owner"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "gen_pool_dma_alloc"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "gen_pool_dma_alloc_align"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "gen_pool_free_owner"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "get_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "get_free_pages_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "idr_alloc"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "idr_destroy"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "idr_get_next"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "idr_remove"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "init_uts_ns"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "init_wait_entry"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "inode_set_ctime_current"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_alloc_absinfo"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_allocate_device"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_class"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_close_device"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_event"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_event_from_user"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_event_to_user"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_ff_effect_from_user"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_ff_erase"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_ff_event"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_ff_upload"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_flush_device"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_free_device"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_free_minor"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_get_keycode"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_get_new_minor"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_get_timestamp"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_grab_device"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_inject_event"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_open_device"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_register_device"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_register_handle"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_register_handler"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_release_device"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_scancode_to_scalar"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_set_abs_params"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_set_keycode"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "input_unregister_device"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_unregister_handle"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "input_unregister_handler"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "iomem_resource"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "iommu_get_domain_for_dev"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "ioport_resource"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "is_vmalloc_addr"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "jiffies"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kasprintf"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "kfree"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "kill_fasync"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kill_pid_usb_asyncio"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "kmalloc_caches"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kmemdup_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kobject_get_path"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kobject_uevent"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kobject_uevent_env"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "krealloc_node_align_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kstrdup"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kstrtobool"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kstrtou16"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "kstrtouint"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/input/evdev.ko"
+        ],
+        "name": "kvfree"
+      },
+      {
+        "consumers": [
+          "drivers/usb/common/usb-common.ko"
+        ],
+        "name": "match_string"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "memcpy"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "memdup_user"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "memmove"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "memset"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "mod_delayed_work_on"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "mod_timer"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "module_put"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "msleep"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "mutex_lock"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "mutex_lock_interruptible"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "mutex_lock_killable"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "mutex_trylock"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "mutex_unlock"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "no_seek_end_llseek"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "noop_llseek"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "ns_to_timespec64"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "page_offset_base"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "param_array_ops"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "param_get_string"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "param_ops_bool"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "param_ops_charp"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "param_ops_int"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "param_ops_uint"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "param_ops_ullong"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "param_set_copystring"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_alloc_irq_vectors"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "pci_bus_type"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_choose_state"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_clear_and_set_config_dword"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "pci_dev_run_wake"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "pci_disable_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "pci_enable_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_free_irq_vectors"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "pci_get_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_irq_vector"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_read_config_byte"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "pci_set_master"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_set_mwi"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_set_power_state"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "pci_unregister_driver"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "phys_base"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "platform_device_add"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "platform_device_add_resources"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "platform_device_alloc"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "platform_device_put"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "platform_device_unregister"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "preempt_schedule_thunk"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "prepare_to_wait_event"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "put_device"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "put_pid"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "queue_delayed_work_on"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "queue_work_on"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "radix_tree_delete"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "radix_tree_insert"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "radix_tree_lookup"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "radix_tree_maybe_preload"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "refcount_warn_saturate"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "register_chrdev_region"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "remap_pfn_range"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "remove_wait_queue"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "rep_stos_alternative"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "request_threaded_irq"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "schedule"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "schedule_timeout"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "schedule_timeout_uninterruptible"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "sg_init_table"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "sg_pcopy_from_buffer"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "sg_pcopy_to_buffer"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "sized_strscpy"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "snprintf"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "sprintf"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "sscanf"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "strcmp"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "stream_open"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko"
+        ],
+        "name": "strlcat"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/input/evdev.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "strlen"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "strncmp"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "strrchr"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "strsep"
+      },
+      {
+        "consumers": [
+          "drivers/input/evdev.ko"
+        ],
+        "name": "synchronize_rcu"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "system_bh_highpri_wq"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "system_bh_wq"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko",
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "system_percpu_wq"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "system_power_efficient_wq"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "system_wq"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "this_cpu_off"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "timer_delete"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "timer_delete_sync"
+      },
+      {
+        "consumers": [
+          "drivers/hid/usbhid/usbhid.ko",
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "timer_init_key"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "fs/nls/nls_base.ko"
+        ],
+        "name": "try_module_get"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "unregister_chrdev_region"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "up"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "up_read"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "up_write"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usb_amd_dev_put"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-pci.ko"
+        ],
+        "name": "usb_amd_quirk_pll_check"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usb_amd_quirk_pll_disable"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usb_amd_quirk_pll_enable"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usb_asmedia_modifyflowcontrol"
+      },
+      {
+        "consumers": [
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usb_disable_xhci_ports"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "usb_hcd_amd_remote_wakeup_quirk"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "usleep_range_state"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "vfree"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "vmemmap_base"
+      },
+      {
+        "consumers": [
+          "drivers/hid/hid.ko"
+        ],
+        "name": "vzalloc_noprof"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "wait_for_completion"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "wait_for_completion_killable_timeout"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko",
+          "drivers/usb/host/xhci-hcd.ko"
+        ],
+        "name": "wait_for_completion_timeout"
+      },
+      {
+        "consumers": [
+          "drivers/usb/core/usbcore.ko"
+        ],
+        "name": "yield"
+      }
+    ],
+    "root_symbol": "start_kernel"
+  },
+  "linux": {
+    "commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
+    "config_sha256": "5941bb180f252bbb421db26622875eeac89b74a041014d0bd04dc5130a172044",
+    "kernel_release": "6.18.48+",
+    "tag": "v6.18.48",
+    "toolchain": {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "linker": "lld",
+      "linker_version": "18.1.3"
+    }
+  },
+  "load_order": [
+    "drivers/hid/hid.ko",
+    "drivers/hid/hid-generic.ko",
+    "drivers/input/evdev.ko",
+    "drivers/usb/common/usb-common.ko",
+    "fs/nls/nls_base.ko",
+    "drivers/usb/core/usbcore.ko",
+    "drivers/hid/usbhid/usbhid.ko",
+    "drivers/usb/host/xhci-hcd.ko",
+    "drivers/usb/host/xhci-pci.ko"
+  ],
+  "modules": [
+    {
+      "aliases": [
+        "hid:b*g*v*p*"
+      ],
+      "content_size": 6248,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__hid_register_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_for_each_drv",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "hid_bus_type",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_hw_start",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_match_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_open_report",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_unregister_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [
+        "hid"
+      ],
+      "name": "hid_generic",
+      "path": "drivers/hid/hid-generic.ko",
+      "required_exports": [],
+      "root": true,
+      "sha256": "3edf3c6d8c397364071ddeb67f24515ca24473af5d1cac9dbd067bdb9c01f464",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [],
+      "content_size": 106376,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "___ratelimit",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_waitqueue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kvmalloc_node_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__mutex_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_find_next_zero_bit",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "add_uevent_var",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_for_each_dev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_for_each_drv",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_rescan_devices",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "cancel_work_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dev_set_name",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_add",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_create_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_initialize",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_remove_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_reprobe",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "devres_open_group",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "devres_release_group",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "down",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "down_interruptible",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "down_trylock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_attach",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_alloc_absinfo",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_allocate_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_ff_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_free_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_register_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_scancode_to_scalar",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_set_abs_params",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_unregister_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kasprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmalloc_caches",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmemdup_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "krealloc_node_align_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kvfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memcpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memset",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock_killable",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_int",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "put_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "queue_work_on",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "refcount_warn_saturate",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sscanf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strcmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strlen",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strncmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strrchr",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "system_percpu_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "up",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "vfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "vzalloc_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [],
+      "name": "hid",
+      "path": "drivers/hid/hid.ko",
+      "required_exports": [
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "__hid_register_driver"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_add_device"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_alloc_report_buf"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_allocate_device"
+        },
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "hid_bus_type"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_check_keys_pressed"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_destroy_device"
+        },
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "hid_hw_start"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_lookup_quirk"
+        },
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "hid_match_device"
+        },
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "hid_open_report"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_output_report"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_parse_report"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_quirks_exit"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_quirks_init"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_safe_input_report"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "hid_set_field"
+        },
+        {
+          "consumers": [
+            "drivers/hid/hid-generic.ko"
+          ],
+          "name": "hid_unregister_driver"
+        }
+      ],
+      "root": false,
+      "sha256": "2ad47d59fe2ad6658636303e2173730bc3b84b44e858245cff3681b4c87d7a5e",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [
+        "usb:v*p*d*dc*dsc*dp*ic03isc*ip*in*"
+      ],
+      "content_size": 28416,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__dev_fwnode",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_waitqueue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_large_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__msecs_to_jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__mutex_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__usb_get_extra_descriptor",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__wake_up",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irqsave",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irqrestore",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "bcmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "cancel_work_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_set_node",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "finish_wait",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_add_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_alloc_report_buf",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_allocate_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_check_keys_pressed",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_destroy_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_lookup_quirk",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_output_report",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_parse_report",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_quirks_exit",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_quirks_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_safe_input_report",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "hid_set_field",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/hid/hid.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "init_wait_entry",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmalloc_caches",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memcpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memset",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mod_timer",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "msleep",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_array_ops",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_charp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_uint",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "prepare_to_wait_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "queue_work_on",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "schedule_timeout",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sized_strscpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "snprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strlcat",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strlen",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "system_percpu_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_delete_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_init_key",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_alloc_coherent",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_alloc_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_block_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_clear_halt",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_control_msg",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_deregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_find_interface",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_free_coherent",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_free_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_interrupt_msg",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_kill_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_queue_reset_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_register_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_submit_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_unlink_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_unpoison_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [
+        "hid",
+        "usbcore"
+      ],
+      "name": "usbhid",
+      "path": "drivers/hid/usbhid/usbhid.ko",
+      "required_exports": [],
+      "root": true,
+      "sha256": "291b0a8c62a5f81fb8f6e00fe99c1dcdc4190423e5e4f64ecfbc98f3cba22476",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [
+        "input:b*v*p*e*-e*0,*k*r*a*m*l*s*f*w*"
+      ],
+      "content_size": 22944,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "USER_PTR_MAX",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__get_user_4",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_waitqueue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kvmalloc_node_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__mutex_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_user_1",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_user_2",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_user_4",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__rcu_read_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__rcu_read_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__wake_up",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_copy_from_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_copy_to_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irqsave",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irqrestore",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "bitmap_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "bitmap_free",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "bitmap_zalloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_device_add",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_device_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dev_set_name",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_initialize",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "fasync_helper",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "finish_wait",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "get_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "init_wait_entry",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_class",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_close_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_event_from_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_event_to_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_ff_effect_from_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_ff_erase",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "input_ff_upload",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_flush_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_free_minor",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_get_keycode",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_get_new_minor",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_get_timestamp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_grab_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_inject_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_open_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_register_handle",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_register_handler",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_release_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_set_keycode",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_unregister_handle",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "input_unregister_handler",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kill_fasync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmalloc_caches",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kvfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memcpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock_interruptible",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "ns_to_timespec64",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "prepare_to_wait_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "put_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "rep_stos_alternative",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "schedule",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "stream_open",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strlen",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "synchronize_rcu",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [],
+      "name": "evdev",
+      "path": "drivers/input/evdev.ko",
+      "required_exports": [],
+      "root": true,
+      "sha256": "9e43782d65bab437e457a72d56bc97078b5de3602f4590d8af2dea726b5a5874",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [],
+      "content_size": 12104,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__dev_fwnode_const",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_property_read_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "fwnode_property_match_property_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "match_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [],
+      "name": "usb_common",
+      "path": "drivers/usb/common/usb-common.ko",
+      "required_exports": [
+        {
+          "consumers": [
+            "drivers/usb/core/usbcore.ko"
+          ],
+          "name": "usb_decode_interval"
+        },
+        {
+          "consumers": [
+            "drivers/usb/core/usbcore.ko"
+          ],
+          "name": "usb_dynids_lock"
+        },
+        {
+          "consumers": [
+            "drivers/usb/core/usbcore.ko"
+          ],
+          "name": "usb_speed_string"
+        },
+        {
+          "consumers": [
+            "drivers/usb/core/usbcore.ko"
+          ],
+          "name": "usb_state_string"
+        }
+      ],
+      "root": false,
+      "sha256": "42a3392dba582a0ae09671a21fb0551f3d92a6516006d0fe35449b90ee53c299",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [
+        "usb:v*p*d*dc*dsc*dp*ic09isc*ip*in*",
+        "usb:v*p*d*dc09dsc*dp*ic*isc*ip*in*",
+        "usb:v0424p4913d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v0424p4914d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v0424p4915d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v0424p5534d*dc*dsc*dp*ic09isc*ip*in*",
+        "usb:v0451p8140d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v0451p8142d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v04B4p6570d*dc*dsc*dp*ic*isc*ip*in*",
+        "usb:v05E3p*d*dc*dsc*dp*ic09isc*ip*in*"
+      ],
+      "content_size": 248080,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "USER_PTR_MAX",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__devm_request_region",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__dma_sync_sg_for_cpu",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__dma_sync_sg_for_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__get_user_1",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__get_user_4",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_swait_queue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_waitqueue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__msecs_to_jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__mutex_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_cred",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_user_4",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__put_user_8",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__register_chrdev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__unregister_chrdev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__vma_start_write",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__wake_up",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__warn_printk",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_copy_from_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_copy_to_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_ctype",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_find_next_zero_bit",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irqsave",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irqrestore",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "add_device_randomness",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "add_uevent_var",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "add_wait_queue",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "alloc_workqueue_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "bcmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "blocking_notifier_call_chain",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "blocking_notifier_chain_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "blocking_notifier_chain_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_find_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_for_each_dev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_for_each_drv",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_register_notifier",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "bus_unregister_notifier",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cancel_delayed_work_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "cancel_work_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_add",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cdev_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "class_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "class_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "complete",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "component_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "current_task",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "current_time",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "default_wake_function",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "delayed_work_timer_fn",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "destroy_workqueue",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dev_driver_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dev_set_name",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_add",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_attach",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_bind_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_create",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_create_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_destroy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_initialize",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_link_del",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_match_devt",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_release_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_remove_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_reprobe",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_set_of_node_from_dev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "devm_gen_pool_create",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "devm_ioremap",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "devm_memremap",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_alloc_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dma_alloc_noncontiguous",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_free_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dma_free_noncontiguous",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_map_page_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_map_sg_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_mmap_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_create_node",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_destroy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_free",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_unmap_page_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_unmap_sg_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dma_vmap_noncontiguous",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "dma_vunmap_noncontiguous",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dmam_alloc_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "down_read",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "down_write",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_attach",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_create_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_register",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_remove_file",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "driver_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "finish_wait",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "flush_delayed_work",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "flush_work",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "free_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "free_pages",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "gen_pool_add_owner",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "gen_pool_dma_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "gen_pool_dma_alloc_align",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "gen_pool_free_owner",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "get_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "get_free_pages_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "idr_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "idr_destroy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "idr_get_next",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "idr_remove",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "init_uts_ns",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "init_wait_entry",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "inode_set_ctime_current",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "iomem_resource",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "ioport_resource",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "is_vmalloc_addr",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kasprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "kill_pid_usb_asyncio",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmalloc_caches",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmemdup_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "kobject_get_path",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "kobject_uevent",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "kobject_uevent_env",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kstrdup",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kstrtobool",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kstrtou16",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kstrtouint",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memcpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memdup_user",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memmove",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memset",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mod_timer",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "module_put",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "msleep",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock_interruptible",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_trylock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "no_seek_end_llseek",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "noop_llseek",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "page_offset_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_get_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_bool",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_int",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_uint",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_set_copystring",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_alloc_irq_vectors",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "pci_dev_run_wake",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_disable_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_enable_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_free_irq_vectors",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_get_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_irq_vector",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_set_master",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "phys_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "prepare_to_wait_event",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "put_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "put_pid",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "queue_delayed_work_on",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "queue_work_on",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "refcount_warn_saturate",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "register_chrdev_region",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "remap_pfn_range",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "remove_wait_queue",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "request_threaded_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "schedule",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "schedule_timeout",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sg_init_table",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sized_strscpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "snprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sscanf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strlen",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strncmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strrchr",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strsep",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "system_bh_highpri_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "system_bh_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "system_percpu_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "system_power_efficient_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_delete",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_delete_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_init_key",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "try_module_get",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "unregister_chrdev_region",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "up_read",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "up_write",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_decode_interval",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/common/usb-common.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_dynids_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/common/usb-common.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_amd_remote_wakeup_quirk",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_speed_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/common/usb-common.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_state_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/common/usb-common.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "usleep_range_state",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "utf16s_to_utf8s",
+          "namespace": "",
+          "optional": false,
+          "provider": "fs/nls/nls_base.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "vmemmap_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "wait_for_completion",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "wait_for_completion_killable_timeout",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "wait_for_completion_timeout",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "yield",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [
+        "nls_base",
+        "usb_common"
+      ],
+      "name": "usbcore",
+      "path": "drivers/usb/core/usbcore.ko",
+      "required_exports": [
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "__usb_get_extra_descriptor"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_add_hcd"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_alloc_coherent"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_alloc_urb"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_block_urb"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_clear_halt"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_control_msg"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_create_shared_hcd"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_deregister"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_disabled"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_endpoint_is_hs_isoc_double"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_endpoint_max_periodic_payload"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_find_interface"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_free_coherent"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_free_urb"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hc_died"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_check_unlink_urb"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_end_port_resume"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_giveback_urb"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_hcd_irq"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko",
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_hcd_is_primary_hcd"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_link_urb_to_ep"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_map_urb_for_dma"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_hcd_pci_probe"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_hcd_pci_remove"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_hcd_pci_shutdown"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_poll_rh_status"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_start_port_resume"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_unlink_urb_from_ep"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hcd_unmap_urb_for_dma"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_hub_clear_tt_buffer"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_interrupt_msg"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_kill_urb"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_put_hcd"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_queue_reset_device"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_register_driver"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "usb_remove_hcd"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_string"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_submit_urb"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_unlink_urb"
+        },
+        {
+          "consumers": [
+            "drivers/hid/usbhid/usbhid.ko"
+          ],
+          "name": "usb_unpoison_urb"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-hcd.ko"
+          ],
+          "name": "usb_wakeup_notification"
+        }
+      ],
+      "root": false,
+      "sha256": "1536df36e35df9dd3186bd49990c76de7aca81514c49050ac801ddc7191794d5",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [],
+      "content_size": 121688,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__const_udelay",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "__devm_add_action",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__init_swait_queue_head",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_node_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_cache_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_node_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__kmalloc_noprof",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__msecs_to_jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__mutex_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__preempt_count",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__sw_hweight32",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__warn_printk",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock_irqsave",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock_irqrestore",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cancel_delayed_work",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "cancel_delayed_work_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "complete",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "complete_all",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "delayed_work_timer_fn",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dev_driver_string",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_create_managed_software_node",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_alloc_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_free_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_map_page_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_create_node",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_destroy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_pool_free",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_set_coherent_mask",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_set_mask",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "dma_unmap_page_attrs",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "iommu_get_domain_for_dev",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "is_vmalloc_addr",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "jiffies",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kfree",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "kmalloc_caches",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memcpy",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "memset",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "mod_delayed_work_on",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mod_timer",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "msleep",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "mutex_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "page_offset_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_int",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "param_ops_ullong",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_bus_type",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "phys_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "platform_device_add",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "platform_device_add_resources",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "platform_device_alloc",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "platform_device_put",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "platform_device_unregister",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "preempt_schedule_thunk",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "radix_tree_delete",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "radix_tree_insert",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "radix_tree_lookup",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "radix_tree_maybe_preload",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "schedule_timeout_uninterruptible",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sg_pcopy_from_buffer",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "sg_pcopy_to_buffer",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "system_wq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "this_cpu_off",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_delete_sync",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "timer_init_key",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_amd_dev_put",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_amd_quirk_pll_disable",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_amd_quirk_pll_enable",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_asmedia_modifyflowcontrol",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_disable_xhci_ports",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_disabled",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_endpoint_is_hs_isoc_double",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_endpoint_max_periodic_payload",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hc_died",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_check_unlink_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_end_port_resume",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_giveback_urb",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_is_primary_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_link_urb_to_ep",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_map_urb_for_dma",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_poll_rh_status",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_start_port_resume",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_unlink_urb_from_ep",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_unmap_urb_for_dma",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hub_clear_tt_buffer",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_wakeup_notification",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "usleep_range_state",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "vmemmap_base",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "wait_for_completion",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "wait_for_completion_timeout",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [
+        "usbcore"
+      ],
+      "name": "xhci_hcd",
+      "path": "drivers/usb/host/xhci-hcd.ko",
+      "required_exports": [
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_dbg_trace"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_ext_cap_init"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_gen_setup"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_init_driver"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_msi_irq"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_run"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_stop"
+        },
+        {
+          "consumers": [
+            "drivers/usb/host/xhci-pci.ko"
+          ],
+          "name": "xhci_update_hub_device"
+        }
+      ],
+      "root": false,
+      "sha256": "24fc8c1d8420508ec2755fb00dd4f198d1113700ffc45be90c619bdce214b2a5",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [
+        "pci:v*d*sv*sd*bc0Csc03i30*"
+      ],
+      "content_size": 15064,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__num_online_cpus",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__pci_register_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "device_property_read_bool",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "free_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_alloc_irq_vectors",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_choose_state",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_clear_and_set_config_dword",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_free_irq_vectors",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_irq_vector",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_read_config_byte",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_set_mwi",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_set_power_state",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "pci_unregister_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "request_threaded_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "snprintf",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_add_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_amd_quirk_pll_check",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_create_shared_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_is_primary_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_pci_probe",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_pci_remove",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_hcd_pci_shutdown",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_put_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "usb_remove_hcd",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/core/usbcore.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_dbg_trace",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_ext_cap_init",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_gen_setup",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_init_driver",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_msi_irq",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_run",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_stop",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        },
+        {
+          "export": "EXPORT_SYMBOL_GPL",
+          "name": "xhci_update_hub_device",
+          "namespace": "",
+          "optional": false,
+          "provider": "drivers/usb/host/xhci-hcd.ko"
+        }
+      ],
+      "license": [
+        "GPL"
+      ],
+      "modinfo_dependencies": [
+        "usbcore",
+        "xhci_hcd"
+      ],
+      "name": "xhci_pci",
+      "path": "drivers/usb/host/xhci-pci.ko",
+      "required_exports": [],
+      "root": true,
+      "sha256": "cdb2a857abc3c5f372f923c11010373a97833d1a9706a2c0423286dbd30bba67",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    },
+    {
+      "aliases": [],
+      "content_size": 13264,
+      "import_namespaces": [],
+      "imports": [
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "__request_module",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_lock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "_raw_spin_unlock",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "module_put",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "strcmp",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        },
+        {
+          "export": "EXPORT_SYMBOL",
+          "name": "try_module_get",
+          "namespace": "",
+          "optional": false,
+          "provider": "linux-runtime"
+        }
+      ],
+      "license": [
+        "Dual BSD/GPL"
+      ],
+      "modinfo_dependencies": [],
+      "name": "nls_base",
+      "path": "fs/nls/nls_base.ko",
+      "required_exports": [
+        {
+          "consumers": [
+            "drivers/usb/core/usbcore.ko"
+          ],
+          "name": "utf16s_to_utf8s"
+        }
+      ],
+      "root": false,
+      "sha256": "6dffd5e64a36daf83afdcf806cba693cd6a2d86acb6fa1489b96b109b6e74539",
+      "softdep_post": [],
+      "softdep_pre": [],
+      "vermagic": [
+        "6.18.48+ SMP preempt mod_unload"
+      ]
+    }
+  ],
+  "ordering_constraints": [],
+  "profile": "usb-hid-xhci",
+  "resource_slots": [
+    {
+      "consumers": [
+        "linux-runtime"
+      ],
+      "maximum_count": 1,
+      "minimum_count": 1,
+      "name": "pci-function",
+      "required_rights": 7,
+      "reset_required": true,
+      "resource_type": "device",
+      "schema": "kobox2.pci-function",
+      "slot_id": 1
+    },
+    {
+      "consumers": [
+        "linux-runtime"
+      ],
+      "maximum_count": 1,
+      "minimum_count": 1,
+      "name": "dma-domain",
+      "required_rights": 5,
+      "reset_required": false,
+      "resource_type": "device",
+      "schema": "kobox2.dma-domain",
+      "slot_id": 2
+    },
+    {
+      "consumers": [
+        "linux-runtime"
+      ],
+      "maximum_count": 2048,
+      "minimum_count": 1,
+      "name": "irq-endpoint",
+      "required_rights": 1,
+      "reset_required": false,
+      "resource_type": "notification",
+      "schema": "kobox2.irq-endpoint",
+      "slot_id": 3
+    }
+  ],
+  "roots": [
+    "drivers/hid/hid-generic.ko",
+    "drivers/hid/usbhid/usbhid.ko",
+    "drivers/input/evdev.ko",
+    "drivers/usb/host/xhci-pci.ko"
+  ],
+  "summary": {
+    "dependency_count": 8,
+    "module_count": 9,
+    "module_import_count": 558,
+    "ordering_constraint_count": 0,
+    "required_module_export_count": 73,
+    "required_runtime_export_count": 320,
+    "resource_slot_count": 3
+  }
+}

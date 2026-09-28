@@ -126,7 +126,7 @@ static int map_memory(void *context, void *address, uint64_t physical,
 	    cache != KOBOX_MMIO_WC)
 		return -EOPNOTSUPP;
 	/* Device-private conformance register: inject a VM failure on the Nth
-	 * page publication, allowing rollback after a partial host mapping.
+	 * host lease publication, including a multi-page ioremap span.
 	 */
 	if (get_value(fixture->bytes + 0x148, 4)) {
 		uint32_t remaining = get_value(fixture->bytes + 0x148, 4) - 1;
@@ -151,6 +151,8 @@ static int map_memory(void *context, void *address, uint64_t physical,
 	if (mapped == MAP_FAILED)
 		return -errno;
 	fixture->map_calls++;
+	if (length > fixture->largest_map)
+		fixture->largest_map = length;
 	fixture->cache_seen |= 1U << cache;
 	return 0;
 }

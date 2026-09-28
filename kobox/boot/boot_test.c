@@ -3,6 +3,7 @@
 
 #include "host.h"
 #include "boot_test.h"
+#include "image_layout.h"
 #include "client_task_gate.h"
 #include "syscall_gate.h"
 #include "exec_gate.h"
@@ -46,7 +47,7 @@
 
 #define TEST_RAM_SIZE (256UL << 20)
 #define TEST_VMEMMAP_SIZE (16UL << 20)
-#define TEST_VMALLOC_SIZE (256UL << 20)
+#define TEST_VMALLOC_SIZE KOBOX_CORE_VMALLOC_SIZE
 #define TEST_IMAGE_PHYSICAL_BASE (16UL << 20)
 
 #define CHECK(expression) do { \

@@ -25,11 +25,13 @@ class BootBuildTest(unittest.TestCase):
     def test_fpu_signal_uses_machine_compile_overlay(self):
         self.assertEqual(
             set(boot.MACHINE_COMPILE_OVERLAYS),
-            {"arch/x86/kernel/fpu/signal.o"},
+            {"arch/x86/kernel/fpu/signal.o", "arch/x86/mm/pat/set_memory.o"},
         )
         flags = boot.MACHINE_COMPILE_OVERLAYS["arch/x86/kernel/fpu/signal.o"]
         self.assertEqual(flags[0], "-include")
         self.assertTrue(flags[1].endswith("kobox_fpu_signal_compile.h"))
+        self.assertTrue(boot.MACHINE_COMPILE_OVERLAYS[
+            "arch/x86/mm/pat/set_memory.o"][1].endswith("kobox_cpa_compile.h"))
 
     def test_gate_sources_are_explicit_and_disjoint(self):
         production = boot.sources.support_sources(False)
@@ -51,6 +53,16 @@ class BootBuildTest(unittest.TestCase):
                              for source in production))
         testing = boot.sources.support_sources(True, "usb-hid")
         self.assertNotIn("kobox/boot/drm_file_gate.c", testing)
+
+    def test_amdgpu_profile_uses_authorized_pci_drm_boundary(self):
+        production = boot.sources.support_sources(False, "amdgpu")
+        self.assertIn("kobox/boot/device_port.c", production)
+        self.assertIn("kobox/boot/module_launch.c", production)
+        self.assertTrue(set(boot.sources.GPU_SOURCES) <= set(production))
+        self.assertFalse(set(production) & set(boot.sources.USB_INPUT_SOURCES))
+        self.assertFalse(set(production) & set(boot.sources.NET_SOURCES))
+        testing = boot.sources.support_sources(True, "amdgpu")
+        self.assertIn("kobox/boot/drm_file_gate.c", testing)
 
     def test_new_provider_overlay_invalidates_existing_kbuild_objects(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -87,7 +87,15 @@ def validate_relocations(record):
 def build(arguments):
     config = (arguments.canonical_build_dir / ".config").read_text()
     boot.validate_config(config)
-    native_objects = module_objects(config, arguments.virtio_gpu)
+    if arguments.mapping_only:
+        for setting in ("CONFIG_MODULES=y", "CONFIG_DRM=m", "CONFIG_DRM_TTM=m"):
+            if setting not in config.splitlines():
+                raise boot.BootBuildError(f"AMDGPU mapping module requires {setting}")
+        native_objects = ()
+        kobox_objects = ("kobox/gem/drm_mapping.o",)
+    else:
+        native_objects = module_objects(config, arguments.virtio_gpu)
+        kobox_objects = KOBOX_MODULE_OBJECTS
     identity = boot.input_identity(arguments)
     validate_core_identity(json.loads(
         (arguments.core_dir / "linux-boot-inputs.json").read_text()), identity)
@@ -110,12 +118,13 @@ def build(arguments):
                              "-fno-jump-tables", "-include",
                              str(arguments.source_tree /
                                  "kobox/boot/include/kobox/module_visibility.h")]
-    objects = native_objects + KOBOX_MODULE_OBJECTS
-    boot.memory.compile_linux_objects(arguments, native_objects,
-                                      build_targets=[*native_objects, "modules_prepare"])
-    boot.memory.compile_linux_objects(arguments, KOBOX_MODULE_OBJECTS,
+    objects = native_objects + kobox_objects
+    if native_objects:
+        boot.memory.compile_linux_objects(arguments, native_objects,
+                                          build_targets=[*native_objects, "modules_prepare"])
+    boot.memory.compile_linux_objects(arguments, kobox_objects,
                                       build_targets=[pathlib.PurePosixPath(name).name
-                                                     for name in KOBOX_MODULE_OBJECTS],
+                                                     for name in kobox_objects],
                                       external_module="kobox/gem")
     ensure_module_manifests(arguments.provider_build_dir, objects)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,9 +133,12 @@ def build(arguments):
         raise boot.BootBuildError("build the boot core's native port exports first")
     # Upstream modpost enforces imports/licenses/namespaces and creates native
     # __this_module metadata. Missing imports are errors, never warning-only.
+    canonical_exports = arguments.canonical_build_dir / "vmlinux.symvers"
+    if not canonical_exports.is_file():
+        canonical_exports = arguments.canonical_build_dir / "Module.symvers"
     boot.task.run([
         arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
-        "-i", arguments.canonical_build_dir / "vmlinux.symvers",
+        "-i", canonical_exports,
         "-i", exports, "-o", "gem.symvers",
         *(arguments.provider_build_dir / name for name in objects),
     ], cwd=arguments.provider_build_dir)
@@ -180,7 +192,11 @@ def main():
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--virtio-gpu", action="store_true",
                         help="also build the real virtio-pci/virtio-gpu and KMS module closure")
+    parser.add_argument("--mapping-only", action="store_true",
+                        help="build only the Kobox DRM mapping provider for the AMDGPU profile")
     arguments = parser.parse_args()
+    if arguments.mapping_only and arguments.virtio_gpu:
+        parser.error("--mapping-only and --virtio-gpu are mutually exclusive")
     for name in ("source_tree", "canonical_build_dir", "provider_build_dir", "output_dir", "core_dir"):
         setattr(arguments, name, getattr(arguments, name).resolve())
     try:

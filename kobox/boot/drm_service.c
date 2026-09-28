@@ -2,6 +2,7 @@
 
 #include "drm_service.h"
 #include "drm_limits.h"
+#include "diagnostic.h"
 
 #include <drm/drm.h>
 #include <drm/drm_ioctl.h>
@@ -381,6 +382,7 @@ int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
 		.length = pages.length,
 		.page_count = pages.page_count,
 		.cache_policy = pages.cache_policy,
+		.backing_kind = pages.backing_kind,
 	};
 	return 0;
 }
@@ -439,6 +441,13 @@ int kobox_linux_drm_service_prime_export(
 		page_indices, page_capacity, &pages, &owner);
 	if (error)
 		return error;
+	/* PRIME's current attachment format describes RAM page views only.
+	 * Never reinterpret physical BAR PFNs as sandbox RAM indices. */
+	if (pages.backing_kind != KOBOX_DRM_BACKING_RAM ||
+	    pages.cache_policy != KOBOX_DRM_CACHE_WB) {
+		error = kobox_linux_drm_mapping_release(&owner);
+		return error ?: -EOPNOTSUPP;
+	}
 	error = kobox_linux_drm_prime_export(file->file, handle, flags, &dma_fd);
 	if (error) {
 		int release_error = kobox_linux_drm_mapping_release(&owner);
@@ -526,8 +535,13 @@ int kobox_linux_drm_service_destroy(struct kobox_linux_drm_service **owner)
 	result = check_owner(service);
 	if (result)
 		return result;
-	if (!service->stopping || service->report.active || service->report.close_error)
+	if (!service->stopping || service->report.active || service->report.close_error) {
+		kobox_linux_boot_diagnostic(
+			"kobox-drm: service destroy busy stopping=%u active=%u close_error=%d\n",
+			service->stopping, service->report.active,
+			service->report.close_error);
 		return -EBUSY;
+	}
 	put_task_struct(service->owner);
 	kfree(service->entries);
 	kfree(service);

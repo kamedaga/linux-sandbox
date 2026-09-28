@@ -8,10 +8,11 @@
 #define KOBOX_CORE_PHYSICAL_BASE 0x01000000
 #define KOBOX_CORE_VMEMMAP_BASE 0x18000000
 #define KOBOX_CORE_VMEMMAP_SIZE 0x01000000
-/* Keep the fixed vmalloc window clear of supported hosts' native launcher
- * images while retaining the low-address range required by x86-64 kernel
- * code-model references. */
-#define KOBOX_CORE_VMALLOC_BASE 0x70000000
-#define KOBOX_CORE_VMALLOC_SIZE 0x10000000
+/* A single PCI BAR mapping can consume 256 MiB plus vmalloc guard pages.
+ * Keep room for other allocations, while leaving the native launcher,
+ * process stack and read-only launch data below this window. The exclusive
+ * end stays below 2 GiB for the hosted x86-64 kernel code model. */
+#define KOBOX_CORE_VMALLOC_BASE 0x50000000
+#define KOBOX_CORE_VMALLOC_SIZE 0x30000000
 
 #endif

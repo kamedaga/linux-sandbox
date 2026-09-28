@@ -1082,12 +1082,23 @@ int kobox_linux_dma_detach(struct kobox_linux_dma_port *port)
 {
 	if (!port)
 		return -EINVAL;
-	if (!hash_empty(port->queue_pages) || !hash_empty(port->queue_iovas))
+	if (!hash_empty(port->queue_pages) || !hash_empty(port->queue_iovas)) {
+		kobox_linux_boot_diagnostic(
+			"kobox-dma: detach pending queue pages=%u iovas=%u\n",
+			!hash_empty(port->queue_pages),
+			!hash_empty(port->queue_iovas));
 		return -EBUSY;
-	if (queue_bounce_destroy(port))
+	}
+	if (queue_bounce_destroy(port)) {
+		kobox_linux_boot_diagnostic(
+			"kobox-dma: detach pending bounce slots\n");
 		return -EBUSY;
-	if (port->active && !xa_empty(&port->active->pages))
+	}
+	if (port->active && !xa_empty(&port->active->pages)) {
+		kobox_linux_boot_diagnostic(
+			"kobox-dma: detach pending IOMMU mappings\n");
 		return -EBUSY;
+	}
 	iommu_device_unregister(&port->iommu);
 	if (atomic_read(&port->domains) || port->active)
 		panic("host DMA domain survived unregister\n");

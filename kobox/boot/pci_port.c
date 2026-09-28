@@ -65,6 +65,55 @@ static int config_write(struct pci_bus *bus, unsigned int devfn,
 
 static struct pci_ops hosted_ops = {.read = config_read, .write = config_write};
 
+static void log_discovered_bars(struct pci_host_bridge *bridge,
+				const struct kobox_linux_pci_host *host)
+{
+	struct pci_dev *device = pci_get_slot(bridge->bus, host->devfn);
+	unsigned int bar, window;
+	bool mismatch = false;
+
+	if (!device)
+		return;
+	/* A driver may turn a missing BAR into a misleading ENOMEM before any
+	 * ioremap hook is reached. Compare Linux's sized resources with the
+	 * capability's apertures while both are still available. */
+	for (window = 0; window < host->window_count; window++) {
+		const struct kobox_linux_pci_window *expected = &host->windows[window];
+		bool found = false;
+
+		/* This one-time diagnostic must reach the hosted console even when
+		 * Linux's INFO loglevel is filtered during a physical GPU probe. */
+		pr_warn("kobox-pci: grant window%u base=%#llx size=%#llx\n",
+			window, (unsigned long long)expected->start,
+			(unsigned long long)expected->length);
+
+		for (bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
+			if (pci_resource_start(device, bar) == expected->start &&
+			    pci_resource_len(device, bar) == expected->length &&
+			    (pci_resource_flags(device, bar) & IORESOURCE_MEM)) {
+				found = true;
+				break;
+			}
+		}
+		if (found)
+			continue;
+		mismatch = true;
+		pr_err("kobox-pci: granted window%u base=%#llx size=%#llx absent from Linux BARs\n",
+		       window, (unsigned long long)expected->start,
+		       (unsigned long long)expected->length);
+	}
+	for (bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
+		resource_size_t length = pci_resource_len(device, bar);
+
+		if (!length && !mismatch)
+			continue;
+		pr_warn("kobox-pci: Linux BAR%u base=%#llx size=%#llx flags=%#lx\n",
+			bar, (unsigned long long)pci_resource_start(device, bar),
+			(unsigned long long)length, pci_resource_flags(device, bar));
+	}
+	pci_dev_put(device);
+}
+
 static void release_memory_windows(struct hosted_pci *pci)
 {
 	unsigned int index;
@@ -158,8 +207,12 @@ int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 	}
 	pci_lock_rescan_remove();
 	result = pci_scan_root_bus_bridge(bridge);
-	if (!result)
+	if (!result) {
 		pci_bus_claim_resources(bridge->bus);
+		/* The host grant and Linux's sized BARs must agree before a driver
+		 * decides which register aperture to ioremap. */
+		log_discovered_bars(bridge, host);
+	}
 	pci_unlock_rescan_remove();
 	if (result) {
 		release_memory_windows(pci);
@@ -223,5 +276,22 @@ int kobox_linux_pci_remove(struct pci_host_bridge *bridge)
 	pci_unlock_rescan_remove();
 	release_memory_windows(pci);
 	pci_free_host_bridge(bridge);
+	return 0;
+}
+
+int kobox_linux_pci_retire_orphan_ioremaps(struct pci_host_bridge *bridge)
+{
+	struct hosted_pci *pci;
+	unsigned int index;
+	int result;
+
+	if (!bridge)
+		return -EINVAL;
+	pci = pci_host_bridge_priv(bridge);
+	for (index = 0; index < pci->mmio_count; index++) {
+		result = kobox_mmio_retire_orphan_ioremaps(pci->mmio[index]);
+		if (result)
+			return result;
+	}
 	return 0;
 }

@@ -13,6 +13,7 @@
 #include <linux/cpuhotplug.h>
 #include <linux/init.h>
 #include <linux/mm.h>
+#include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/sched/idle.h>
 #include <linux/smp.h>
@@ -21,6 +22,7 @@
 #include <linux/string.h>
 #include <linux/kobox_boot.h>
 #include <linux/sched/signal.h>
+#include <linux/vmalloc.h>
 
 #include <asm/setup.h>
 #include <asm/smp.h>
@@ -31,6 +33,7 @@
 #include <asm/x86_init.h>
 #include <asm/fpu/sched.h>
 #include <asm/pci_x86.h>
+#include <asm/memtype.h>
 
 static const struct kobox_linux_boot_layout *boot_layout;
 static unsigned long image_alias_probe;
@@ -84,7 +87,47 @@ int __wrap_ioremap_page_range(unsigned long address, unsigned long end,
 	int result = __real_ioremap_page_range(address, end, physical,
 					       protection);
 
-	return result ?: kobox_linux_memory_publish(address, end);
+	if (result) {
+		pr_err("kobox-mmio: ioremap page tables phys=%pa bytes=%lu status=%d\n",
+		       &physical, end - address, result);
+		return result;
+	}
+	result = kobox_linux_memory_publish(address, end);
+	if (result)
+		pr_err("kobox-mmio: ioremap publish phys=%pa bytes=%lu status=%d\n",
+		       &physical, end - address, result);
+	return result;
+}
+
+/* Upstream ioremap returns NULL without a diagnostic for these two earlier
+ * failures. Keep the Linux implementation untouched, but expose the failing
+ * stage so a real PCI BAR cannot masquerade as an arbitrary driver ENOMEM. */
+struct vm_struct *__real_get_vm_area_caller(unsigned long size,
+					    unsigned long flags, const void *caller);
+
+struct vm_struct *__wrap_get_vm_area_caller(unsigned long size,
+					    unsigned long flags, const void *caller)
+{
+	struct vm_struct *area = __real_get_vm_area_caller(size, flags, caller);
+
+	if (!area && (flags & VM_IOREMAP))
+		pr_err("kobox-mmio: ioremap virtual area bytes=%lu caller=%pS failed\n",
+		       size, caller);
+	return area;
+}
+
+int __real_memtype_kernel_map_sync(u64 base, unsigned long size,
+				  enum page_cache_mode pcm);
+
+int __wrap_memtype_kernel_map_sync(u64 base, unsigned long size,
+				  enum page_cache_mode pcm)
+{
+	int result = __real_memtype_kernel_map_sync(base, size, pcm);
+
+	if (result)
+		pr_err("kobox-mmio: ioremap memory type phys=%pa bytes=%lu status=%d\n",
+		       &base, size, result);
+	return result;
 }
 
 static void protect_image(unsigned long begin, unsigned long end,

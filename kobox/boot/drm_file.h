@@ -103,9 +103,18 @@ struct kobox_linux_virtgpu_transfer {
 	uint32_t level, offset, stride, layer_stride;
 };
 
+/* Private provider/host result, not wire data. Physical page numbers are
+ * consumed only by the host's PCI authority check, never by a DRM client. */
+#define KOBOX_DRM_BACKING_RAM 0U
+#define KOBOX_DRM_BACKING_DEVICE 1U
+#define KOBOX_DRM_CACHE_WB 0U
+#define KOBOX_DRM_CACHE_WC 1U
+#define KOBOX_DRM_CACHE_UC 2U
+
 struct kobox_linux_drm_map_pages {
 	uint64_t length;
 	uint32_t cache_policy;
+	uint32_t backing_kind;
 	uint64_t page_count;
 };
 
@@ -115,6 +124,7 @@ struct kobox_linux_drm_map_pages {
  * core <- module direction. The provider owns private_mapping until release. */
 struct kobox_linux_drm_mapping_operations {
 	size_t size;
+	int (*get_size)(struct file *file, uint32_t handle, uint64_t *size);
 	int (*map)(struct file *file, uint32_t handle, uint32_t mapping_rights,
 		   uint64_t *page_indices, size_t page_capacity,
 		   struct kobox_linux_drm_map_pages *result,
@@ -162,7 +172,31 @@ int kobox_linux_drm_version(struct kobox_linux_drm_file *file,
 			    const size_t capacity[3],
 			    struct kobox_linux_drm_version *out);
 int kobox_linux_drm_get_cap(struct kobox_linux_drm_file *file, uint64_t capability,
-			   uint64_t *value);
+			    uint64_t *value);
+int kobox_linux_drm_amdgpu_info(struct kobox_linux_drm_file *file,
+				uint32_t query, const uint32_t *selectors,
+				void *output, size_t size);
+int kobox_linux_drm_amdgpu_simple(struct kobox_linux_drm_file *file,
+				 uint32_t command_id, const void *request,
+				 size_t request_size, uint64_t deadline_ns,
+				 void *record, size_t record_capacity,
+				 uint32_t *record_id, size_t *record_size);
+int kobox_linux_drm_gem_size(struct kobox_linux_drm_file *file,
+			     uint32_t handle, uint64_t *size);
+int kobox_linux_drm_amdgpu_mmap_validate(struct kobox_linux_drm_file *file,
+					 uint32_t handle);
+struct kb2_amdgpu_cs_part;
+int kobox_linux_drm_amdgpu_cs(struct kobox_linux_drm_file *file,
+			     uint32_t context_id, uint32_t bo_list_handle,
+			     const struct kb2_amdgpu_cs_part *parts, size_t count,
+			     const void *data, size_t bytes, uint64_t *sequence);
+/* Optional AMDGPU inspection only: query the upstream on-die sensor through
+ * the render file owned by the Linux launch task. Not a peer-facing ioctl.
+ */
+int kobox_linux_drm_amdgpu_temperature(struct kobox_linux_drm_file *file,
+					  uint32_t *millidegrees);
+int kobox_linux_drm_amdgpu_average_power(struct kobox_linux_drm_file *file,
+					    uint32_t *watts);
 int kobox_linux_drm_set_client_cap(struct kobox_linux_drm_file *file,
 				    uint64_t capability, uint64_t value);
 int kobox_linux_drm_master(struct kobox_linux_drm_file *file, bool acquire);

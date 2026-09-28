@@ -207,9 +207,14 @@ static int allocate_irqs(struct irq_domain *domain, unsigned int virq,
 	result = kobox_host_call(port->host.allocate(port->host.context, mode, index, count, cpu, routes));
 	local_irq_restore(flags);
 	if (result) {
+		pr_warn("kobox-irq: host route allocation mode=%u index=%u count=%u cpu=%u status=%d\n",
+			mode, index, count, cpu, result);
 		kfree(routes);
 		return result < 0 ? result : -EIO;
 	}
+	pr_warn("kobox-irq: host route allocated mode=%u index=%u count=%u address=%#llx data=%#x\n",
+		mode, index, count, (unsigned long long)routes[0].address,
+		routes[0].data);
 	for (index = 0; index < count; index++) {
 		struct hosted_irq *irq;
 
@@ -244,6 +249,8 @@ static int allocate_irqs(struct irq_domain *domain, unsigned int virq,
 	kfree(routes);
 	return 0;
 rollback:
+	pr_warn("kobox-irq: route publication failed mode=%u index=%u count=%u published=%u status=%d\n",
+		mode, index, count, done, result);
 	if (done)
 		free_irqs(domain, virq, done);
 	for (index = done; index < count; index++)
@@ -357,6 +364,14 @@ int kobox_linux_irq_attach(struct pci_dev *device,
 	port->intx = result;
 	device->irq = port->intx;
 	dev_set_msi_domain(&device->dev, port->parent);
+	/* Real devices may advertise MSI differently from the synthetic IRQ
+	 * gate. Record the Linux-visible capabilities and routing prerequisite
+	 * before driver probe, so ENOSPC is not mistaken for a host route failure. */
+	pr_warn("kobox-irq: attach msi_cap=%u msix_cap=%u msi_vecs=%d msix_vecs=%d no_msi=%u bus_flags=%#x intx=%u parent=%u\n",
+		device->msi_cap, device->msix_cap,
+		pci_msi_vec_count(device), pci_msix_vec_count(device),
+		device->no_msi, device->bus->bus_flags, port->intx,
+		port->parent != NULL);
 	mutex_lock(&irq_ports_lock);
 	list_add_tail_rcu(&port->list, &irq_ports);
 	mutex_unlock(&irq_ports_lock);
@@ -376,8 +391,24 @@ out:
 
 int kobox_linux_irq_detach(struct kobox_linux_irq_port *port)
 {
+	u16 msi_control = 0;
+	int msi_read_status = -EINVAL;
+
 	if (!port)
 		return -EINVAL;
+	if (port->device->msi_cap)
+		msi_read_status = pci_read_config_word(port->device,
+			port->device->msi_cap + PCI_MSI_FLAGS, &msi_control);
+	/* The bounded live log may have evicted the attach record by the time a
+	 * large driver finishes probing. Repeat the Linux-visible prerequisites
+	 * at detach so a failed MSI request can be distinguished from a failed
+	 * host route allocation without retaining device-specific state. */
+	pr_warn("kobox-irq: detach msi_cap=%u msi_control=%#x msi_read=%d msix_cap=%u msi_vecs=%d msix_vecs=%d no_msi=%u bus_flags=%#x intx=%u routes_empty=%u parent_maps=%u\n",
+		port->device->msi_cap, msi_control, msi_read_status,
+		port->device->msix_cap,
+		pci_msi_vec_count(port->device), pci_msix_vec_count(port->device),
+		port->device->no_msi, port->device->bus->bus_flags, port->intx,
+		xa_empty(&port->routes), port->parent->mapcount);
 	if (port->device->msi_enabled || port->device->msix_enabled ||
 	    port->parent->mapcount || (port->intx && irq_has_action(port->intx)))
 		return -EBUSY;

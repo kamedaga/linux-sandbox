@@ -45,6 +45,54 @@ static int host_map(void *window, size_t window_offset, void *backing,
 	return status ? status : restore_status;
 }
 
+static int host_map_pages(void *window, size_t window_offset, void *backing,
+			  const uint64_t *page_indices, size_t page_count,
+			  unsigned int protection, void **address_out)
+{
+	struct kobox_posix_memory_window *target = window;
+	unsigned int native;
+	uint64_t mask;
+	size_t mapped = 0;
+	int status, restore_status;
+
+	if (!target || !page_indices || !address_out || !page_count ||
+	    page_count > KOBOX_LINUX_MEMORY_SCATTER_PAGES ||
+	    (protection & KOBOX_LINUX_MEMORY_EXECUTE) ||
+	    window_offset > target->size ||
+	    page_count > (target->size - window_offset) /
+		KOBOX_LINUX_MEMORY_PAGE_SIZE)
+		return EINVAL;
+	status = host_protection(protection, &native);
+	if (status)
+		return status;
+	status = kobox_posix_notifications_save(&mask);
+	if (status)
+		return status;
+	for (; mapped < page_count; ++mapped) {
+		void *address;
+
+		if (page_indices[mapped] > SIZE_MAX /
+		    KOBOX_LINUX_MEMORY_PAGE_SIZE) {
+			status = EINVAL;
+			break;
+		}
+		status = kobox_posix_memory_window_map(target,
+			window_offset + mapped * KOBOX_LINUX_MEMORY_PAGE_SIZE,
+			backing, page_indices[mapped] * KOBOX_LINUX_MEMORY_PAGE_SIZE,
+			KOBOX_LINUX_MEMORY_PAGE_SIZE, native, &address);
+		if (status)
+			break;
+	}
+	if (status && mapped)
+		(void)kobox_posix_memory_window_reset(target, window_offset,
+			mapped * KOBOX_LINUX_MEMORY_PAGE_SIZE);
+	restore_status = kobox_posix_notifications_restore(mask);
+	if (status || restore_status)
+		return status ? status : restore_status;
+	*address_out = (char *)target->address + window_offset;
+	return 0;
+}
+
 static int host_protect(void *opaque, size_t offset, size_t size,
 			unsigned int protection)
 {
@@ -305,6 +353,7 @@ const struct kobox_linux_memory_host_operations kobox_task_posix_memory_operatio
 	.size = sizeof(kobox_task_posix_memory_operations),
 	.identity = KOBOX_LINUX_MEMORY_HOST_IDENTITY,
 	.map = host_map,
+	.map_pages = host_map_pages,
 	.reset = host_reset,
 	.protect = host_protect,
 };

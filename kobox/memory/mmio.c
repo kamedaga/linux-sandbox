@@ -7,8 +7,10 @@
 #include <linux/kmsan-checks.h>
 #include <linux/mm.h>
 #include <linux/overflow.h>
+#include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/vmalloc.h>
 #include <linux/xarray.h>
 #include <asm/memtype.h>
 #include <asm/io.h>
@@ -24,6 +26,11 @@ struct kobox_mmio_region {
 
 struct mmio_alias {
 	struct kobox_mmio_region *region;
+	unsigned long address;
+	size_t length;
+	u64 physical;
+	unsigned int protection;
+	enum kobox_mmio_cache cache;
 	pte_t pte;
 };
 
@@ -51,14 +58,12 @@ static bool mmio_transaction(unsigned long address, unsigned int width,
 	handled = true;
 	host = &alias->region->host;
 	last = xa_load(&aliases, end >> PAGE_SHIFT);
-	if (!last || last->region != alias->region ||
-	    pte_pfn(last->pte) != pte_pfn(alias->pte) +
-		((end >> PAGE_SHIFT) - (address >> PAGE_SHIFT)) ||
-	    (write && (!pte_write(alias->pte) || !pte_write(last->pte)))) {
+	if (last != alias || end >= alias->address + alias->length ||
+	    (write && !(alias->protection & KOBOX_LINUX_MEMORY_WRITE))) {
 		result = -EFAULT;
 		goto out;
 	}
-	physical = ((u64)pte_pfn(alias->pte) << PAGE_SHIFT) + offset_in_page(address);
+	physical = alias->physical + address - alias->address;
 	if (write)
 		result = kobox_host_call(host->write(host->context, physical, width, *value));
 	else
@@ -231,6 +236,11 @@ int kobox_mmio_unregister(struct kobox_mmio_region **remove, size_t count)
 		list_del(&remove[index]->list);
 out:
 	raw_spin_unlock_irqrestore(&mmio_lock, flags);
+	if (result == -EBUSY)
+		pr_warn("kobox-mmio: unregister busy start=%#llx length=%#llx aliases=%lu\n",
+			(unsigned long long)remove[index]->host.start,
+			(unsigned long long)remove[index]->host.length,
+			remove[index]->aliases);
 	if (!result) {
 		for (index = 0; index < count; index++) {
 			kfree(remove[index]);
@@ -238,6 +248,53 @@ out:
 		}
 	}
 	return result;
+}
+
+int kobox_mmio_retire_orphan_ioremaps(struct kobox_mmio_region *region)
+{
+	unsigned long flags, index, address, before, after;
+	struct mmio_alias *alias;
+	struct vm_struct *area;
+	bool found;
+
+	if (!region)
+		return -EINVAL;
+	for (;;) {
+		found = false;
+		address = 0;
+		raw_spin_lock_irqsave(&mmio_lock, flags);
+		before = region->aliases;
+		if (before)
+			xa_for_each(&aliases, index, alias)
+				if (alias->region == region) {
+					address = index << PAGE_SHIFT;
+					found = true;
+					break;
+				}
+		raw_spin_unlock_irqrestore(&mmio_lock, flags);
+		if (!before)
+			return 0;
+		if (!found)
+			return -EUCLEAN;
+		area = find_vm_area((void *)address);
+		if (!area || !(area->flags & VM_IOREMAP)) {
+			pr_warn("kobox-mmio: orphan alias has no ioremap VMA va=%#lx aliases=%lu\n",
+				address, before);
+			return -EBUSY;
+		}
+		/* The module closure and DRM files have ended. iounmap owns the
+		 * guest PTE/memtype teardown; removing only the host lease here
+		 * would leave a stale guest mapping to a revoked PCI capability. */
+		iounmap((void __iomem *)area->addr);
+		vm_unmap_aliases();
+		raw_spin_lock_irqsave(&mmio_lock, flags);
+		after = region->aliases;
+		raw_spin_unlock_irqrestore(&mmio_lock, flags);
+		if (after >= before)
+			return -EBUSY;
+		pr_warn("kobox-mmio: retired orphan ioremap va=%#lx aliases=%lu->%lu\n",
+			address, before, after);
+	}
 }
 
 static int cache_type(pte_t pte, enum kobox_mmio_cache *cache)
@@ -254,68 +311,148 @@ static int cache_type(pte_t pte, enum kobox_mmio_cache *cache)
 	return 0;
 }
 
-int kobox_mmio_publish(unsigned long address, pte_t pte, bool create)
+static bool alias_matches(const struct mmio_alias *alias, unsigned long address,
+			  pte_t pte)
 {
-	struct kobox_mmio_region *region;
-	struct mmio_alias *alias;
-	u64 physical = (u64)pte_pfn(pte) << PAGE_SHIFT;
-	unsigned long flags, index = address >> PAGE_SHIFT;
-	unsigned int protection = KOBOX_LINUX_MEMORY_READ;
-	enum kobox_mmio_cache cache;
+	pte_t expected;
+
+	if (address < alias->address ||
+	    address - alias->address >= alias->length)
+		return false;
+	expected = pfn_pte((alias->physical + address - alias->address) >>
+			   PAGE_SHIFT, pte_pgprot(alias->pte));
+	return !((pte_val(expected) ^ pte_val(pte)) &
+		 ~(_PAGE_ACCESSED | _PAGE_DIRTY));
+}
+
+static int install_alias(struct mmio_alias *alias, bool *host_refused)
+{
+	unsigned long index = alias->address >> PAGE_SHIFT;
+	unsigned long pages = alias->length >> PAGE_SHIFT;
+	unsigned long installed = 0;
 	int result;
 
-	if (pte_exec(pte))
+	for (; installed < pages; installed++) {
+		if (xa_load(&aliases, index + installed)) {
+			result = -EBUSY;
+			goto rollback;
+		}
+		result = xa_err(xa_store(&aliases, index + installed, alias,
+					 GFP_ATOMIC));
+		if (result)
+			goto rollback;
+	}
+	result = kobox_host_call(alias->region->host.map(
+		alias->region->host.context, (void *)alias->address,
+		alias->physical, alias->length, alias->protection,
+		alias->cache));
+	if (result) {
+		if (host_refused)
+			*host_refused = true;
+		goto rollback;
+	}
+	alias->region->aliases += pages;
+	return 0;
+rollback:
+	while (installed)
+		xa_erase(&aliases, index + --installed);
+	return result;
+}
+
+static int publish_region(unsigned long address, size_t length, pte_t pte,
+			struct kobox_mmio_region *region,
+			unsigned int protection, enum kobox_mmio_cache cache,
+			bool *host_refused)
+{
+	struct mmio_alias *alias;
+	int result;
+
+	alias = kmalloc(sizeof(*alias), GFP_ATOMIC);
+	if (!alias)
+		return -ENOMEM;
+	*alias = (struct mmio_alias) {
+		.region = region, .address = address, .length = length,
+		.physical = (u64)pte_pfn(pte) << PAGE_SHIFT,
+		.protection = protection, .cache = cache, .pte = pte,
+	};
+	result = install_alias(alias, host_refused);
+	if (result)
+		kfree(alias);
+	return result;
+}
+
+int kobox_mmio_publish_range(unsigned long start, unsigned long end, pte_t first)
+{
+	struct kobox_mmio_region *region;
+	u64 physical = (u64)pte_pfn(first) << PAGE_SHIFT;
+	unsigned long flags, address;
+	size_t failed_length = 0;
+	unsigned int protection = KOBOX_LINUX_MEMORY_READ;
+	enum kobox_mmio_cache cache;
+	bool host_refused = false;
+	int result = 0;
+
+	if (start >= end || !PAGE_ALIGNED(start) || !PAGE_ALIGNED(end) ||
+	    end - start > U64_MAX - physical)
+		return -EINVAL;
+	if (pte_exec(first))
 		return -EACCES;
-	result = cache_type(pte, &cache);
+	result = cache_type(first, &cache);
 	if (result)
 		return result;
-	if (pte_write(pte))
+	if (pte_write(first))
 		protection |= KOBOX_LINUX_MEMORY_WRITE;
 	raw_spin_lock_irqsave(&mmio_lock, flags);
-	alias = xa_load(&aliases, index);
-	if (alias) {
-		/* Accessed/dirty bits do not change the host translation. */
-		if (!((pte_val(alias->pte) ^ pte_val(pte)) &
-		      ~(_PAGE_ACCESSED | _PAGE_DIRTY))) {
-			result = 0;
-			goto out_unlock;
-		}
-		result = -EOPNOTSUPP;
-		goto out_unlock;
-	}
-	/* A TLB flush can observe not-yet-published or failed ioremap PTEs.
-	 * Only the fallible publication boundary may install a new alias.
-	 */
-	if (!create) {
-		result = 0;
-		goto out_unlock;
-	}
-	result = -ERANGE;
-	list_for_each_entry(region, &regions, list) {
-		if (physical < region->host.start ||
-		    physical - region->host.start > region->host.length - PAGE_SIZE)
-			continue;
-		alias = kmalloc(sizeof(*alias), GFP_ATOMIC);
-		if (!alias) {
-			result = -ENOMEM;
+	for (address = start; address < end; ) {
+		size_t length = 0;
+
+		physical = ((u64)pte_pfn(first) << PAGE_SHIFT) +
+			address - start;
+		list_for_each_entry(region, &regions, list) {
+			if (physical < region->host.start ||
+			    physical - region->host.start >= region->host.length)
+				continue;
+			length = min_t(u64, end - address,
+				region->host.length - (physical - region->host.start));
 			break;
 		}
-		alias->region = region;
-		alias->pte = pte;
-		result = xa_err(xa_store(&aliases, index, alias, GFP_ATOMIC));
-		if (!result) {
-			result = kobox_host_call(region->host.map(region->host.context, (void *)address,
-				physical, PAGE_SIZE, protection, cache));
-			if (result)
-				xa_erase(&aliases, index);
+		if (!length) {
+			result = -ERANGE;
+			break;
 		}
-		if (result)
-			kfree(alias);
-		else
-			region->aliases++;
-		break;
+		result = publish_region(address, length,
+			pfn_pte(physical >> PAGE_SHIFT, pte_pgprot(first)),
+			region, protection, cache, &host_refused);
+		if (result) {
+			failed_length = length;
+			break;
+		}
+		address += length;
 	}
-out_unlock:
+	raw_spin_unlock_irqrestore(&mmio_lock, flags);
+	/* The host returns a generic mapping error to ioremap. Keep the exact
+	 * request in RAM logs, but never print while holding the MMIO spinlock. */
+	if (host_refused)
+		pr_err("kobox-mmio: host map refused va=%#lx phys=%#llx bytes=%zu cache=%u prot=%u status=%d\n",
+		       address, (unsigned long long)physical, failed_length,
+		       cache, protection, result);
+	return result;
+}
+
+int kobox_mmio_publish(unsigned long address, pte_t pte, bool create)
+{
+	struct mmio_alias *alias;
+	unsigned long flags;
+	int result;
+
+	if (create)
+		return kobox_mmio_publish_range(address, address + PAGE_SIZE, pte);
+	/* A TLB flush can see a failed ioremap's still-present PTE. Only the
+	 * fallible ioremap boundary may create a new host lease.
+	 */
+	raw_spin_lock_irqsave(&mmio_lock, flags);
+	alias = xa_load(&aliases, address >> PAGE_SHIFT);
+	result = alias && !alias_matches(alias, address, pte) ? -EOPNOTSUPP : 0;
 	raw_spin_unlock_irqrestore(&mmio_lock, flags);
 	return result;
 }
@@ -330,23 +467,74 @@ int kobox_mmio_reset(unsigned long start, unsigned long end, void *context,
 	if (start >= end)
 		return 0;
 	raw_spin_lock_irqsave(&mmio_lock, flags);
-	xa_for_each_range(&aliases, index, alias, start >> PAGE_SHIFT,
-			  (end - 1) >> PAGE_SHIFT) {
-		unsigned long address = index << PAGE_SHIFT;
+	while (start < end) {
+		unsigned long last, first, lease_end, cut_end;
+		unsigned long address;
+		struct mmio_alias *left = NULL, *right = NULL;
+
+		index = start >> PAGE_SHIFT;
+		alias = xa_find(&aliases, &index, (end - 1) >> PAGE_SHIFT,
+				XA_PRESENT);
+		if (!alias)
+			break;
+		address = index << PAGE_SHIFT;
 
 		if (start < address) {
 			result = reset_ram(context, start, address);
 			if (result)
 				goto out;
 		}
+		first = alias->address;
+		lease_end = first + alias->length;
+		cut_end = min(end, lease_end);
+		/* A TLB flush may invalidate only part of an ioremap. Revoke the
+		 * whole host lease before restoring each still-live fragment.
+		 */
+		if (first < address) {
+			left = kmalloc(sizeof(*left), GFP_ATOMIC);
+			if (!left) {
+				result = -ENOMEM;
+				goto out;
+			}
+			*left = *alias;
+			left->length = address - first;
+		}
+		if (cut_end < lease_end) {
+			right = kmalloc(sizeof(*right), GFP_ATOMIC);
+			if (!right) {
+				kfree(left);
+				result = -ENOMEM;
+				goto out;
+			}
+			*right = *alias;
+			right->address = cut_end;
+			right->length = lease_end - cut_end;
+			right->physical += cut_end - first;
+			right->pte = pfn_pte(right->physical >> PAGE_SHIFT,
+					     pte_pgprot(alias->pte));
+		}
 		result = kobox_host_call(alias->region->host.unmap(alias->region->host.context,
-						 (void *)address, PAGE_SIZE));
-		if (result)
+						 (void *)first, alias->length));
+		if (result) {
+			kfree(right);
+			kfree(left);
 			goto out;
-		xa_erase(&aliases, index);
-		alias->region->aliases--;
+		}
+		for (last = first; last < lease_end; last += PAGE_SIZE)
+			xa_erase(&aliases, last >> PAGE_SHIFT);
+		alias->region->aliases -= alias->length >> PAGE_SHIFT;
 		kfree(alias);
-		start = address + PAGE_SIZE;
+		if (left) {
+			result = install_alias(left, NULL);
+			if (result)
+				goto out;
+		}
+		if (right) {
+			result = install_alias(right, NULL);
+			if (result)
+				goto out;
+		}
+		start = cut_end;
 	}
 	if (start < end)
 		result = reset_ram(context, start, end);

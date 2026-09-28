@@ -4,6 +4,7 @@
 
 #include "drm_service.h"
 #include <kobox2/gpu.h>
+#include <kobox2/amdgpu_cs_shape.h>
 
 /* Native-side GPL dispatcher. Decode on the receiver's native stack, not
  * Linux's small kernel stack. Publish the resulting private plan once; only
@@ -15,7 +16,10 @@ struct kobox_drm_query {
 	uint32_t object_id, object_type, mode_flags;
 	uint32_t poll_events;
 	size_t capacity[4], offset[4];
+	struct kb2_amdgpu_cs_part cs_parts[KB2_AMDGPU_CS_PARTS];
+	uint32_t cs_count;
 	size_t output_size, aux_size;
+	size_t inline_size;
 	size_t command_offset, command_size, handles_offset, handle_count;
 	size_t input_syncobjs_offset, input_syncobj_count;
 	size_t output_syncobjs_offset, output_syncobj_count;
@@ -27,13 +31,22 @@ struct kobox_drm_query {
 	size_t mapping_page_capacity;
 	uint32_t mapping_handle, mapping_rights;
 	bool aux_input, aux_output;
-	unsigned char inline_data[KB2_GPU_DRM_MODE_RECORD_FB2_SIZE];
+	unsigned char inline_data[KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_REQUEST_SIZE];
 };
 
 struct kobox_drm_query_api {
 	int (*version)(struct kobox_linux_drm_file *, const size_t *,
 		       struct kobox_linux_drm_version *);
 	int (*get_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t *);
+	int (*amdgpu_info)(struct kobox_linux_drm_file *, uint32_t,
+		const uint32_t *, void *, size_t);
+	int (*amdgpu_simple)(struct kobox_linux_drm_file *, uint32_t,
+		const void *, size_t, uint64_t, void *, size_t,
+		uint32_t *, size_t *);
+	int (*amdgpu_cs)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
+		const struct kb2_amdgpu_cs_part *, size_t, const void *, size_t, uint64_t *);
+	int (*gem_size)(struct kobox_linux_drm_file *, uint32_t, uint64_t *);
+	int (*amdgpu_mmap_validate)(struct kobox_linux_drm_file *, uint32_t);
 	int (*set_client_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t);
 	int (*master)(struct kobox_linux_drm_file *, bool);
 	int (*get_magic)(struct kobox_linux_drm_file *, uint32_t *);
@@ -105,10 +118,16 @@ struct kobox_drm_query_api {
 struct kobox_drm_query_result {
 	uint64_t mapping_id, mapping_length, mapping_page_count;
 	uint32_t mapping_rights, mapping_cache_policy, attachment_class;
+	uint32_t mapping_backing_kind;
 };
 
 int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 			    uint64_t session_id, uint32_t queue_class,
+			    const unsigned char *bytes,
+			    size_t size, const kb2_gpu_region_t *region);
+int kobox_drm_query_prepare_profile(struct kobox_drm_query *out,
+			    uint64_t generation, uint64_t session_id,
+			    uint32_t profile_kind, uint32_t queue_class,
 			    const unsigned char *bytes,
 			    size_t size, const kb2_gpu_region_t *region);
 /* Negative return means infrastructure failure. Driver errors are encoded

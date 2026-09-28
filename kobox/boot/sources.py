@@ -19,6 +19,7 @@ COMMON_SOURCES = (
     "kobox/memory/mmio.c",
     "kobox/boot/lifecycle.c",
     "kobox/boot/module_launch.c",
+    "kobox/boot/firmware_files.c",
     "kobox/boot/device_port.c",
     "kobox/boot/module_port.c",
 )
@@ -75,12 +76,13 @@ GATE_SOURCES = (
 )
 
 def support_sources(with_gates, device_profile="gpu"):
-    if device_profile not in ("gpu", "usb-hid", "virtio-net", "network"):
+    if device_profile not in ("gpu", "usb-hid", "virtio-net", "network", "amdgpu"):
         raise ValueError(f"unsupported device profile: {device_profile}")
-    gpu = device_profile == "gpu"
+    gpu = device_profile in ("gpu", "amdgpu")
     gates = GATE_SOURCES if gpu else tuple(
         source for source in GATE_SOURCES if source != "kobox/boot/drm_file_gate.c")
-    return (COMMON_SOURCES + ARCH_SOURCES +
-            (GPU_SOURCES if gpu else
-             USB_INPUT_SOURCES if device_profile == "usb-hid" else NET_SOURCES) +
+    device_sources = (GPU_SOURCES if gpu else
+                      USB_INPUT_SOURCES if device_profile == "usb-hid" else
+                      NET_SOURCES if device_profile in ("virtio-net", "network") else ())
+    return (COMMON_SOURCES + ARCH_SOURCES + device_sources +
             (gates if with_gates else ()))

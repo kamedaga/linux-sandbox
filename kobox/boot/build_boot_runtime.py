@@ -97,6 +97,10 @@ MACHINE_COMPILE_OVERLAYS = {
         "-include",
         str(SCRIPT_DIR / "include/linux/kobox_fpu_signal_compile.h"),
     ),
+    "arch/x86/mm/pat/set_memory.o": (
+        "-include",
+        str(SCRIPT_DIR / "include/linux/kobox_cpa_compile.h"),
+    ),
 }
 
 WEAK_MACHINE_HOOKS = {
@@ -406,6 +410,7 @@ def link_runtime(arguments):
     task.run([
         arguments.ld, "-static", "-Bsymbolic", "-z", "defs",
         "--wrap=kernel_execve", "--wrap=ioremap_page_range",
+        "--wrap=get_vm_area_caller", "--wrap=memtype_kernel_map_sync",
         "--wrap=set_direct_map_invalid_noflush",
         "--wrap=set_direct_map_default_noflush",
         "--wrap=set_direct_map_valid_noflush",
@@ -432,14 +437,19 @@ def build_inputs(arguments):
     validate_source_order(objects)
     prepare_build(arguments, identity)
     arguments.architecture_include = arguments.source_tree / "kobox/task/include"
-    arguments.extra_include_dirs = [arguments.source_tree / "kobox/boot/include"]
+    arguments.extra_include_dirs = [
+        arguments.source_tree / "kobox/boot/include",
+        arguments.source_tree.parent / "protocol/include",
+    ]
     arguments.architecture = "x86"
     arguments.kernel_release = (
         arguments.canonical_build_dir / "include/config/kernel.release"
     ).read_text().strip()
     arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1",
-                              f"-DKOBOX_BOOT_GPU={int(arguments.device_profile == 'gpu')}",
-                              f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network'))}"]
+                              f"-DKOBOX_BOOT_GPU={int(arguments.device_profile in ('gpu', 'amdgpu'))}",
+                              f"-DKOBOX_BOOT_VIRTIO_GPU={int(arguments.device_profile == 'gpu')}",
+                              f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network'))}",
+                              f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile == 'usb-hid')}"]
     if arguments.with_gates:
         arguments.extra_cflags.append("-DKOBOX_RUNTIME_GATES=1")
 
@@ -515,7 +525,7 @@ def build_inputs(arguments):
 def compile_hosted_modules(arguments):
     inventory = json.loads(arguments.module_inventory.read_text(encoding="utf-8"))
     expected = {"usb-hid": "usb-hid-xhci", "virtio-net": "virtio-net",
-                "network": "network"}
+                "network": "network", "amdgpu": "amdgpu"}
     if inventory.get("format") != "kobox-linux-driver-closure-inventory-dev" or \
             inventory.get("profile") != expected.get(arguments.device_profile):
         raise BootBuildError("hosted module inventory does not match the runtime profile")
@@ -608,8 +618,8 @@ def parse_arguments():
     parser.add_argument("--cpu-arch", choices=("x86_64",), default="x86_64")
     parser.add_argument("--with-gates", action="store_true",
                         help="Link test workloads; omitted for the production core")
-    parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "virtio-net", "network"),
-                        default="gpu", help="Select the hosted PCI device service")
+    parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "virtio-net", "network", "amdgpu"),
+                        default="gpu", help="Select a hosted device profile")
     parser.add_argument("--drm-exec-profile", action="store_true",
                         help="Opt-in bounded EXECBUFFER stage timing in the owned DRM bridge")
     parser.add_argument("--cc", default="clang-18")

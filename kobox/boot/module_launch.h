@@ -7,6 +7,8 @@
 #include "device_port.h"
 #include "input_port.h"
 #include "net_port.h"
+#include "firmware_files.h"
+#include <kobox2/module_progress.h>
 
 /* Borrowed immutable package data, local to one sandbox process. One launch
  * attempt per boot; restart creates a fresh process and resource generation.
@@ -18,34 +20,14 @@ struct kobox_linux_native_module {
 	const char *parameters;
 };
 
-enum kobox_linux_module_progress {
-	KOBOX_MODULE_PROGRESS_PCI_PREPARE = 1,
-	KOBOX_MODULE_PROGRESS_PCI_READY,
-	KOBOX_MODULE_PROGRESS_MODULE_BEGIN,
-	KOBOX_MODULE_PROGRESS_MODULE_FAILED,
-	KOBOX_MODULE_PROGRESS_MODULES_LOADED,
-	KOBOX_MODULE_PROGRESS_PROBE_WAIT,
-	KOBOX_MODULE_PROGRESS_PROBE_BOUND,
-	KOBOX_MODULE_PROGRESS_NET_OPEN,
-	KOBOX_MODULE_PROGRESS_NET_ALLOCATED,
-	KOBOX_MODULE_PROGRESS_NET_RTNL_WAIT,
-	KOBOX_MODULE_PROGRESS_NET_RTNL_HELD,
-	KOBOX_MODULE_PROGRESS_NET_DEVICE_FOUND,
-	KOBOX_MODULE_PROGRESS_NET_DRIVER_OPEN,
-	KOBOX_MODULE_PROGRESS_NET_DRIVER_OPENED,
-	KOBOX_MODULE_PROGRESS_NET_DMA_MAPS,
-	KOBOX_MODULE_PROGRESS_NET_DMA_FAILURE,
-	KOBOX_MODULE_PROGRESS_NET_DMA_FAILURE_DETAIL,
-	KOBOX_MODULE_PROGRESS_NET_FREE_PAGES,
-	KOBOX_MODULE_PROGRESS_NET_PACKET_ATTACHED,
-	KOBOX_MODULE_PROGRESS_NET_READY,
-	KOBOX_MODULE_PROGRESS_LIFECYCLE_READY,
-};
-
 struct kobox_linux_module_launch {
 	size_t size;
 	const struct kobox_linux_native_module *modules;
 	size_t count;
+	/* Optional verified files materialized in Linux's private rootfs before
+	 * modules can issue request_firmware(). Never a host-rootfs copy. */
+	const struct kobox_linux_firmware_file *firmware;
+	size_t firmware_count;
 	/* Optional device attachment; readiness precedes lifecycle publication. */
 	const struct kobox_linux_device_launch *device;
 	/* Device-class-neutral PCI attachment. Mutually exclusive with device. */

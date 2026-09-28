@@ -588,12 +588,17 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 	add_library(kobox_linux_boot_gate STATIC
 		boot/boot_test.c)
 	target_compile_features(kobox_linux_boot_gate PRIVATE c_std_11)
+	target_include_directories(kobox_linux_boot_gate PUBLIC
+		"${PROJECT_SOURCE_DIR}/protocol/include")
 	target_compile_options(kobox_linux_boot_gate
 		PRIVATE -Wall -Wextra -Wpedantic -Werror)
 	target_link_libraries(kobox_linux_boot_gate
 		PUBLIC kobox_posix_bootstrap kobox_posix_mm kobox_posix_vm)
 	add_executable(kobox_linux_boot_test boot/boot_test_main.c)
 	target_link_libraries(kobox_linux_boot_test PRIVATE kobox_linux_boot_gate)
+	add_executable(kobox_linux_module_smoke_test boot/module_smoke_test.c)
+	target_compile_options(kobox_linux_module_smoke_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+	target_link_libraries(kobox_linux_module_smoke_test PRIVATE kobox_linux_boot_gate)
 	add_executable(kobox_linux_pci_test
 		boot/pci_test.c boot/pci_config_fixture.c)
 	target_compile_options(kobox_linux_pci_test

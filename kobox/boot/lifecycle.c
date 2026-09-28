@@ -8,6 +8,7 @@
 #include <linux/ktime.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
+#include <linux/jiffies.h>
 
 static DECLARE_COMPLETION(stop_requested);
 static struct kobox_linux_lifecycle lifecycle;
@@ -28,7 +29,9 @@ int kobox_linux_lifecycle_serve(const struct kobox_linux_lifecycle *host,
 
 	/* One launch owner in PID 1; there is no in-process generation reuse. */
 	if (!host || host->size != sizeof(*host) || !host->context ||
-	    !host->ready || !host->pending || !!host->poll != !!host->idle)
+	    !host->ready || !host->pending || !!host->poll != !!host->idle ||
+	    !!host->monitor != !!host->monitor_context ||
+	    !!host->monitor != !!host->abort)
 		return -EINVAL;
 	if (smp_load_acquire(&armed))
 		return -EBUSY;
@@ -58,7 +61,20 @@ int kobox_linux_lifecycle_serve(const struct kobox_linux_lifecycle *host,
 			poll_until = 0;
 			if (lifecycle.idle)
 				kobox_host_call((lifecycle.idle(lifecycle.context), 0));
-			wait_for_completion(&stop_requested);
+			if (lifecycle.monitor) {
+				if (!wait_for_completion_timeout(&stop_requested, HZ)) {
+					result = lifecycle.monitor(lifecycle.monitor_context);
+					if (result) {
+						int aborted = kobox_host_call(
+							lifecycle.abort(lifecycle.context, result));
+						if (aborted)
+							return aborted;
+						return result;
+					}
+				}
+			} else {
+				wait_for_completion(&stop_requested);
+			}
 			continue;
 		}
 		if (result == 1)

@@ -21,6 +21,7 @@ struct kobox_pci_config_fixture {
 	uint64_t backing_offset;
 	uint32_t map_calls;
 	uint32_t unmap_calls;
+	size_t largest_map;
 	uint32_t cache_seen;
 	unsigned char *transaction_memory;
 	uint32_t transaction_reads;

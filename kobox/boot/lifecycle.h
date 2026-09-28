@@ -29,6 +29,18 @@ struct kobox_linux_lifecycle {
 	 */
 	int (*poll)(void *context);
 	void (*idle)(void *context);
+	/* Optional opening-task inspection monitor. It runs only while the
+	 * lifecycle is idle, at most once per second, and may use Linux APIs.
+	 * A negative result ends the one-shot generation through normal cleanup.
+	 * It must not be used as the stop notification from hardirq context.
+	 */
+	int (*monitor)(void *context);
+	void *monitor_context;
+	/* An inspection abort must also release the native receiver before the
+	 * opening task unloads modules. The host handles this as a terminal local
+	 * error; it does not impersonate a peer QUIESCE request.
+	 */
+	int (*abort)(void *context, int error);
 };
 
 #ifdef __KERNEL__

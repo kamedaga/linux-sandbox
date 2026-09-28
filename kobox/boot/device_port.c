@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "device_port.h"
+#include "diagnostic.h"
 
 #include <linux/errno.h>
 #include <linux/pci.h>
@@ -68,14 +69,20 @@ int kobox_linux_device_port_finish(struct kobox_linux_device_port *port)
 		return -EBUSY;
 	if (port->irq) {
 		result = kobox_linux_irq_detach(port->irq);
-		if (result)
+		if (result) {
+			kobox_linux_boot_diagnostic(
+				"kobox-device: IRQ detach status=%d\n", result);
 			return result;
+		}
 		port->irq = NULL;
 	}
 	if (port->dma) {
 		result = kobox_linux_dma_detach(port->dma);
-		if (result)
+		if (result) {
+			kobox_linux_boot_diagnostic(
+				"kobox-device: DMA detach status=%d\n", result);
 			return result;
+		}
 		port->dma = NULL;
 	}
 	if (port->pci) {
@@ -83,9 +90,22 @@ int kobox_linux_device_port_finish(struct kobox_linux_device_port *port)
 		port->pci = NULL;
 	}
 	if (port->bridge) {
-		result = kobox_linux_pci_remove(port->bridge);
-		if (result)
+		/* This is the final owner path after module unload, file closure,
+		 * IRQ detach and DMA revoke. Any remaining ioremap is an orphan;
+		 * let Linux tear down its VMA before retiring the host BAR grant. */
+		result = kobox_linux_pci_retire_orphan_ioremaps(port->bridge);
+		if (result) {
+			kobox_linux_boot_diagnostic(
+				"kobox-device: orphan MMIO retire status=%d\n",
+				result);
 			return result;
+		}
+		result = kobox_linux_pci_remove(port->bridge);
+		if (result) {
+			kobox_linux_boot_diagnostic(
+				"kobox-device: PCI bridge remove status=%d\n", result);
+			return result;
+		}
 	}
 	kfree(port);
 	return 0;

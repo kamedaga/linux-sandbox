@@ -2,6 +2,7 @@
 
 #include "pci_host.h"
 #include "exception.h"
+#include "../memory/mmio.h"
 
 #include <linux/pci.h>
 #include <linux/rcupdate.h>
@@ -110,6 +111,15 @@ static int register_accessors(void __iomem *mapping)
 	return 0;
 }
 
+static int unexpected_ram_reset(void *context, unsigned long start,
+				unsigned long end)
+{
+	(void)context;
+	(void)start;
+	(void)end;
+	return -EINVAL;
+}
+
 int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 			  struct kobox_linux_pci_report *report,
 			  int (*mapping_faults)(void *address))
@@ -179,7 +189,10 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 		if (mapping)
 			goto remove;
 		vm_unmap_aliases();
-		if (pci_write_config_dword(device, 0x148, 2))
+		/* A contiguous BAR now has one host lease; reject that lease to
+		 * exercise ioremap rollback without depending on page-by-page calls.
+		 */
+		if (pci_write_config_dword(device, 0x148, 1))
 			goto remove;
 		mapping = pci_iomap(device, 0, 0);
 		if (mapping)
@@ -191,6 +204,20 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 		if (!mapping || !alias)
 			goto remove;
 		if (register_accessors(mapping))
+			goto remove;
+		/* A lazy TLB flush may revoke only the middle page of a larger
+		 * host lease. Its neighbors must remain mapped after the split.
+		 */
+		pte = lookup_address((unsigned long)mapping + PAGE_SIZE, &level);
+		if (!pte || level != PG_LEVEL_4K ||
+		    kobox_mmio_reset((unsigned long)mapping + PAGE_SIZE,
+			(unsigned long)mapping + 2 * PAGE_SIZE, NULL,
+			unexpected_ram_reset) ||
+		    mapping_faults((void __force *)(mapping + PAGE_SIZE)) != 1 ||
+		    readl(mapping + 72) != 0xabcdef01 ||
+		    kobox_mmio_publish_range((unsigned long)mapping + PAGE_SIZE,
+			(unsigned long)mapping + 2 * PAGE_SIZE, ptep_get(pte)) ||
+		    readl(mapping + PAGE_SIZE) != 0xdcba9876)
 			goto remove;
 		writel(0x51c0ffee, mapping + PAGE_SIZE);
 		if (readl(alias) != 0x51c0ffee)
@@ -242,6 +269,17 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 		if (alias)
 			goto remove;
 		report->mappings++;
+		/* A generation can end with a driver-owned ioremap VMA still
+		 * present. Explicit retirement must take Linux's iounmap path;
+		 * ordinary pci_remove above must still reject a live borrower. */
+		retired = (void __force *)mapping;
+		mapping = NULL;
+		if (kobox_linux_pci_retire_orphan_ioremaps(bridge))
+			goto remove;
+		vm_unmap_aliases();
+		if (mapping_faults(retired) != 1)
+			goto remove;
+		report->revoked_mappings++;
 		result = 0;
 remove:
 		if (alias)

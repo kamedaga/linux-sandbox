@@ -23,6 +23,7 @@ static void fixture_close(void *context)
 			abort();
 	}
 	if (fixture->bad_sizing || fixture->sizing_pending || fixture->sizing != 12 ||
+	    fixture->largest_map != 0x4000 ||
 	    fixture->map_calls != fixture->unmap_calls ||
 	    fixture->cache_seen != ((1U << KOBOX_MMIO_UC_MINUS) |
 				   (1U << KOBOX_MMIO_WC)) || close(fixture->backing))

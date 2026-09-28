@@ -59,6 +59,7 @@ struct pci_host_bridge;
 int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 			struct pci_host_bridge **bridge_out);
 int kobox_linux_pci_remove(struct pci_host_bridge *bridge);
+int kobox_linux_pci_retire_orphan_ioremaps(struct pci_host_bridge *bridge);
 int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 			  struct kobox_linux_pci_report *report,
 			  int (*mapping_faults)(void *address));

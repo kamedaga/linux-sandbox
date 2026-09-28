@@ -2,8 +2,13 @@
 
 #include "drm_query.h"
 
+#include <kobox2/amdgpu_info_shape.h>
+
 #include <errno.h>
 #include <string.h>
+#ifdef __KERNEL__
+#include <linux/printk.h>
+#endif
 
 enum {
 	KOBOX_DRM_PRIME_RDWR = 0x2u,
@@ -131,8 +136,9 @@ static int input_handle_span(const kb2_gpu_command_t *command,
 	return 0;
 }
 
-int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
-			    uint64_t session_id, uint32_t queue_class,
+int kobox_drm_query_prepare_profile(struct kobox_drm_query *out,
+			    uint64_t generation, uint64_t session_id,
+			    uint32_t profile_kind, uint32_t queue_class,
 			    const unsigned char *bytes,
 			    size_t size, const kb2_gpu_region_t *region)
 {
@@ -148,7 +154,7 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 	if (!out || !session_id || !region || region->length > SIZE_MAX)
 		return -EINVAL;
 	status = kb2_gpu_command_decode(bytes, size, generation,
-		KB2_GPU_PROFILE_VIRGL, queue_class,
+		profile_kind, queue_class,
 		region, 1, &command);
 	if (status != KB2_PROTOCOL_OK || command.session_id != session_id)
 		return -EPROTO;
@@ -169,6 +175,7 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 		return -EPROTO;
 	if (length)
 		memcpy(query.inline_data, data, length);
+	query.inline_size = length;
 	if (command.command_set_id == KB2_GPU_DRM_CORE_SET_ID &&
 	    command.command_id == KB2_GPU_DRM_CORE_COMMAND_GET_CAP) {
 		if (!data || length != KB2_GPU_DRM_CORE_RECORD_CAP_REQUEST_SIZE)
@@ -655,6 +662,155 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 		    command.counts[0] != 1u + (uint32_t)!!query.capacity[0] ||
 		    command.counts[1] != (uint32_t)!!query.capacity[0])
 			return -EPROTO;
+	} else if (command.command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_AMDGPU_COMMAND_INFO) {
+		uint32_t query_id, record_id, count, selectors[4];
+		struct kb2_amdgpu_info_shape shape;
+		size_t capacity;
+
+		if (!data || length != KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_SIZE ||
+		    command.counts[0] != 2 || command.counts[1] != 1 ||
+		    command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+		query_id = read_u32(data +
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_QUERY_OFFSET);
+		for (unsigned int i = 0; i < 4; ++i)
+			selectors[i] = read_u32(data + 16 + i * 4);
+		if (!kb2_amdgpu_info_shape(query_id, selectors, &shape))
+			return -EPROTO;
+		record_id = shape.record; count = shape.count; capacity = shape.bytes;
+		if (!record_id ||
+		    read_u32(data +
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_RESPONSE_RECORD_ID_OFFSET) != record_id ||
+		    read_u32(data +
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_RESPONSE_CAPACITY_OFFSET) != capacity ||
+		    read_u32(data +
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_FLAGS_OFFSET) ||
+		    output_span(&command, region, 2, record_id, count, capacity / count,
+			&query.offset[0], &query.output_size) ||
+		    query.offset[0])
+			return -EPROTO;
+		query.capacity[0] = capacity;
+		query.aux_size = capacity;
+		query.aux_output = true;
+	} else if (command.command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID &&
+		   command.command_id == KB2_GPU_DRM_AMDGPU_COMMAND_CS) {
+		uint32_t count = data ? read_u32(data + 8) : 0;
+		size_t offset = 0;
+		unsigned int ibs = 0, bos = 0;
+
+		if (!data || length != KB2_GPU_DRM_AMDGPU_RECORD_CS_REQUEST_SIZE ||
+		    !read_u32(data) || read_u32(data + 12) || !count ||
+		    count > KB2_AMDGPU_CS_PARTS || command.counts[0] != count + 1 ||
+		    command.counts[1] != count || command.counts[2] || command.deadline_ns)
+			return -EPROTO;
+		for (uint32_t i = 0; i < count; ++i) {
+			kb2_gpu_argument_t argument;
+			struct kb2_amdgpu_cs_part *p = &query.cs_parts[i];
+			uint32_t size;
+			if (kb2_gpu_command_argument(&command, i + 1, &argument) ||
+			    argument.count > 65536)
+				return -EPROTO;
+			p->record = argument.record_schema_id;
+			p->count = argument.count;
+			p->offset = offset;
+			size = kb2_amdgpu_cs_element_size(p->record);
+			p->bytes = p->count * size;
+			if (!kb2_amdgpu_cs_part_valid(p) ||
+			    input_span(&command, region, i + 1, i + 2,
+				p->record, offset, p->count, size))
+				return -EPROTO;
+			ibs += p->record == KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_IB;
+			if (p->record == KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_BO_HANDLE &&
+			    (++bos > 1 || read_u32(data + 4)))
+				return -EPROTO;
+			offset += p->bytes;
+		}
+		if (!ibs) return -EPROTO;
+		query.cs_count = count;
+		query.aux_size = offset;
+		query.aux_input = true;
+	} else if (command.command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID) {
+		size_t expected;
+
+		if (!data)
+			return -EPROTO;
+		switch (command.command_id) {
+		case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_MMAP:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_GEM_MMAP_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			query.mapping_handle = read_u32(data);
+			query.mapping_rights = read_u32(data + 4);
+			if (!query.mapping_handle || query.mapping_rights !=
+			    (KB2_GPU_SPAN_RIGHT_READ | KB2_GPU_SPAN_RIGHT_WRITE))
+				return -EPROTO;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_CREATE:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_GEM_CREATE_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			if (!read_u64(data))
+				return -EPROTO;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_CONTEXT:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_CONTEXT_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			if ((read_u32(data) < 1 || read_u32(data) > 4) ||
+			    read_u32(data + 4) ||
+			    (read_u32(data) == 1 && read_u32(data + 8)) ||
+			    (read_u32(data) != 1 && !read_u32(data + 8)))
+				return -EPROTO;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_VA:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_GEM_VA_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			if (read_u32(data + 12) || read_u64(data + 40) ||
+			    read_u32(data + 48) || read_u32(data + 52) ||
+			    !read_u64(data + 16) || !read_u64(data + 32))
+				return -EPROTO;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_METADATA:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_REQUEST_SIZE;
+			if (length != expected || !read_u32(data) ||
+			    (read_u32(data + 4) != 1 && read_u32(data + 4) != 2) ||
+			    read_u64(data + 8) || read_u32(data + 24) > 256 || read_u32(data + 28))
+				return -EPROTO;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_WAIT_IDLE:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_GEM_WAIT_IDLE_REQUEST_SIZE;
+			if (length != expected || !read_u32(data) || read_u32(data + 4))
+				return -EPROTO;
+			query.fence_deadline_ns = command.deadline_ns;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_WAIT_CS:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_WAIT_CS_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			if (!command.deadline_ns ||
+			    command.deadline_ns > INT64_MAX || !read_u32(data + 20))
+				return -EPROTO;
+			query.timeout_nsec = command.deadline_ns;
+			break;
+		case KB2_GPU_DRM_AMDGPU_COMMAND_VM:
+			expected = KB2_GPU_DRM_AMDGPU_RECORD_VM_REQUEST_SIZE;
+			if (length != expected)
+				return -EPROTO;
+			if ((read_u32(data) != 1 && read_u32(data) != 2) ||
+			    read_u32(data + 4))
+				return -EPROTO;
+			break;
+		default:
+			return -EOPNOTSUPP;
+		}
+		if (!data || length != expected || command.counts[0] != 1 ||
+		    command.counts[1] || command.counts[2] ||
+		    (command.command_id != KB2_GPU_DRM_AMDGPU_COMMAND_WAIT_CS &&
+		     command.command_id != KB2_GPU_DRM_AMDGPU_COMMAND_GEM_WAIT_IDLE &&
+		     command.deadline_ns))
+			return -EPROTO;
 	} else if (command.command_set_id == KB2_GPU_DRM_VIRTGPU_SET_ID) {
 		size_t expected = 0;
 
@@ -884,6 +1040,15 @@ int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
 	return 0;
 }
 
+int kobox_drm_query_prepare(struct kobox_drm_query *out, uint64_t generation,
+			    uint64_t session_id, uint32_t queue_class,
+			    const unsigned char *bytes,
+			    size_t size, const kb2_gpu_region_t *region)
+{
+	return kobox_drm_query_prepare_profile(out, generation, session_id,
+		KB2_GPU_PROFILE_VIRGL, queue_class, bytes, size, region);
+}
+
 static uint32_t command_status(int result)
 {
 	switch (result) {
@@ -917,7 +1082,7 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 			   struct kobox_drm_query_result *query_result)
 {
 	struct kobox_linux_drm_version version;
-	unsigned char record[KB2_GPU_DRM_MODE_RECORD_CONNECTOR_RESULT_SIZE] = {0};
+	unsigned char record[KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_RESULT_SIZE] = {0};
 	kb2_gpu_inline_completion_t reply = {0};
 	uint64_t value;
 	size_t index;
@@ -1474,10 +1639,14 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 	} else if ((query->command_set_id == KB2_GPU_DRM_MODE_SET_ID &&
 		    query->command_id == KB2_GPU_DRM_MODE_COMMAND_MAP_DUMB) ||
 		   (query->command_set_id == KB2_GPU_DRM_VIRTGPU_SET_ID &&
-		    query->command_id == KB2_GPU_DRM_VIRTGPU_COMMAND_MAP)) {
+		    query->command_id == KB2_GPU_DRM_VIRTGPU_COMMAND_MAP) ||
+		   (query->command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID &&
+		    query->command_id == KB2_GPU_DRM_AMDGPU_COMMAND_GEM_MMAP)) {
 		struct kobox_linux_drm_service_mapping mapping;
 		const bool mode_map =
 			query->command_set_id == KB2_GPU_DRM_MODE_SET_ID;
+		const bool amdgpu_map =
+			query->command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID;
 
 		if (!api->virtgpu_map || !query_result)
 			result = -EINVAL;
@@ -1490,10 +1659,28 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 		else if (query->mapping_page_capacity >
 			 aux_size / sizeof(uint64_t))
 			result = -ENOMEM;
-		else
-			result = api->virtgpu_map(service, file_cookie,
-				query->mapping_handle, query->mapping_rights,
-				(uint64_t *)aux, query->mapping_page_capacity, &mapping);
+		else {
+			int map_stage = 0;
+
+			result = amdgpu_map ?
+				(!api->amdgpu_mmap_validate ? -EINVAL :
+				 api->amdgpu_mmap_validate(file,
+					 query->mapping_handle)) : 0;
+			if (!result) {
+				map_stage = 1;
+				result = api->virtgpu_map(service, file_cookie,
+					query->mapping_handle, query->mapping_rights,
+					(uint64_t *)aux, query->mapping_page_capacity,
+					&mapping);
+			}
+#ifdef __KERNEL__
+			if (amdgpu_map && result)
+				pr_warn("kobox-drm: amdgpu map failure stage=%d handle=%u status=%d pages=%zu\n",
+					map_stage, query->mapping_handle, result,
+					query->mapping_page_capacity);
+#endif
+			(void)map_stage;
+		}
 		if (!result) {
 			*query_result = (struct kobox_drm_query_result) {
 				.mapping_id = mapping.mapping_id,
@@ -1501,6 +1688,7 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 				.mapping_page_count = mapping.page_count,
 				.mapping_rights = query->mapping_rights,
 				.mapping_cache_policy = mapping.cache_policy,
+				.mapping_backing_kind = mapping.backing_kind,
 				.attachment_class = KB2_GPU_ATTACHMENT_MEMORY,
 			};
 			const kb2_gpu_virtgpu_map_completion_t mapped = {
@@ -1513,13 +1701,82 @@ int kobox_drm_query_execute_service(const struct kobox_drm_query *query,
 				.generation = query->generation,
 				.rights = query->mapping_rights,
 			};
-			const kb2_protocol_status_t encoded = mode_map ?
+			const kb2_protocol_status_t encoded = amdgpu_map ?
+				kb2_gpu_amdgpu_map_completion_encode(completion,
+					completion_capacity, completion_size, &mapped) :
+				mode_map ?
 				kb2_gpu_mode_map_completion_encode(completion,
 					completion_capacity, completion_size, &mapped) :
 				kb2_gpu_virtgpu_map_completion_encode(completion,
 					completion_capacity, completion_size, &mapped);
 			return encoded ==
 				KB2_PROTOCOL_OK ? 0 : -EPROTO;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_AMDGPU_COMMAND_INFO) {
+		uint32_t query_id = read_u32(query->inline_data +
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_QUERY_OFFSET);
+		uint32_t record_id;
+		uint32_t selectors[4];
+		uint32_t count;
+		for (size_t i = 0; i < 4; ++i)
+			selectors[i] = read_u32(query->inline_data +
+				KB2_GPU_DRM_AMDGPU_RECORD_INFO_REQUEST_SELECTOR_OFFSET + i * 4);
+		struct kb2_amdgpu_info_shape shape;
+		if (!kb2_amdgpu_info_shape(query_id, selectors, &shape))
+			return -EPROTO;
+		count = shape.count;
+		record_id = shape.record;
+
+		if (!api->amdgpu_info || !record_id ||
+		    aux_size != query->capacity[0])
+			return -EINVAL;
+		result = api->amdgpu_info(file, query_id, selectors, aux, aux_size);
+		if (!result) {
+			write_u32(record +
+				KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT_RESPONSE_RECORD_ID_OFFSET,
+				record_id);
+			write_u32(record +
+				KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT_RESPONSE_COUNT_OFFSET, count);
+			write_u32(record +
+				KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT_RESPONSE_BYTES_OFFSET,
+				aux_size);
+			write_u32(record +
+				KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT_REQUIRED_COUNT_OFFSET, count);
+			reply.record_schema_id = KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT;
+			reply.length = KB2_GPU_DRM_AMDGPU_RECORD_INFO_RESULT_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID &&
+		   query->command_id == KB2_GPU_DRM_AMDGPU_COMMAND_CS) {
+		uint64_t sequence = 0;
+
+		if (!api->amdgpu_cs || !aux ||
+		    aux_size != query->aux_size)
+			return -EINVAL;
+		result = api->amdgpu_cs(file, read_u32(query->inline_data),
+			read_u32(query->inline_data + 4), query->cs_parts,
+			query->cs_count, aux, aux_size, &sequence);
+		if (!result) {
+			if (!sequence)
+				return -EPROTO;
+			write_u64(record, sequence);
+			reply.record_schema_id = KB2_GPU_DRM_AMDGPU_RECORD_CS_RESULT;
+			reply.length = KB2_GPU_DRM_AMDGPU_RECORD_CS_RESULT_SIZE;
+		}
+	} else if (query->command_set_id == KB2_GPU_DRM_AMDGPU_SET_ID) {
+		uint32_t record_id = 0;
+		size_t record_size = 0;
+
+		if (!api->amdgpu_simple)
+			return -EINVAL;
+		result = api->amdgpu_simple(file, query->command_id,
+			query->inline_data, query->inline_size,
+			query->command_id == KB2_GPU_DRM_AMDGPU_COMMAND_WAIT_CS ?
+				(uint64_t)query->timeout_nsec : query->fence_deadline_ns,
+			record, sizeof(record), &record_id, &record_size);
+		if (!result) {
+			reply.record_schema_id = record_id;
+			reply.length = record_size;
 		}
 	} else if (query->command_set_id == KB2_GPU_DRM_VIRTGPU_SET_ID &&
 		   query->command_id == KB2_GPU_DRM_VIRTGPU_COMMAND_GETPARAM) {

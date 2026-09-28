@@ -7,15 +7,17 @@
 #include "irq_host.h"
 #include "drm_service.h"
 
-/* One exclusively authorized virtio GPU function, not a native handle or
- * wire message. Host ports and their contexts survive module unload and any
- * failed cleanup. Other device classes need their own readiness criteria.
+/* One exclusively authorized PCI GPU function, not a native handle or wire
+ * message. Host ports and their contexts survive module unload and any failed
+ * cleanup. This contract discovers DRM nodes only below the granted function.
  */
 struct kobox_linux_device_launch {
 	size_t size;
 	const struct kobox_linux_pci_host *pci;
 	const struct kobox_linux_dma_host *dma;
 	const struct kobox_linux_irq_host *irq;
+	/* Common DRM file/session service. The profile-specific command decoder
+	 * lives on the native adapter side; this owner never accepts a peer devt. */
 	const struct kobox_linux_drm_event_host *drm_events;
 	uint32_t render_file_limit;
 };
@@ -46,6 +48,8 @@ int kobox_linux_device_prepare(const struct kobox_linux_device_launch *launch,
 int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 			    struct kobox_linux_device_launch_report *report);
 int kobox_linux_device_module_ready(struct kobox_linux_device_session *session);
+/* Inspection-only periodic sensor check while the render file remains open. */
+int kobox_linux_device_inspection_monitor(void *context);
 /* Owner-task close/drain before any module unload, including READY failure. */
 int kobox_linux_device_quiesce(struct kobox_linux_device_session *session,
 			      struct kobox_linux_device_launch_report *report);

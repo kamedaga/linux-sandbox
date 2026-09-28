@@ -12,11 +12,19 @@
 #define KOBOX_LINUX_MEMORY_HOST_IDENTITY 0x4b4f424f584d454dULL
 #define KOBOX_LINUX_MEMORY_PAGE_SIZE 4096U
 #define KOBOX_LINUX_MEMORY_LOGICAL_CPUS 2U
+#define KOBOX_LINUX_MEMORY_SCATTER_PAGES 64U
 
 enum kobox_linux_memory_protection {
 	KOBOX_LINUX_MEMORY_READ = 1U << 0,
 	KOBOX_LINUX_MEMORY_WRITE = 1U << 1,
 	KOBOX_LINUX_MEMORY_EXECUTE = 1U << 2,
+};
+
+enum kobox_linux_memory_cache {
+	KOBOX_LINUX_MEMORY_CACHE_WB = 0,
+	KOBOX_LINUX_MEMORY_CACHE_UC_MINUS = 1,
+	KOBOX_LINUX_MEMORY_CACHE_UC = 2,
+	KOBOX_LINUX_MEMORY_CACHE_WC = 3,
 };
 
 struct kobox_linux_memory_host_operations {
@@ -28,9 +36,24 @@ struct kobox_linux_memory_host_operations {
 	int (*map)(void *window, size_t window_offset, void *backing,
 		   size_t backing_offset, size_t size, unsigned int protection,
 		   void **address_out);
+	/* Map virtual neighbors backed by arbitrary RAM pages in one host VMA.
+	 * The page indices belong to backing and may be consumed synchronously;
+	 * executable aliases are handled by map() instead.
+	 */
+	int (*map_pages)(void *window, size_t window_offset, void *backing,
+			 const uint64_t *page_indices, size_t page_count,
+			 unsigned int protection, void **address_out);
 	int (*reset)(void *window, size_t window_offset, size_t size);
 	int (*protect)(void *window, size_t window_offset, size_t size,
 		       unsigned int protection);
+	/* Physical RAM policy is owned by backing, shared by every host alias.
+	 * Completion includes host-wide TLB/cache drain before the new PAT type
+	 * becomes visible. The guest never supplies a host physical address.
+	 */
+	int (*set_cache)(void *backing, size_t backing_offset, size_t size,
+			 unsigned int cache);
+	/* Acknowledges a preceding host cache transition's completed drain. */
+	int (*cache_flush)(void);
 };
 
 struct kobox_linux_memory_layout {

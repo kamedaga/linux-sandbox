@@ -35,6 +35,7 @@ struct kobox_linux_drm_service_mapping {
 	uint64_t length;
 	uint64_t page_count;
 	uint32_t cache_policy;
+	uint32_t backing_kind;
 };
 
 struct kobox_linux_drm_service_prime {

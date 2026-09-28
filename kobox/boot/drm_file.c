@@ -27,8 +27,13 @@
 #include <drm/drm_gem.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_mode.h>
+#include <drm/amdgpu_drm.h>
 #include <drm/virtgpu_drm.h>
 #include <kobox2/gpu_layout.h>
+#include <kobox2/gpu_drm_amdgpu_layout.h>
+#include <kobox2/amdgpu_info_bridge.h>
+#include <kobox2/amdgpu_info_shape.h>
+#include <kobox2/amdgpu_cs_shape.h>
 #include <asm/ptrace.h>
 
 long __x64_sys_ioctl(const struct pt_regs *regs);
@@ -99,6 +104,7 @@ int kobox_linux_drm_mapping_register(
 	int error = 0;
 
 	if (!operations || operations->size != sizeof(*operations) ||
+	    !operations->get_size ||
 	    !operations->map || !operations->release || !owner)
 		return -EINVAL;
 	mutex_lock(&mapping_provider_lock);
@@ -384,6 +390,498 @@ int kobox_linux_drm_get_cap(struct kobox_linux_drm_file *file, u64 capability,
 	if (!result)
 		*value = argument.value;
 	return result;
+}
+
+int kobox_linux_drm_amdgpu_info(struct kobox_linux_drm_file *file,
+			       u32 query, const u32 *selectors,
+			       void *output, size_t size)
+{
+	struct drm_amdgpu_info argument = {0};
+	struct drm_amdgpu_info_device device = {0};
+	struct drm_amdgpu_info_hw_ip hw_ip = {0};
+	struct drm_amdgpu_info_firmware firmware = {0};
+	struct drm_amdgpu_memory_info memory = {0};
+	struct drm_amdgpu_info_vram_gtt vram = {0};
+	struct drm_amdgpu_info_video_caps video = {0};
+	struct kb2_amdgpu_info_shape shape;
+	u64 private_value = 0;
+	u32 registers[128] = {0};
+	u32 selector, instance;
+	void *native = &private_value;
+	size_t native_size = size;
+	int result;
+
+	if (!output || !selectors ||
+	    !kb2_amdgpu_info_shape(query, selectors, &shape) ||
+	    size != shape.bytes)
+		return -EINVAL;
+	static_assert(AMDGPU_HW_IP_NUM == 10);
+	static_assert(sizeof(firmware) == KB2_GPU_DRM_AMDGPU_RECORD_INFO_FIRMWARE_SIZE);
+	static_assert(sizeof(memory) == KB2_GPU_DRM_AMDGPU_RECORD_INFO_MEMORY_SIZE);
+	static_assert(sizeof(vram) == KB2_GPU_DRM_AMDGPU_RECORD_INFO_VRAM_GTT_SIZE);
+	static_assert(sizeof(video) == KB2_GPU_DRM_AMDGPU_RECORD_INFO_VIDEO_CAPS_SIZE);
+	selector = selectors[0];
+	instance = selectors[1];
+
+	if (query == AMDGPU_INFO_DEV_INFO &&
+	    size == KB2_GPU_DRM_AMDGPU_RECORD_INFO_DEVICE_SIZE) {
+		if (selector || instance)
+			return -EINVAL;
+		native = &device;
+		native_size = sizeof(device);
+	} else if (query == AMDGPU_INFO_HW_IP_INFO &&
+		   size == KB2_GPU_DRM_AMDGPU_RECORD_INFO_HW_IP_SIZE) {
+		native = &hw_ip;
+		native_size = sizeof(hw_ip);
+	} else if (query == AMDGPU_INFO_FW_VERSION) {
+		native = &firmware;
+	} else if (query == AMDGPU_INFO_MEMORY) {
+		native = &memory;
+	} else if (query == AMDGPU_INFO_VRAM_GTT) {
+		native = &vram;
+	} else if (query == AMDGPU_INFO_VIDEO_CAPS) {
+		native = &video;
+	} else if (query == AMDGPU_INFO_MAX_IBS) {
+		native = registers;
+	} else if (query == AMDGPU_INFO_READ_MMR_REG) {
+		if (!instance || instance > ARRAY_SIZE(registers) ||
+		    size != instance * sizeof(u32) || selector > U32_MAX - (instance - 1))
+			return -EINVAL;
+		native = registers;
+	} else if ((size != sizeof(u32) && size != sizeof(u64)) || instance) {
+		return -EINVAL;
+	}
+	result = check_owner(file);
+	if (result)
+		return result;
+	/* The upstream ioctl writes only to this Linux-owned buffer. A native
+	 * client pointer is never installed in the driver-visible argument. */
+	argument.return_pointer = (uintptr_t)native;
+	argument.return_size = native_size;
+	argument.query = query;
+	if (query == AMDGPU_INFO_HW_IP_COUNT ||
+	    query == AMDGPU_INFO_HW_IP_INFO) {
+		argument.query_hw_ip.type = selector;
+		argument.query_hw_ip.ip_instance = instance;
+	} else if (query == AMDGPU_INFO_READ_MMR_REG) {
+		argument.read_mmr_reg.dword_offset = selector;
+		argument.read_mmr_reg.count = instance;
+		argument.read_mmr_reg.instance = selectors[2];
+		argument.read_mmr_reg.flags = selectors[3];
+	} else if (query == AMDGPU_INFO_FW_VERSION) {
+		argument.query_fw.fw_type = selector;
+		argument.query_fw.ip_instance = instance;
+		argument.query_fw.index = selectors[2];
+	} else if (query == AMDGPU_INFO_VIDEO_CAPS) {
+		argument.video_cap.type = selector;
+	} else if (query == AMDGPU_INFO_SENSOR)
+		argument.sensor_info.type = selector;
+	else if (selector)
+		return -EINVAL;
+	result = private_ioctl(file, DRM_IOCTL_AMDGPU_INFO, &argument);
+	if (result)
+		return result;
+	if (native == &device) {
+		memset(output, 0, size);
+#define PACK_DEVICE(member, wire) \
+		memcpy((u8 *)output + \
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_DEVICE_##wire##_OFFSET, \
+			&device.member, sizeof(device.member));
+		KB2_AMDGPU_DEVICE_FIELDS(PACK_DEVICE)
+#undef PACK_DEVICE
+	} else if (native == &hw_ip) {
+		memset(output, 0, size);
+#define PACK_HW_IP(member, wire) \
+		memcpy((u8 *)output + \
+			KB2_GPU_DRM_AMDGPU_RECORD_INFO_HW_IP_##wire##_OFFSET, \
+			&hw_ip.member, sizeof(hw_ip.member));
+		KB2_AMDGPU_HW_IP_FIELDS(PACK_HW_IP)
+#undef PACK_HW_IP
+	} else {
+		memcpy(output, native, size);
+	}
+	return result;
+}
+
+int kobox_linux_drm_gem_size(struct kobox_linux_drm_file *file,
+			     u32 handle, u64 *size)
+{
+	const struct kobox_linux_drm_mapping_operations *operations;
+	struct module *module;
+	int result;
+
+	if (!handle || !size)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result)
+		return result;
+	mutex_lock(&mapping_provider_lock);
+	operations = mapping_provider;
+	module = mapping_provider_module;
+	if (!operations || !try_module_get(module)) {
+		mutex_unlock(&mapping_provider_lock);
+		return -ENODEV;
+	}
+	mutex_unlock(&mapping_provider_lock);
+	result = operations->get_size(file->guard, handle, size);
+	module_put(module);
+	return result;
+}
+
+int kobox_linux_drm_amdgpu_mmap_validate(struct kobox_linux_drm_file *file,
+					 u32 handle)
+{
+	union drm_amdgpu_gem_mmap argument = {0};
+	int result;
+
+	if (!handle)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result)
+		return result;
+	/* Run the driver's own CPU-access checks before exporting system pages
+	 * as a native VMO; Kobox's mapping ID is not Linux's VMA offset. */
+	argument.in.handle = handle;
+	result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_MMAP, &argument);
+	return result ?: (!argument.out.addr_ptr ? -EUCLEAN : 0);
+}
+
+int kobox_linux_drm_amdgpu_cs(struct kobox_linux_drm_file *file,
+			     u32 context_id, u32 bo_list_handle,
+			     const struct kb2_amdgpu_cs_part *parts, size_t count,
+			     const void *data, size_t bytes, u64 *sequence)
+{
+	struct cs_frame {
+		struct drm_amdgpu_cs_chunk chunks[KB2_AMDGPU_CS_PARTS];
+		struct drm_amdgpu_cs_chunk_ib ibs[KB2_AMDGPU_CS_PARTS];
+		struct drm_amdgpu_bo_list_in lists[KB2_AMDGPU_CS_PARTS];
+		u64 pointers[KB2_AMDGPU_CS_PARTS];
+	} *frame;
+	union drm_amdgpu_cs argument = {0};
+	u8 *payload;
+	size_t offset = 0, i;
+	unsigned int ibs = 0, bos = 0;
+	int result;
+
+	if (!context_id || !parts || !count || count > KB2_AMDGPU_CS_PARTS ||
+	    !data || !bytes || bytes > KB2_AMDGPU_CS_BYTES || !sequence)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result) return result;
+	/* The native pointer graph is private and survives the whole ioctl.
+	 * Even same-layout records are snapshotted, never driver-visible VMOs. */
+	frame = kvzalloc(sizeof(*frame), GFP_KERNEL);
+	payload = kvmalloc(bytes, GFP_KERNEL);
+	if (!frame || !payload) {
+		result = -ENOMEM;
+		goto out;
+	}
+	memcpy(payload, data, bytes);
+	for (i = 0; i < count; i++) {
+		const struct kb2_amdgpu_cs_part *p = &parts[i];
+		struct drm_amdgpu_cs_chunk *chunk = &frame->chunks[i];
+		u8 *src;
+		if (!kb2_amdgpu_cs_part_valid(p) || p->offset != offset ||
+		    p->bytes > bytes - offset) {
+			result = -EINVAL;
+			goto out;
+		}
+		src = payload + offset;
+		offset += p->bytes;
+		chunk->chunk_data = (uintptr_t)src;
+		chunk->length_dw = p->bytes / sizeof(u32);
+		switch (p->record) {
+		case KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_IB: {
+			struct drm_amdgpu_cs_chunk_ib *ib = &frame->ibs[i];
+			u32 reserved;
+			memcpy(&ib->flags, src, 4);
+			memcpy(&ib->ip_type, src + 4, 4);
+			memcpy(&ib->ip_instance, src + 8, 4);
+			memcpy(&ib->ring, src + 12, 4);
+			memcpy(&ib->va_start, src + 16, 8);
+			memcpy(&ib->ib_bytes, src + 24, 4);
+			memcpy(&reserved, src + 28, 4);
+			if (reserved || !ib->va_start || !ib->ib_bytes ||
+			    ib->ip_type >= AMDGPU_HW_IP_NUM) {
+				result = -EINVAL;
+				goto out;
+			}
+			chunk->chunk_id = AMDGPU_CHUNK_ID_IB;
+			chunk->chunk_data = (uintptr_t)ib;
+			chunk->length_dw = sizeof(*ib) / sizeof(u32);
+			ibs++;
+			break;
+		}
+		case KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_BO_HANDLE: {
+			struct drm_amdgpu_bo_list_in *list = &frame->lists[i];
+			if (++bos > 1 || bo_list_handle) {
+				result = -EINVAL;
+				goto out;
+			}
+			static_assert(sizeof(struct drm_amdgpu_bo_list_entry) ==
+				KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_BO_HANDLE_SIZE);
+			list->bo_number = p->count;
+			list->bo_info_size = sizeof(struct drm_amdgpu_bo_list_entry);
+			list->bo_info_ptr = (uintptr_t)src;
+			chunk->chunk_id = AMDGPU_CHUNK_ID_BO_HANDLES;
+			chunk->chunk_data = (uintptr_t)list;
+			chunk->length_dw = sizeof(*list) / sizeof(u32);
+			break;
+		}
+#define NATIVE_CHUNK(record, id, type) \
+		case KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_##record: { \
+			static_assert(sizeof(struct type) == \
+				KB2_GPU_DRM_AMDGPU_RECORD_CS_CHUNK_##record##_SIZE); \
+			chunk->chunk_id = AMDGPU_CHUNK_ID_##id; break; }
+		NATIVE_CHUNK(USER_FENCE, FENCE, drm_amdgpu_cs_chunk_fence);
+		NATIVE_CHUNK(DEPENDENCY, DEPENDENCIES, drm_amdgpu_cs_chunk_dep);
+		NATIVE_CHUNK(SYNCOBJ_IN, SYNCOBJ_IN, drm_amdgpu_cs_chunk_sem);
+		NATIVE_CHUNK(SYNCOBJ_OUT, SYNCOBJ_OUT, drm_amdgpu_cs_chunk_sem);
+		NATIVE_CHUNK(SCHEDULED_DEPENDENCY, SCHEDULED_DEPENDENCIES, drm_amdgpu_cs_chunk_dep);
+		NATIVE_CHUNK(TIMELINE_WAIT, SYNCOBJ_TIMELINE_WAIT, drm_amdgpu_cs_chunk_syncobj);
+		NATIVE_CHUNK(TIMELINE_SIGNAL, SYNCOBJ_TIMELINE_SIGNAL, drm_amdgpu_cs_chunk_syncobj);
+		NATIVE_CHUNK(GFX_SHADOW, CP_GFX_SHADOW, drm_amdgpu_cs_chunk_cp_gfx_shadow);
+#undef NATIVE_CHUNK
+		default:
+			result = -EOPNOTSUPP;
+			goto out;
+		}
+		frame->pointers[i] = (uintptr_t)chunk;
+	}
+	if (!ibs || offset != bytes) {
+		result = -EINVAL;
+		goto out;
+	}
+	argument.in.ctx_id = context_id;
+	argument.in.bo_list_handle = bo_list_handle;
+	argument.in.num_chunks = count;
+	argument.in.chunks = (uintptr_t)frame->pointers;
+	result = private_ioctl(file, DRM_IOCTL_AMDGPU_CS, &argument);
+	if (!result) *sequence = argument.out.handle;
+out:
+	kvfree(payload);
+	kvfree(frame);
+	return result;
+}
+
+int kobox_linux_drm_amdgpu_simple(struct kobox_linux_drm_file *file,
+				 u32 command_id, const void *request,
+				 size_t request_size, u64 deadline_ns,
+				 void *record, size_t record_capacity,
+				 u32 *record_id, size_t *record_size)
+{
+	const u8 *input = request;
+	u8 *output = record;
+	int result;
+
+	if (!request || !record || !record_id || !record_size ||
+	    record_capacity < KB2_GPU_DRM_AMDGPU_RECORD_CONTEXT_RESULT_SIZE)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result)
+		return result;
+	memset(output, 0, record_capacity);
+	*record_id = 0;
+	*record_size = 0;
+	switch (command_id) {
+	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_CREATE: {
+		union drm_amdgpu_gem_create argument = {0};
+
+		if (request_size != sizeof(argument.in) || deadline_ns)
+			return -EINVAL;
+		memcpy(&argument.in, input, sizeof(argument.in));
+		if (!argument.in.bo_size)
+			return -EINVAL;
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_CREATE,
+			&argument);
+		if (!result) {
+			if (!argument.out.handle)
+				return -EUCLEAN;
+			memcpy(output, &argument.out.handle, sizeof(u32));
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_GEM_HANDLE_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_GEM_HANDLE_RESULT_SIZE;
+		}
+		return result;
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_CONTEXT: {
+		union drm_amdgpu_ctx argument = {0};
+		u32 operation;
+
+		if (request_size != sizeof(argument.in) || deadline_ns)
+			return -EINVAL;
+		memcpy(&argument.in, input, sizeof(argument.in));
+		operation = argument.in.op;
+		if ((operation < AMDGPU_CTX_OP_ALLOC_CTX ||
+		     operation > AMDGPU_CTX_OP_QUERY_STATE2) || argument.in.flags ||
+		    (operation == AMDGPU_CTX_OP_ALLOC_CTX && argument.in.ctx_id) ||
+		    (operation != AMDGPU_CTX_OP_ALLOC_CTX && !argument.in.ctx_id))
+			return -EINVAL;
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_CTX, &argument);
+		if (!result) {
+			u32 context = operation == AMDGPU_CTX_OP_ALLOC_CTX ?
+				argument.out.alloc.ctx_id : 0;
+			if (operation == AMDGPU_CTX_OP_ALLOC_CTX && !context)
+				return -EUCLEAN;
+			memcpy(output, &operation, sizeof(operation));
+			memcpy(output + 4, &context, sizeof(context));
+			if (operation == AMDGPU_CTX_OP_QUERY_STATE ||
+			    operation == AMDGPU_CTX_OP_QUERY_STATE2) {
+				memcpy(output + 8, &argument.out.state.flags, sizeof(u64));
+				memcpy(output + 16, &argument.out.state.hangs, sizeof(u32));
+				memcpy(output + 20, &argument.out.state.reset_status, sizeof(u32));
+			}
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_CONTEXT_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_CONTEXT_RESULT_SIZE;
+		}
+		return result;
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_METADATA: {
+		struct drm_amdgpu_gem_metadata argument = {0};
+		u32 bytes;
+		if (request_size != KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_REQUEST_SIZE ||
+		    record_capacity < KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_RESULT_SIZE ||
+		    deadline_ns) return -EINVAL;
+		memcpy(&argument.handle, input, sizeof(u32));
+		memcpy(&argument.op, input + 4, sizeof(u32));
+		memcpy(&argument.data.flags, input + 8, sizeof(u64));
+		memcpy(&argument.data.tiling_info, input + 16, sizeof(u64));
+		memcpy(&bytes, input + 24, sizeof(u32));
+		if (!argument.handle || argument.data.flags ||
+		    (argument.op != AMDGPU_GEM_METADATA_OP_SET_METADATA &&
+		     argument.op != AMDGPU_GEM_METADATA_OP_GET_METADATA) ||
+		    bytes > sizeof(argument.data.data) || input[28] || input[29] ||
+		    input[30] || input[31]) return -EINVAL;
+		argument.data.data_size_bytes = bytes;
+		if (argument.op == AMDGPU_GEM_METADATA_OP_SET_METADATA)
+			memcpy(argument.data.data, input + 32, bytes);
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_METADATA, &argument);
+		if (!result) {
+			bytes = argument.data.data_size_bytes;
+			if (bytes > sizeof(argument.data.data)) return -EPROTO;
+			memcpy(output, &argument.data.flags, sizeof(u64));
+			memcpy(output + 8, &argument.data.tiling_info, sizeof(u64));
+			memcpy(output + 16, &bytes, sizeof(u32));
+			memcpy(output + 24, argument.data.data, bytes);
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_RESULT_SIZE;
+		}
+		return result;
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_WAIT_IDLE: {
+		union drm_amdgpu_gem_wait_idle argument = {0};
+		if (request_size != KB2_GPU_DRM_AMDGPU_RECORD_GEM_WAIT_IDLE_REQUEST_SIZE)
+			return -EINVAL;
+		memcpy(&argument.in.handle, input, sizeof(u32));
+		memcpy(&argument.in.flags, input + 4, sizeof(u32));
+		if (!argument.in.handle || argument.in.flags) return -EINVAL;
+		argument.in.timeout = deadline_ns;
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_WAIT_IDLE, &argument);
+		if (!result) {
+			memcpy(output, &argument.out.status, sizeof(u32));
+			memcpy(output + 4, &argument.out.domain, sizeof(u32));
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_GEM_WAIT_IDLE_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_GEM_WAIT_IDLE_RESULT_SIZE;
+		}
+		return result;
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_VA: {
+		struct drm_amdgpu_gem_va argument = {0};
+
+		if (request_size != KB2_GPU_DRM_AMDGPU_RECORD_GEM_VA_REQUEST_SIZE ||
+		    deadline_ns)
+			return -EINVAL;
+		memcpy(&argument.handle, input, sizeof(u32));
+		memcpy(&argument.operation, input + 4, sizeof(u32));
+		memcpy(&argument.flags, input + 8, sizeof(u32));
+		memcpy(&argument.va_address, input + 16, sizeof(u64));
+		memcpy(&argument.offset_in_bo, input + 24, sizeof(u64));
+		memcpy(&argument.map_size, input + 32, sizeof(u64));
+		if (input[12] || input[13] || input[14] || input[15] ||
+		    argument.vm_timeline_point || argument.vm_timeline_syncobj_out ||
+		    argument.num_syncobj_handles || argument.input_fence_syncobj_handles ||
+		    !argument.va_address || !argument.map_size)
+			return -EINVAL;
+		return private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_VA, &argument);
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_WAIT_CS: {
+		union drm_amdgpu_wait_cs argument = {0};
+		u32 busy;
+
+		if (request_size != KB2_GPU_DRM_AMDGPU_RECORD_WAIT_CS_REQUEST_SIZE ||
+		    !deadline_ns || deadline_ns > S64_MAX)
+			return -EINVAL;
+		memcpy(&argument.in.handle, input, sizeof(u64));
+		argument.in.timeout = deadline_ns;
+		memcpy(&argument.in.ip_type, input + 8, sizeof(u32) * 4);
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_WAIT_CS, &argument);
+		if (!result) {
+			if (argument.out.status > 1)
+				return -EUCLEAN;
+			busy = argument.out.status;
+			memcpy(output, &busy, sizeof(busy));
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_WAIT_STATUS_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_WAIT_STATUS_RESULT_SIZE;
+		}
+		return result;
+	}
+	case KB2_GPU_DRM_AMDGPU_COMMAND_VM: {
+		union drm_amdgpu_vm argument = {0};
+
+		if (request_size != sizeof(argument.in) || deadline_ns)
+			return -EINVAL;
+		memcpy(&argument.in, input, sizeof(argument.in));
+		if ((argument.in.op != AMDGPU_VM_OP_RESERVE_VMID &&
+		     argument.in.op != AMDGPU_VM_OP_UNRESERVE_VMID) ||
+		    argument.in.flags)
+			return -EINVAL;
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_VM, &argument);
+		if (!result) {
+			memcpy(output, &argument.out.flags, sizeof(u64));
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_VM_RESULT;
+			*record_size = KB2_GPU_DRM_AMDGPU_RECORD_VM_RESULT_SIZE;
+		}
+		return result;
+	}
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int amdgpu_sensor(struct kobox_linux_drm_file *file, u32 type,
+			 u32 *value)
+{
+	u32 sensor_value = 0;
+	struct drm_amdgpu_info argument = {
+		.return_pointer = (u64)(unsigned long)&sensor_value,
+		.return_size = sizeof(sensor_value),
+		.query = AMDGPU_INFO_SENSOR,
+		.sensor_info.type = type,
+	};
+	int result;
+
+	if (!value)
+		return -EINVAL;
+	result = check_owner(file);
+	if (result)
+		return result;
+	result = private_ioctl(file, DRM_IOCTL_AMDGPU_INFO, &argument);
+	if (!result)
+		*value = sensor_value;
+	return result;
+}
+
+int kobox_linux_drm_amdgpu_temperature(struct kobox_linux_drm_file *file,
+					  u32 *millidegrees)
+{
+	return amdgpu_sensor(file, AMDGPU_INFO_SENSOR_GPU_TEMP, millidegrees);
+}
+
+int kobox_linux_drm_amdgpu_average_power(struct kobox_linux_drm_file *file,
+					    u32 *watts)
+{
+	/* Upstream falls back to input power on older ASICs; SMU 14.0.2 itself
+	 * implements average socket power, not the input-power sensor. */
+	return amdgpu_sensor(file, AMDGPU_INFO_SENSOR_GPU_AVG_POWER, watts);
 }
 
 int kobox_linux_drm_set_client_cap(struct kobox_linux_drm_file *file,

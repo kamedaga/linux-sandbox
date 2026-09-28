@@ -22,6 +22,7 @@
 #include <linux/mmzone.h>
 #include <linux/percpu.h>
 #include <linux/preempt.h>
+#include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
@@ -31,6 +32,7 @@
 #include <asm/page.h>
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
+#include <asm/memtype.h>
 #include <asm/processor.h>
 
 #ifndef KOBOX_BOOT_RUNTIME
@@ -331,6 +333,17 @@ static unsigned int host_pte_protection(pte_t pte)
 	return protection;
 }
 
+static unsigned int host_pte_cache(pte_t pte)
+{
+	switch (pgprot2cachemode(pte_pgprot(pte))) {
+	case _PAGE_CACHE_MODE_WB: return KOBOX_LINUX_MEMORY_CACHE_WB;
+	case _PAGE_CACHE_MODE_UC_MINUS: return KOBOX_LINUX_MEMORY_CACHE_UC_MINUS;
+	case _PAGE_CACHE_MODE_UC: return KOBOX_LINUX_MEMORY_CACHE_UC;
+	case _PAGE_CACHE_MODE_WC: return KOBOX_LINUX_MEMORY_CACHE_WC;
+	default: panic("unsupported hosted RAM PAT mode");
+	}
+}
+
 static int mapped_range(unsigned long start, unsigned long end,
 			void *window, unsigned long window_base, bool publish_mmio)
 {
@@ -342,7 +355,11 @@ static int mapped_range(unsigned long start, unsigned long end,
 		return -EINVAL;
 	for (address = start; address < end; address += PAGE_SIZE) {
 		pte_t pte = kernel_pte(address);
-		unsigned long pfn;
+		unsigned long pfn, last, previous_pfn;
+		u64 page_indices[KOBOX_LINUX_MEMORY_SCATTER_PAGES];
+		size_t page_count;
+		unsigned int protection;
+		bool scattered = false;
 		void *mapped;
 		int status;
 
@@ -352,7 +369,29 @@ static int mapped_range(unsigned long start, unsigned long end,
 		pfn = pte_pfn(pte);
 		if (pfn >= max_pfn) {
 #ifdef KOBOX_BOOT_RUNTIME
-			status = kobox_mmio_publish(address, pte, publish_mmio);
+			if (publish_mmio) {
+				unsigned long last = address + PAGE_SIZE;
+
+				/* One Linux ioremap can cover far more pages than the
+				 * host's live mapping inventory. Preserve PTE authority,
+				 * but publish each contiguous physical span as one lease.
+				 */
+				while (last < end) {
+					pte_t next = kernel_pte(last);
+
+					if (!host_pte_protection(next) ||
+					    pte_pfn(next) != pfn +
+						((last - address) >> PAGE_SHIFT) ||
+					    ((pte_flags(next) ^ pte_flags(pte)) &
+					     ~(_PAGE_ACCESSED | _PAGE_DIRTY)))
+						break;
+					last += PAGE_SIZE;
+				}
+				status = kobox_mmio_publish_range(address, last, pte);
+				address = last - PAGE_SIZE;
+			} else {
+				status = kobox_mmio_publish(address, pte, false);
+			}
 			if (status)
 				return status;
 			continue;
@@ -360,12 +399,62 @@ static int mapped_range(unsigned long start, unsigned long end,
 			return -ERANGE;
 #endif
 		}
-		status = kobox_host_call(memory_layout->operations->map(
-			window, address - window_base,
-			memory_layout->ram_backing, pfn << PAGE_SHIFT,
-			PAGE_SIZE, host_pte_protection(pte), &mapped));
+		/* Each native map consumes a VMA. A vmap span is virtually adjacent,
+		 * but often physically scattered; send its actual PTE PFNs in bounded
+		 * batches so the host can map one page-view VMO per batch. Never cross
+		 * a hole, MMIO page, or protection boundary. Executable aliases use
+		 * the ordinary contiguous path because page views cannot execute. */
+		last = address + PAGE_SIZE;
+		protection = host_pte_protection(pte);
+		previous_pfn = pfn;
+		page_indices[0] = pfn;
+		page_count = 1;
+		while (last < end &&
+		       page_count < ARRAY_SIZE(page_indices)) {
+			pte_t next = kernel_pte(last);
+			unsigned long next_pfn;
+
+			if (host_pte_protection(next) != protection)
+				break;
+			next_pfn = pte_pfn(next);
+			if (next_pfn >= max_pfn ||
+			    ((protection & KOBOX_LINUX_MEMORY_EXECUTE) &&
+			     next_pfn != previous_pfn + 1))
+				break;
+			if (next_pfn != previous_pfn + 1)
+				scattered = true;
+			page_indices[page_count++] = next_pfn;
+			previous_pfn = next_pfn;
+			last += PAGE_SIZE;
+		}
+		/* Preserve the old one-VMA behavior for large physically contiguous
+		 * spans, rather than needlessly splitting them at the batch limit. */
+		if (!scattered && page_count == ARRAY_SIZE(page_indices)) {
+			while (last < end) {
+				pte_t next = kernel_pte(last);
+				unsigned long next_pfn = pte_pfn(next);
+
+				if (host_pte_protection(next) != protection ||
+				    next_pfn >= max_pfn ||
+				    next_pfn != previous_pfn + 1)
+					break;
+				previous_pfn = next_pfn;
+				last += PAGE_SIZE;
+			}
+		}
+		if (scattered)
+			status = kobox_host_call(memory_layout->operations->map_pages(
+				window, address - window_base,
+				memory_layout->ram_backing, page_indices,
+				page_count, protection, &mapped));
+		else
+			status = kobox_host_call(memory_layout->operations->map(
+				window, address - window_base,
+				memory_layout->ram_backing, pfn << PAGE_SHIFT,
+				last - address, protection, &mapped));
 		if (status || mapped != (void *)address)
 			return -EIO;
+		address = last - PAGE_SIZE;
 	}
 	return 0;
 }
@@ -433,10 +522,21 @@ void __flush_tlb_all(void)
 	flush_tlb_kernel_range(0, ULONG_MAX);
 }
 
+void kobox_cpa_wbinvd(void)
+{
+	/* This is the second half of Linux CPA's flush. The host already
+	 * performed its real all-CPU WBINVD in set_cache; acknowledge only after
+	 * that synchronous operation succeeded.
+	 */
+	if (!memory_layout || !memory_layout->operations->cache_flush ||
+	    kobox_host_call(memory_layout->operations->cache_flush()))
+		panic("hosted CPA cache drain unavailable");
+}
+
 static void protect_direct_range(unsigned long start, unsigned long end)
 {
 	unsigned long address, begin;
-	unsigned int protection;
+	unsigned int protection, cache;
 
 	if (!direct_tables_ready)
 		return;
@@ -445,13 +545,39 @@ static void protect_direct_range(unsigned long start, unsigned long end)
 	for (address = start; address < end; ) {
 		begin = address;
 		protection = host_pte_protection(kernel_pte(address));
+		cache = host_pte_cache(kernel_pte(address));
 		do {
 			address += PAGE_SIZE;
 		} while (address < end &&
-			 host_pte_protection(kernel_pte(address)) == protection);
+			 host_pte_protection(kernel_pte(address)) == protection &&
+			 host_pte_cache(kernel_pte(address)) == cache);
+		/* Large BO cache changes can otherwise disappear behind a pending
+		 * DRM ioctl. Keep this at the existing CPA boundary; normal small
+		 * mappings do not flood the RAM service log. */
+#ifdef KOBOX_BOOT_RUNTIME
+		if (address - begin >= 128 * 1024)
+			pr_info("kobox-mmio: direct range begin offset=%#lx bytes=%#lx cache=%u prot=%u\n",
+				begin - page_offset_base, address - begin, cache, protection);
+#endif
+		if (memory_layout->operations->set_cache &&
+		    kobox_host_call(memory_layout->operations->set_cache(memory_layout->ram_backing,
+			begin - page_offset_base, address - begin, cache)))
+			panic("hosted direct-map cache policy failed");
+		if (!memory_layout->operations->set_cache && cache != KOBOX_LINUX_MEMORY_CACHE_WB)
+			panic("hosted direct-map cache policy unavailable");
+#ifdef KOBOX_BOOT_RUNTIME
+		if (address - begin >= 128 * 1024)
+			pr_info("kobox-mmio: direct range cache ready offset=%#lx bytes=%#lx\n",
+				begin - page_offset_base, address - begin);
+#endif
 		if (kobox_host_call(memory_layout->operations->protect(memory_layout->direct_window,
 			begin - page_offset_base, address - begin, protection)))
 			panic("hosted direct-map protection failed");
+#ifdef KOBOX_BOOT_RUNTIME
+		if (address - begin >= 128 * 1024)
+			pr_info("kobox-mmio: direct range mapped offset=%#lx bytes=%#lx\n",
+				begin - page_offset_base, address - begin);
+#endif
 	}
 }
 
@@ -495,10 +621,15 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 	 */
 	for (address = start; address < end; ) {
 		if (host_pte_protection(kernel_pte(address))) {
-			if (mapped_range(address, address + PAGE_SIZE,
+			unsigned long mapped_end = address + PAGE_SIZE;
+
+			while (mapped_end < end &&
+			       host_pte_protection(kernel_pte(mapped_end)))
+				mapped_end += PAGE_SIZE;
+			if (mapped_range(address, mapped_end,
 					 memory_layout->vmalloc_window, vmalloc_base, false))
 				panic("hosted kernel PTE protection failed");
-			address += PAGE_SIZE;
+			address = mapped_end;
 			continue;
 		}
 		unmapped = address;
@@ -751,7 +882,8 @@ static int validate_layout(const struct kobox_linux_memory_layout *layout)
 	    !layout->operations ||
 	    layout->operations->size != sizeof(*layout->operations) ||
 	    layout->operations->identity != KOBOX_LINUX_MEMORY_HOST_IDENTITY ||
-	    !layout->operations->map || !layout->operations->reset ||
+	    !layout->operations->map || !layout->operations->map_pages ||
+	    !layout->operations->reset ||
 	    !layout->operations->protect || !layout->direct_window ||
 	    !layout->ram_backing || !layout->vmemmap_window ||
 	    !layout->vmalloc_window || !layout->direct_map ||

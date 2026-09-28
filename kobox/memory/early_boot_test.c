@@ -47,6 +47,38 @@ static int host_map(void *window, size_t window_offset, void *backing,
 		backing_offset, size, native, address_out);
 }
 
+static int host_map_pages(void *window, size_t window_offset, void *backing,
+			  const uint64_t *page_indices, size_t page_count,
+			  unsigned int protection, void **address_out)
+{
+	struct kobox_posix_memory_window *target = window;
+	size_t index;
+
+	if (!target || !page_indices || !address_out || !page_count ||
+	    page_count > KOBOX_LINUX_MEMORY_SCATTER_PAGES ||
+	    (protection & KOBOX_LINUX_MEMORY_EXECUTE) ||
+	    window_offset > target->size ||
+	    page_count > (target->size - window_offset) /
+		KOBOX_LINUX_MEMORY_PAGE_SIZE)
+		return EINVAL;
+	for (index = 0; index < page_count; ++index) {
+		void *mapped;
+		int status;
+
+		if (page_indices[index] > SIZE_MAX /
+		    KOBOX_LINUX_MEMORY_PAGE_SIZE)
+			return EINVAL;
+		status = host_map(target,
+			window_offset + index * KOBOX_LINUX_MEMORY_PAGE_SIZE,
+			backing, page_indices[index] * KOBOX_LINUX_MEMORY_PAGE_SIZE,
+			KOBOX_LINUX_MEMORY_PAGE_SIZE, protection, &mapped);
+		if (status)
+			return status;
+	}
+	*address_out = (char *)target->address + window_offset;
+	return 0;
+}
+
 static int host_reset(void *window, size_t window_offset, size_t size)
 {
 	return kobox_posix_memory_window_reset(window, window_offset, size);
@@ -138,6 +170,7 @@ int main(int argument_count, char **arguments)
 		.size = sizeof(operations),
 		.identity = KOBOX_LINUX_MEMORY_HOST_IDENTITY,
 		.map = host_map,
+		.map_pages = host_map_pages,
 		.reset = host_reset,
 		.protect = host_protect,
 	};
@@ -153,6 +186,8 @@ int main(int argument_count, char **arguments)
 	kobox_linux_memory_boot_fn entry;
 	void *boundary_handle;
 	void *direct_address;
+	void *scatter_address;
+	const uint64_t scatter_pages[] = { 101, 97, 103 };
 	void *handle;
 
 	CHECK(argument_count == 3);
@@ -165,6 +200,18 @@ int main(int argument_count, char **arguments)
 		&direct, 0, &backing, 0, TEST_RAM_SIZE,
 		KOBOX_POSIX_MEMORY_READ | KOBOX_POSIX_MEMORY_WRITE,
 		&direct_address) == 0);
+	CHECK(host_map_pages(&vmalloc, 0, &backing, scatter_pages,
+		sizeof(scatter_pages) / sizeof(scatter_pages[0]), KOBOX_LINUX_MEMORY_READ |
+		KOBOX_LINUX_MEMORY_WRITE, &scatter_address) == 0);
+	CHECK(scatter_address == vmalloc.address);
+	for (size_t index = 0; index < sizeof(scatter_pages) / sizeof(scatter_pages[0]); ++index) {
+		((char *)direct_address)[scatter_pages[index] * 4096] =
+			(char)(index + 1);
+		CHECK(((char *)scatter_address)[index * 4096] ==
+			(char)(index + 1));
+		((char *)direct_address)[scatter_pages[index] * 4096] = 0;
+	}
+	CHECK(host_reset(&vmalloc, 0, sizeof(scatter_pages) / sizeof(scatter_pages[0]) * 4096) == 0);
 
 	boundary_handle = dlopen(arguments[1], RTLD_NOW | RTLD_GLOBAL);
 	if (!boundary_handle) {

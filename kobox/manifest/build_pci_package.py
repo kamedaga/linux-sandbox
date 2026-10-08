@@ -25,7 +25,10 @@ def main():
     parser.add_argument("--runtime-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--protocol-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--profile", choices=("network", "amdgpu"),
+    parser.add_argument("--generator-dir", type=pathlib.Path,
+                        help="keep host-only generator sources/tools outside the published package")
+    parser.add_argument("--profile", choices=("network", "amdgpu",
+                                              "usb-storage-xhci", "nvme", "storage"),
                         default="network")
     parser.add_argument("--extension-module", action="append", type=pathlib.Path,
                         default=[], help="Kobox module built against this canonical core")
@@ -226,9 +229,11 @@ int main(int argc, char **argv) {
   return ok ? 0 : 7;
 }
 """ % ("\n".join(artifact_lines), "\n".join(edge_lines), "\n".join(binding_lines))
-    generated = output / f"{args.profile}-manifest-generator.c"
+    generator_dir = args.generator_dir or output
+    generator_dir.mkdir(parents=True, exist_ok=True)
+    generated = generator_dir / f"{args.profile}-manifest-generator.c"
     generated.write_text(c_source)
-    encoder = output / f"{args.profile}-manifest-generator"
+    encoder = generator_dir / f"{args.profile}-manifest-generator"
     subprocess.run([
         "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
         "-I", str(args.protocol_dir / "include"),

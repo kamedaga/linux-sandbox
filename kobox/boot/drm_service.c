@@ -441,10 +441,16 @@ int kobox_linux_drm_service_prime_export(
 		page_indices, page_capacity, &pages, &owner);
 	if (error)
 		return error;
-	/* PRIME's current attachment format describes RAM page views only.
-	 * Never reinterpret physical BAR PFNs as sandbox RAM indices. */
-	if (pages.backing_kind != KOBOX_DRM_BACKING_RAM ||
-	    pages.cache_policy != KOBOX_DRM_CACHE_WB) {
+	/* The attachment publisher proves BAR ownership or RAM bounds using
+	 * these tags. Dropping them would reinterpret BAR PFNs as RAM indices
+	 * or create a WB alias for a WC buffer. Keep the BO pinned until every
+	 * exported lease has ended, just as for ordinary DRM mappings. */
+	if (!((pages.backing_kind == KOBOX_DRM_BACKING_RAM &&
+	       (pages.cache_policy == KOBOX_DRM_CACHE_WB ||
+		pages.cache_policy == KOBOX_DRM_CACHE_WC)) ||
+	      (pages.backing_kind == KOBOX_DRM_BACKING_DEVICE &&
+	       (pages.cache_policy == KOBOX_DRM_CACHE_UC ||
+		pages.cache_policy == KOBOX_DRM_CACHE_WC)))) {
 		error = kobox_linux_drm_mapping_release(&owner);
 		return error ?: -EOPNOTSUPP;
 	}
@@ -461,6 +467,8 @@ int kobox_linux_drm_service_prime_export(
 		.prime_id = prime->id,
 		.length = pages.length,
 		.page_count = pages.page_count,
+		.cache_policy = pages.cache_policy,
+		.backing_kind = pages.backing_kind,
 	};
 	return 0;
 }

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "domain.h"
+#include "../arch/x86_64/fp_entry.h"
 
 #include <limits.h>
 
@@ -75,7 +76,9 @@ void kobox_machine_domain_handoff_abort(struct kobox_machine_domain *domain,
 	domain->handoff_released = true;
 }
 
-bool kobox_machine_domain_pending(const struct kobox_machine_domain *domain)
+/* IRQ enable calls this before the FP-preserving dispatch entry. Keep the
+ * entire empty check integer-only, including compiler-generated prologues. */
+KOBOX_GPR_LEAF bool kobox_machine_domain_pending(const struct kobox_machine_domain *domain)
 {
 	unsigned int index;
 
@@ -148,7 +151,7 @@ enum kobox_machine_result kobox_machine_domain_notify(
 	return KOBOX_MACHINE_OK;
 }
 
-enum kobox_machine_result kobox_machine_domain_irq_disable(
+KOBOX_GPR_LEAF enum kobox_machine_result kobox_machine_domain_irq_disable(
 	struct kobox_machine_domain *domain)
 {
 	unsigned int depth = atomic_load_explicit(&domain->irq_depth,
@@ -164,7 +167,7 @@ enum kobox_machine_result kobox_machine_domain_irq_disable(
 	}
 }
 
-enum kobox_machine_result kobox_machine_domain_irq_enable(
+KOBOX_GPR_LEAF enum kobox_machine_result kobox_machine_domain_irq_enable(
 	struct kobox_machine_domain *domain, bool *dispatch)
 {
 	*dispatch = false;
@@ -184,6 +187,15 @@ bool kobox_machine_domain_irq_take(struct kobox_machine_domain *domain,
 	if (atomic_load_explicit(&domain->irq_depth, memory_order_acquire))
 		return false;
 	for (index = 0; index < KOBOX_MACHINE_NOTIFICATION_COUNT; index++) {
+		/* Empty IRQ checks are frequent. Do not acquire exclusive cacheline
+		 * ownership merely to replace zero with zero. A publication after
+		 * this load is retained and still supplies the normal native wake;
+		 * it could also follow an empty exchange in the original scan.
+		 * Nonzero counts are still claimed atomically, never load/cleared.
+		 */
+		if (!atomic_load_explicit(&domain->pending[index],
+					 memory_order_acquire))
+			continue;
 		*count = atomic_exchange_explicit(&domain->pending[index], 0,
 						 memory_order_acq_rel);
 		if (*count) {
@@ -193,6 +205,7 @@ bool kobox_machine_domain_irq_take(struct kobox_machine_domain *domain,
 			return true;
 		}
 	}
+	*count = 0;
 	return false;
 }
 

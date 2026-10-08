@@ -22,6 +22,17 @@ struct kobox_linux_lifecycle {
 	 * process-local resource, never a peer pointer. No call after loop exit.
 	 */
 	int (*dispatch)(void *context, void *service);
+	/* Optional asynchronous service, mutually exclusive with dispatch/poll.
+	 * All three run on the opening Linux task and may call typed Linux APIs.
+	 * start creates persistent tasks before READY; advance admits private jobs
+	 * and collects their completions, returning 0 idle or 2 progress. Worker
+	 * completions may wake the opening task directly through Linux scheduling.
+	 * finish joins/drains before the launch owner destroys mounts or modules.
+	 * Native transport retirement must precede pending's terminal publication.
+	 */
+	int (*start)(void *context, void *service);
+	int (*advance)(void *context, void *service);
+	int (*finish)(void *context, void *service);
 	/* Optional pair, both called only by the opening task. poll may prepare
 	 * work without blocking and returns the same states as pending. idle
 	 * relinquishes polling ownership before the task sleeps. pending must

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include "host.h"
+#include "irq_transaction.h"
+#include "diagnostic.h"
 #include "../arch/x86_64/host_call.h"
 #include "../arch/x86_64/task.h"
 #include "../runtime/host.h"
@@ -11,6 +13,7 @@
 #endif
 #include "../memory/port.h"
 
+#include <asm/sections.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
 #include <linux/clocksource.h>
@@ -84,6 +87,12 @@ struct kobox_task_port {
 	bool idle;
 	bool shutdown;
 	bool aborted;
+#ifdef KOBOX_FS_INTERNAL_PROFILE
+	atomic64_t bench_calls[KOBOX_TASK_BENCH_COUNT];
+#ifdef KOBOX_FS_BOUNDARY_CALLERS
+	bool bench_trace;
+#endif
+#endif
 #ifdef KOBOX_BOOT_RUNTIME
 	struct kobox_user_context *user;
 #endif
@@ -113,6 +122,164 @@ static struct kobox_task_port *task_port(const struct task_struct *task)
 	return kobox_arch_task_binding(task);
 }
 
+#ifdef KOBOX_FS_INTERNAL_PROFILE
+#ifdef KOBOX_FS_BOUNDARY_CALLERS
+/* Diagnostic-only attribution of boundary calls to their Linux call sites.
+ * The provider functions are out of line and their Linux wrappers inline, so
+ * the return address names the upstream function issuing the call. Only tasks
+ * marked by the benchmark are recorded; the fixed open-addressed table drops
+ * (and counts) sites beyond its capacity instead of allocating.
+ */
+#define TASK_BENCH_SITES 2048
+
+/* Upstream objects have neither frame pointers nor line tables, but this
+ * file keeps them: the provider's frame gives the exact stack pointer of its
+ * caller at the call. Like the guess unwinder, record the first core text
+ * values above it. Saved registers may hold function pointers, so several
+ * candidates are kept; offline tools pick the first that follows a call
+ * instruction and count the site as unattributed otherwise. */
+#define TASK_BENCH_CANDIDATES 4
+struct task_bench_site {
+	atomic64_t address;
+	atomic64_t key;
+	atomic64_t candidates[TASK_BENCH_CANDIDATES];
+	atomic64_t calls[KOBOX_TASK_BENCH_COUNT];
+};
+static struct task_bench_site task_bench_sites[TASK_BENCH_SITES];
+static atomic64_t task_bench_site_overflow;
+
+static unsigned long task_bench_candidates(const unsigned long *caller_sp,
+					   unsigned long out[TASK_BENCH_CANDIDATES])
+{
+	unsigned long key = 0;
+	unsigned int i, found = 0;
+
+	for (i = 0; i < 48 && found < TASK_BENCH_CANDIDATES; i++) {
+		unsigned long value = READ_ONCE(caller_sp[i]);
+
+		if (value >= (unsigned long)_stext && value < (unsigned long)_etext) {
+			out[found++] = value;
+			key = key * 0x100000001b3ul ^ value;
+		}
+	}
+	while (found < TASK_BENCH_CANDIDATES)
+		out[found++] = 0;
+	return key | 1;
+}
+
+static void task_bench_site_count(enum kobox_task_bench_kind kind, unsigned long address,
+				  const unsigned long *caller_sp)
+{
+	unsigned long candidates[TASK_BENCH_CANDIDATES];
+	const unsigned long key = task_bench_candidates(caller_sp, candidates);
+	unsigned long slot = ((address >> 2) ^ key) * 0x9e3779b97f4a7c15ul;
+	unsigned int probe, i;
+
+	for (probe = 0; probe < TASK_BENCH_SITES; probe++, slot++) {
+		struct task_bench_site *site = &task_bench_sites[slot % TASK_BENCH_SITES];
+
+		/* Claim the key last, after the payload, so a matching key always
+		 * has its address and candidates published. */
+		if (!atomic64_read(&site->key) && !atomic64_cmpxchg(&site->address, 0, (s64)address)) {
+			for (i = 0; i < TASK_BENCH_CANDIDATES; i++)
+				atomic64_set(&site->candidates[i], (s64)candidates[i]);
+			atomic64_set_release(&site->key, (s64)key);
+		}
+		if (atomic64_read_acquire(&site->key) == (s64)key &&
+		    atomic64_read(&site->address) == (s64)address) {
+			atomic64_inc(&site->calls[kind]);
+			return;
+		}
+	}
+	atomic64_inc(&task_bench_site_overflow);
+}
+
+void kobox_task_bench_trace(struct task_struct *task, bool enabled)
+{
+	WRITE_ONCE(task_port(task)->bench_trace, enabled);
+}
+
+void kobox_task_bench_sites_reset(void)
+{
+	memset(task_bench_sites, 0, sizeof(task_bench_sites));
+	atomic64_set(&task_bench_site_overflow, 0);
+}
+
+void kobox_task_bench_sites_report(const char *label, u64 ops)
+{
+	static const char * const names[] = { "preempt", "irq", "clock", "handoff" };
+	unsigned int i, kind;
+
+	/* Report a link-time anchor so offline tools map runtime addresses onto
+	 * the unstripped core's symbols and line table. */
+	pr_info("FS_BOUNDARY_SITES label=%s ops=%llu anchor=%lx overflow=%lld\n", label, ops,
+		(unsigned long)kobox_provider_preempt_save, atomic64_read(&task_bench_site_overflow));
+	for (i = 0; i < TASK_BENCH_SITES; i++) {
+		unsigned long address = atomic64_read(&task_bench_sites[i].address);
+
+		if (!address)
+			continue;
+		for (kind = 0; kind < KOBOX_TASK_BENCH_COUNT; kind++) {
+			s64 calls = atomic64_read(&task_bench_sites[i].calls[kind]);
+
+			if (calls)
+				pr_info("FS_BOUNDARY_SITE label=%s kind=%s address=%lx candidates=%llx,%llx,%llx,%llx calls=%lld\n",
+					label, names[kind], address,
+					(u64)atomic64_read(&task_bench_sites[i].candidates[0]),
+					(u64)atomic64_read(&task_bench_sites[i].candidates[1]),
+					(u64)atomic64_read(&task_bench_sites[i].candidates[2]),
+					(u64)atomic64_read(&task_bench_sites[i].candidates[3]), calls);
+		}
+	}
+}
+#endif
+
+static void task_bench_count_at(enum kobox_task_bench_kind kind, unsigned long address,
+				const unsigned long *caller_sp)
+{
+	struct task_struct *task = current;
+	struct kobox_task_port *port = task ? task_port(task) : NULL;
+
+	/* An IRQ callback can reenter this same task; avoid lost increments.
+	 * There is no shared global counter bouncing between logical CPUs.
+	 */
+	if (port) {
+		atomic64_inc(&port->bench_calls[kind]);
+#ifdef KOBOX_FS_BOUNDARY_CALLERS
+		if (READ_ONCE(port->bench_trace))
+			task_bench_site_count(kind, address, caller_sp);
+#endif
+	}
+}
+/* Frame record: saved rbp, return address, then the caller's stack. */
+#define task_bench_count(kind) \
+	task_bench_count_at(kind, (unsigned long)__builtin_return_address(0), \
+			    (const unsigned long *)__builtin_frame_address(0) + 2)
+
+void kobox_task_bench_read(struct task_struct *task,
+			   struct kobox_task_bench_counts *counts)
+{
+	struct kobox_task_port *port = task_port(task);
+	unsigned int i;
+
+	for (i = 0; i < KOBOX_TASK_BENCH_COUNT; i++)
+		counts->calls[i] = atomic64_read(&port->bench_calls[i]);
+}
+#else
+#define task_bench_count(kind) do { } while (0)
+#endif
+
+int kobox_task_object_is_on_stack(const void *object)
+{
+	struct kobox_task_port *port;
+
+	if (!task_host || !current)
+		return 0;
+	port = task_port(current);
+	return port && port->host_task &&
+		kobox_host_call(task_host->task_on_stack(port->host_task, object));
+}
+
 static unsigned int port_cpu(void)
 {
 	unsigned int cpu = READ_ONCE(kobox_runtime_thread_state()->cpu);
@@ -136,68 +303,59 @@ unsigned long kobox_provider_preempt_save(void)
 {
 	uint64_t mask;
 
-	if (kobox_host_call(task_host->notifications_save(&mask)))
+	task_bench_count(KOBOX_TASK_BENCH_PREEMPT);
+	if (task_host->notifications_save(&mask))
 		BUG();
 	return mask;
 }
 
 void kobox_provider_preempt_restore(unsigned long flags)
 {
-	if (kobox_host_call(task_host->notifications_restore(flags)))
+	if (task_host->notifications_restore(flags))
 		BUG();
 }
 
 unsigned long kobox_provider_irq_save_flags(void)
 {
-	unsigned long mask = kobox_provider_preempt_save();
-	unsigned long flags = kobox_host_call(task_host->cpu_irq_disabled(port_cpu())) != 0;
-
-	kobox_provider_preempt_restore(mask);
-	return flags;
+	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+	return kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_QUERY);
 }
 
 void kobox_provider_irq_disable(void)
 {
-	unsigned long mask = kobox_provider_preempt_save();
-
-	if (!kobox_host_call(task_host->cpu_irq_disabled(port_cpu())) &&
-	    kobox_host_call(task_host->cpu_irq_disable(port_cpu())))
-		BUG();
-	kobox_provider_preempt_restore(mask);
+	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+	kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_DISABLE);
 }
 
 void kobox_provider_irq_enable(void)
 {
-	unsigned long mask = kobox_provider_preempt_save();
-
-	if (kobox_host_call(task_host->cpu_irq_disabled(port_cpu())) &&
-	    kobox_host_call(task_host->cpu_irq_enable(port_cpu())))
-		BUG();
-	kobox_provider_preempt_restore(mask);
+	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+	kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_ENABLE);
 }
 
 unsigned long kobox_provider_irq_save(void)
 {
-	unsigned long flags = kobox_provider_irq_save_flags();
-
-	kobox_provider_irq_disable();
-	return flags;
+	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+	return kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_SAVE);
 }
 
 void kobox_provider_irq_restore(unsigned long flags)
 {
-	if (flags)
-		kobox_provider_irq_disable();
-	else
-		kobox_provider_irq_enable();
+	/* Count here, not in the disable/enable entries, so a call-site
+	 * diagnostic attributes the restore to its Linux caller. */
+	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+	kobox_irq_transaction(task_host, port_cpu, flags ? KOBOX_IRQ_DISABLE : KOBOX_IRQ_ENABLE);
 }
 
 static u64 host_clock_read(struct clocksource *clock)
 {
 	uint64_t now;
 
+	task_bench_count(KOBOX_TASK_BENCH_CLOCK);
 	(void)clock;
-	if (!task_host || kobox_host_call(task_host->monotonic_ns(&now)))
+	/* The clock callback owns FP preservation even across native signals.
+	 * Other host calls still need the ordinary caller-owned FP interval. */
+	if (!task_host || task_host->monotonic_ns(&now))
 		BUG();
 	return now;
 }
@@ -591,6 +749,7 @@ struct task_struct *kobox_task_switch(
 	next_port->dead_previous = READ_ONCE(previous->__state) == TASK_DEAD ?
 		previous_port : NULL;
 	next_port->resume_cpu = cpu;
+	task_bench_count(KOBOX_TASK_BENCH_HANDOFF);
 	raw_cpu_write(current_task, next);
 #ifdef KOBOX_BOOT_RUNTIME
 	kobox_arch_task_stack_current(next);
@@ -762,6 +921,7 @@ static int validate_layout(const struct kobox_linux_task_layout *layout)
 	operations = layout->operations;
 	if (operations->size != sizeof(*operations) ||
 	    operations->identity != KOBOX_LINUX_TASK_HOST_IDENTITY ||
+	    !operations->task_on_stack ||
 	    !operations->task_create || !operations->task_wake ||
 	    !operations->task_park || !operations->task_join_destroy ||
 	    !operations->task_exit || !operations->cpu_enter ||

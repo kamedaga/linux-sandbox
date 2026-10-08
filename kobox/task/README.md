@@ -15,6 +15,16 @@ start functions in the host address space. A regression also covers the
 does not have `PF_KTHREAD`. Ordinary user-address-space cloning and returning
 to user instructions remain unsupported.
 
+`task_on_stack` records native stack ownership without treating host memory as
+Linux RAM. Hosts discover bounds before entering Linux; the callback is a
+nonblocking leaf. The task-stack header overlay preserves the upstream test
+and also recognizes these native stacks, allowing `blk_rq_map_kern()` to use
+its existing bounce-buffer path. In particular, NVMe timestamp commands use a
+stack buffer. Misclassifying it as direct-map RAM causes endless RESOURCE
+retries before the controller is published. This extends the private task-host
+contract (size checked at entry); rebuild core and host together. No kernel
+syscall or upstream driver modification is involved.
+
 The boot fixture uses the real memory bootstrap, `init_task`, `sched_init()`,
 `workqueue_init_early()`, `rcu_init()`, timer/softirq initialization, and Linux
 timekeeping backed by a host clocksource. It creates the second CPU's idle task

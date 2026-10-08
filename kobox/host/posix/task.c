@@ -1,12 +1,28 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#define _GNU_SOURCE
 #include "host.h"
 
 #include <errno.h>
 #include <stdlib.h>
 
+static int record_stack(struct kobox_posix_task *task)
+{
+	pthread_attr_t attributes;
+	int result = pthread_getattr_np(pthread_self(), &attributes);
+	if (result)
+		return result;
+	result = pthread_attr_getstack(&attributes, &task->stack_base,
+				      &task->stack_size);
+	pthread_attr_destroy(&attributes);
+	return result;
+}
+
 static void *task_entry(void *argument)
 {
 	struct kobox_posix_task *task = argument;
+	/* Discover once outside Linux; stack tests can run in atomic context. */
+	if (record_stack(task))
+		abort();
 
 	/* The creator publishes the native handle before granting this permit. */
 	if (kobox_posix_permit_wait(&task->dispatch, 0))
@@ -45,6 +61,12 @@ int kobox_posix_task_bind_current(struct kobox_posix_task **task_out)
 	if (status)
 		return status;
 	task->thread.native = pthread_self();
+	status = record_stack(task);
+	if (status) {
+		(void)kobox_posix_permit_destroy(&task->dispatch);
+		free(task);
+		return status;
+	}
 	task->thread.started = true;
 	task->current = true;
 	*task_out = task;

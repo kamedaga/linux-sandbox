@@ -4,6 +4,9 @@
 #include "diagnostic.h"
 #include "dma_host.h"
 #include "drm_memory_policy.h"
+#include "drm_time.h"
+#include "../task/time_port.h"
+#include "../arch/x86_64/host_call.h"
 
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -20,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/sync_file.h>
 #include <linux/task_work.h>
+#include <linux/timekeeping.h>
 #include <linux/vmalloc.h>
 #include <drm/drm_file.h>
 #include <drm/drm_device.h>
@@ -44,6 +48,7 @@ struct kobox_linux_drm_file {
 	struct task_struct *owner;
 	struct files_struct *files;
 	int fd;
+	u64 linux_clock_base, host_clock_base;
 #if defined(KOBOX_DRM_EXEC_PROFILE)
 	/* Each file has one checked owner; separate counters avoid a lock on the
 	 * measured path and distinguish clients without inspecting commands. */
@@ -52,6 +57,54 @@ struct kobox_linux_drm_file {
 	} exec_profile[2];
 #endif
 };
+
+static int sample_file_clock(struct kobox_linux_drm_file *file)
+{
+	const struct kobox_linux_task_host_operations *host = kobox_task_host();
+	u64 best = U64_MAX;
+
+	if (!host)
+		return -ENODEV;
+	for (unsigned int i = 0; i < 3; i++) {
+		u64 before, after, linux_now;
+		int result = kobox_host_call(host->monotonic_ns(&before));
+
+		if (result)
+			return result;
+		linux_now = ktime_get_ns();
+		result = kobox_host_call(host->monotonic_ns(&after));
+		if (result)
+			return result;
+		if (after < before)
+			return -EUCLEAN;
+		if (after - before < best) {
+			best = after - before;
+			file->linux_clock_base = linux_now;
+			file->host_clock_base = before + best / 2;
+		}
+		if (!best)
+			break;
+	}
+	return 0;
+}
+
+static int file_timestamp(struct kobox_linux_drm_file *file, u64 linux_ns,
+			  u64 *host_ns)
+{
+	unsigned long long value;
+
+	if (!kobox_drm_time_translate(linux_ns, file->linux_clock_base,
+				     file->host_clock_base, &value))
+		return -EOVERFLOW;
+	*host_ns = value;
+	return 0;
+}
+
+static u64 file_deadline(struct kobox_linux_drm_file *file, u64 host_ns)
+{
+	return kobox_drm_deadline_translate(host_ns, file->host_clock_base,
+					   file->linux_clock_base);
+}
 
 #if defined(KOBOX_DRM_EXEC_PROFILE)
 static u64 exec_profile_stamp(void)
@@ -267,6 +320,9 @@ int kobox_linux_drm_open(dev_t device, u32 node_type,
 	file = kzalloc(sizeof(*file), GFP_KERNEL);
 	if (!file)
 		return -ENOMEM;
+	result = sample_file_clock(file);
+	if (result)
+		goto free_file;
 	type = get_fs_type("tmpfs");
 	if (!type) {
 		result = -ENODEV;
@@ -316,7 +372,7 @@ free_file:
 	return result;
 }
 
-/* Only the two typed callers below can select commands and construct args.
+/* Only typed DRM bridge callers select commands and construct arguments.
  * Native uaccess accepts these private buffers; it does not validate peers.
  */
 static int private_ioctl(struct kobox_linux_drm_file *file, unsigned int cmd,
@@ -684,6 +740,45 @@ int kobox_linux_drm_amdgpu_simple(struct kobox_linux_drm_file *file,
 	*record_id = 0;
 	*record_size = 0;
 	switch (command_id) {
+	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_OP: {
+		struct drm_amdgpu_gem_op argument = {0};
+		struct drm_amdgpu_gem_create_in info = {0};
+
+		if (request_size != KB2_GPU_DRM_AMDGPU_RECORD_GEM_OP_REQUEST_SIZE ||
+		    record_capacity < sizeof(info) || deadline_ns)
+			return -EINVAL;
+		memcpy(&argument.handle, input, sizeof(u32));
+		memcpy(&argument.op, input + 4, sizeof(u32));
+		memcpy(&argument.value, input + 8, sizeof(u64));
+		if (!argument.handle || memchr_inv(input + 20, 0, 4))
+			return -EINVAL;
+		if (argument.op == AMDGPU_GEM_OP_GET_GEM_CREATE_INFO) {
+			u32 count;
+
+			memcpy(&count, input + 16, sizeof(u32));
+			if (argument.value || count != 1)
+				return -EINVAL;
+			/* The user's pointer never reaches Linux: only this task-owned
+			 * output object is visible to the unmodified DRM ioctl. */
+			argument.value = (uintptr_t)&info;
+		} else if (argument.op == AMDGPU_GEM_OP_SET_PLACEMENT) {
+			if (memchr_inv(input + 16, 0, 4) ||
+			    (argument.value & ~(AMDGPU_GEM_DOMAIN_CPU |
+				AMDGPU_GEM_DOMAIN_GTT | AMDGPU_GEM_DOMAIN_VRAM)))
+				return -EINVAL;
+		} else {
+			return -EOPNOTSUPP;
+		}
+		result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_OP, &argument);
+		if (!result && argument.op == AMDGPU_GEM_OP_GET_GEM_CREATE_INFO) {
+			static_assert(sizeof(info) ==
+				KB2_GPU_DRM_AMDGPU_RECORD_GEM_CREATE_INFO_SIZE);
+			memcpy(output, &info, sizeof(info));
+			*record_id = KB2_GPU_DRM_AMDGPU_RECORD_GEM_CREATE_INFO;
+			*record_size = sizeof(info);
+		}
+		return result;
+	}
 	case KB2_GPU_DRM_AMDGPU_COMMAND_GEM_CREATE: {
 		union drm_amdgpu_gem_create argument = {0};
 
@@ -774,7 +869,7 @@ int kobox_linux_drm_amdgpu_simple(struct kobox_linux_drm_file *file,
 		memcpy(&argument.in.handle, input, sizeof(u32));
 		memcpy(&argument.in.flags, input + 4, sizeof(u32));
 		if (!argument.in.handle || argument.in.flags) return -EINVAL;
-		argument.in.timeout = deadline_ns;
+		argument.in.timeout = file_deadline(file, deadline_ns);
 		result = private_ioctl(file, DRM_IOCTL_AMDGPU_GEM_WAIT_IDLE, &argument);
 		if (!result) {
 			memcpy(output, &argument.out.status, sizeof(u32));
@@ -811,7 +906,7 @@ int kobox_linux_drm_amdgpu_simple(struct kobox_linux_drm_file *file,
 		    !deadline_ns || deadline_ns > S64_MAX)
 			return -EINVAL;
 		memcpy(&argument.in.handle, input, sizeof(u64));
-		argument.in.timeout = deadline_ns;
+		argument.in.timeout = file_deadline(file, deadline_ns);
 		memcpy(&argument.in.ip_type, input + 8, sizeof(u32) * 4);
 		result = private_ioctl(file, DRM_IOCTL_AMDGPU_WAIT_CS, &argument);
 		if (!result) {
@@ -909,12 +1004,136 @@ int kobox_linux_drm_get_magic(struct kobox_linux_drm_file *file, u32 *magic)
 	return result;
 }
 
+int kobox_linux_drm_get_client(struct kobox_linux_drm_file *file, s32 index,
+			      struct kobox_linux_drm_client *client)
+{
+	struct drm_client argument = { .idx = index };
+	int result;
+
+	if (!client)
+		return -EINVAL;
+	result = check_owner(file);
+	result = result ?: private_ioctl(file, DRM_IOCTL_GET_CLIENT, &argument);
+	if (!result) {
+		client->authenticated = argument.auth;
+		client->process_id = argument.pid;
+		client->user_id = argument.uid;
+		client->magic = argument.magic;
+		client->ioctl_count = argument.iocs;
+	}
+	return result;
+}
+
 int kobox_linux_drm_auth_magic(struct kobox_linux_drm_file *file, u32 magic)
 {
 	struct drm_auth argument = { .magic = magic };
 	int result = check_owner(file);
 
 	return result ?: private_ioctl(file, DRM_IOCTL_AUTH_MAGIC, &argument);
+}
+
+int kobox_linux_drm_wait_vblank(struct kobox_linux_drm_file *file,
+		u32 type, u32 sequence, u64 event_token,
+		struct kobox_linux_drm_vblank *out)
+{
+	union drm_wait_vblank argument = {
+		.request = {.type = type, .sequence = sequence,
+			.signal = event_token},
+	};
+	u64 seconds;
+	int result;
+
+	if (!out)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_WAIT_VBLANK, &argument);
+	if (result)
+		return result;
+	out->type = argument.reply.type;
+	out->sequence = argument.reply.sequence;
+	/* EVENT returns a queued event, not a timestamp. The request's signal
+	 * token still occupies the reply union's timeval storage. */
+	if (type & _DRM_VBLANK_EVENT) {
+		out->timestamp_ns = 0;
+		return 0;
+	}
+	if (argument.reply.tval_sec < 0 || argument.reply.tval_usec < 0 ||
+	    argument.reply.tval_usec >= 1000000)
+		return -EUCLEAN;
+	seconds = argument.reply.tval_sec;
+	if (seconds > (U64_MAX - (u64)argument.reply.tval_usec * 1000ULL) /
+		1000000000ULL)
+		return -EOVERFLOW;
+	out->timestamp_ns = seconds * 1000000000ULL +
+		(u64)argument.reply.tval_usec * 1000ULL;
+	return file_timestamp(file, out->timestamp_ns, &out->timestamp_ns);
+}
+
+int kobox_linux_drm_crtc_get_sequence(struct kobox_linux_drm_file *file,
+		u32 crtc_id, struct kobox_linux_drm_crtc_sequence *out)
+{
+	struct drm_crtc_get_sequence argument = {.crtc_id = crtc_id};
+	int result;
+
+	if (!crtc_id || !out)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_CRTC_GET_SEQUENCE, &argument);
+	if (result)
+		return result;
+	if (argument.active > 1 || argument.sequence_ns < 0)
+		return -EUCLEAN;
+	out->active = argument.active;
+	out->sequence = argument.sequence;
+	out->timestamp_ns = argument.sequence_ns;
+	return file_timestamp(file, out->timestamp_ns, &out->timestamp_ns);
+}
+
+int kobox_linux_drm_crtc_queue_sequence(struct kobox_linux_drm_file *file,
+		u32 crtc_id, u32 flags, u64 sequence, u64 event_token,
+		u64 *actual_sequence)
+{
+	struct drm_crtc_queue_sequence argument = {
+		.crtc_id = crtc_id, .flags = flags,
+		.sequence = sequence, .user_data = event_token,
+	};
+	int result;
+
+	if (!crtc_id || !actual_sequence ||
+	    (flags & ~(DRM_CRTC_SEQUENCE_RELATIVE |
+		DRM_CRTC_SEQUENCE_NEXT_ON_MISS)))
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_CRTC_QUEUE_SEQUENCE,
+			&argument);
+	if (!result)
+		*actual_sequence = argument.sequence;
+	return result;
+}
+
+int kobox_linux_drm_gamma(struct kobox_linux_drm_file *file, bool set,
+		u32 crtc_id, u32 count, u16 *red, u16 *green, u16 *blue)
+{
+	struct drm_mode_crtc_lut argument = {
+		.crtc_id = crtc_id,
+		.gamma_size = count,
+		.red = (uintptr_t)red,
+		.green = (uintptr_t)green,
+		.blue = (uintptr_t)blue,
+	};
+	int result;
+
+	if (!crtc_id || !count || count > 65536 || !red || !green || !blue)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file,
+			set ? DRM_IOCTL_MODE_SETGAMMA : DRM_IOCTL_MODE_GETGAMMA,
+			&argument);
+	return result;
 }
 
 int kobox_linux_drm_master(struct kobox_linux_drm_file *file, bool acquire)
@@ -1145,6 +1364,34 @@ int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 	return result;
 }
 
+int kobox_linux_drm_set_plane(struct kobox_linux_drm_file *file,
+		const struct kobox_linux_drm_plane_set *plane)
+{
+	struct drm_mode_set_plane argument;
+	int result;
+
+	if (!plane || !plane->plane_id || plane->flags)
+		return -EINVAL;
+	argument = (struct drm_mode_set_plane) {
+		.plane_id = plane->plane_id,
+		.crtc_id = plane->crtc_id,
+		.fb_id = plane->fb_id,
+		.flags = plane->flags,
+		.crtc_x = plane->crtc_x,
+		.crtc_y = plane->crtc_y,
+		.crtc_w = plane->crtc_width,
+		.crtc_h = plane->crtc_height,
+		.src_x = plane->source_x,
+		.src_y = plane->source_y,
+		.src_w = plane->source_width,
+		.src_h = plane->source_height,
+	};
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_SETPLANE, &argument);
+	return result;
+}
+
 int kobox_linux_drm_cursor(struct kobox_linux_drm_file *file,
 		const struct kobox_linux_drm_cursor *cursor)
 {
@@ -1363,6 +1610,86 @@ int kobox_linux_drm_remove_fb(struct kobox_linux_drm_file *file, u32 fb_id)
 	return result;
 }
 
+int kobox_linux_drm_destroy_dumb(struct kobox_linux_drm_file *file,
+		u32 handle)
+{
+	struct drm_mode_destroy_dumb argument = {.handle = handle};
+	int result;
+
+	if (!handle)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_DESTROY_DUMB, &argument);
+	return result;
+}
+
+int kobox_linux_drm_set_property(struct kobox_linux_drm_file *file,
+		u32 connector_id, u32 property_id, u64 value)
+{
+	struct drm_mode_connector_set_property argument = {
+		.connector_id = connector_id,
+		.prop_id = property_id,
+		.value = value,
+	};
+	int result;
+
+	if (!connector_id || !property_id)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_SETPROPERTY, &argument);
+	return result;
+}
+
+int kobox_linux_drm_get_fb(struct kobox_linux_drm_file *file,
+		u32 fb_id, struct kobox_linux_drm_fb *out)
+{
+	struct drm_mode_fb_cmd argument = {.fb_id = fb_id};
+	int result;
+
+	if (!fb_id || !out)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETFB, &argument);
+	if (!result) {
+		out->fb_id = argument.fb_id;
+		out->width = argument.width;
+		out->height = argument.height;
+		out->pitch = argument.pitch;
+		out->bits_per_pixel = argument.bpp;
+		out->depth = argument.depth;
+		out->handle = argument.handle;
+	}
+	return result;
+}
+
+int kobox_linux_drm_get_fb2(struct kobox_linux_drm_file *file,
+		u32 fb_id, struct kobox_linux_drm_fb2 *out)
+{
+	struct drm_mode_fb_cmd2 argument = {.fb_id = fb_id};
+	int result;
+
+	if (!fb_id || !out)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETFB2, &argument);
+	if (!result) {
+		out->fb_id = argument.fb_id;
+		out->width = argument.width;
+		out->height = argument.height;
+		out->pixel_format = argument.pixel_format;
+		out->flags = argument.flags;
+		memcpy(out->handles, argument.handles, sizeof(out->handles));
+		memcpy(out->pitches, argument.pitches, sizeof(out->pitches));
+		memcpy(out->offsets, argument.offsets, sizeof(out->offsets));
+		memcpy(out->modifiers, argument.modifier, sizeof(out->modifiers));
+	}
+	return result;
+}
+
 int kobox_linux_drm_add_fb2(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_fb2 *framebuffer)
 {
@@ -1441,6 +1768,235 @@ done:
 	return result;
 }
 
+int kobox_linux_drm_plane_resources(struct kobox_linux_drm_file *file,
+		u32 *planes, size_t capacity, u32 *count)
+{
+	struct drm_mode_get_plane_res argument = {
+		.plane_id_ptr = (uintptr_t)planes,
+		.count_planes = capacity,
+	};
+	int result;
+
+	if (!count || (capacity && !planes) || capacity > U32_MAX)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETPLANERESOURCES,
+				       &argument);
+	if (!result)
+		*count = argument.count_planes;
+	return result;
+}
+
+int kobox_linux_drm_plane(struct kobox_linux_drm_file *file, u32 plane_id,
+		u32 *formats, size_t capacity, struct kobox_linux_drm_plane *out)
+{
+	struct drm_mode_get_plane argument = {
+		.plane_id = plane_id,
+		.count_format_types = capacity,
+		.format_type_ptr = (uintptr_t)formats,
+	};
+	int result;
+
+	if (!plane_id || !out || (capacity && !formats) || capacity > U32_MAX)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETPLANE, &argument);
+	if (!result)
+		*out = (struct kobox_linux_drm_plane) {
+			.plane_id = argument.plane_id,
+			.crtc_id = argument.crtc_id,
+			.fb_id = argument.fb_id,
+			.possible_crtcs = argument.possible_crtcs,
+			.gamma_size = argument.gamma_size,
+			.format_count = argument.count_format_types,
+		};
+	return result;
+}
+
+int kobox_linux_drm_property(struct kobox_linux_drm_file *file,
+		u32 property_id, u64 *values, size_t value_capacity,
+		struct kobox_linux_drm_property_enum *enums,
+		size_t enum_capacity, struct kobox_linux_drm_property *out)
+{
+	struct drm_mode_get_property argument = {
+		.prop_id = property_id,
+		.values_ptr = (uintptr_t)values,
+		.enum_blob_ptr = (uintptr_t)enums,
+		.count_values = value_capacity,
+		.count_enum_blobs = enum_capacity,
+	};
+	int result;
+
+	if (!property_id || !out || (value_capacity && !values) ||
+	    (enum_capacity && !enums) || value_capacity > U32_MAX ||
+	    enum_capacity > U32_MAX)
+		return -EINVAL;
+	static_assert(sizeof(struct drm_mode_property_enum) ==
+		      sizeof(struct kobox_linux_drm_property_enum));
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETPROPERTY, &argument);
+	if (!result) {
+		*out = (struct kobox_linux_drm_property) {
+			.flags = argument.flags,
+			.value_count = argument.count_values,
+			.enum_count = argument.count_enum_blobs,
+		};
+		memcpy(out->name, argument.name, sizeof(out->name));
+	}
+	return result;
+}
+
+int kobox_linux_drm_property_blob(struct kobox_linux_drm_file *file,
+		u32 blob_id, void *data, size_t capacity, u32 *required)
+{
+	struct drm_mode_get_blob argument = {
+		.blob_id = blob_id,
+		.length = capacity,
+		.data = (uintptr_t)data,
+	};
+	int result;
+
+	if (!blob_id || !required || (capacity && !data) || capacity > U32_MAX)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_GETPROPBLOB, &argument);
+	if (!result)
+		*required = argument.length;
+	return result;
+}
+
+int kobox_linux_drm_create_property_blob(struct kobox_linux_drm_file *file,
+		const void *data, size_t bytes, u32 *blob_id)
+{
+	struct drm_mode_create_blob argument = {
+		.data = (uintptr_t)data,
+		.length = bytes,
+	};
+	int result;
+
+	if (!data || !bytes || bytes > U32_MAX || !blob_id)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_CREATEPROPBLOB,
+				       &argument);
+	if (!result)
+		*blob_id = argument.blob_id;
+	return result;
+}
+
+int kobox_linux_drm_destroy_property_blob(struct kobox_linux_drm_file *file,
+		u32 blob_id)
+{
+	struct drm_mode_destroy_blob argument = {.blob_id = blob_id};
+	int result;
+
+	if (!blob_id)
+		return -EINVAL;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_DESTROYPROPBLOB,
+				       &argument);
+	return result;
+}
+
+int kobox_linux_drm_atomic(struct kobox_linux_drm_file *file, u32 flags,
+		const struct kobox_linux_drm_atomic_object *objects,
+		size_t object_count,
+		const struct kobox_linux_drm_atomic_property *properties,
+		size_t property_count, u64 event_token)
+{
+	struct drm_mode_atomic argument = {.flags = flags,
+		.count_objs = object_count, .user_data = event_token};
+	u32 *ids = NULL, *counts = NULL, *property_ids = NULL;
+	u64 *values = NULL;
+	size_t index, cursor = 0;
+	int result;
+
+	/* This bridge carries values, not Linux pointers or sync-file FDs. Native
+	 * DRM performs the final property, object and modeset validation. */
+	if (!objects || !properties || !object_count || !property_count ||
+	    object_count > 64 || property_count > 256 ||
+	    (flags & ~(DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC |
+			 DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK |
+			 DRM_MODE_ATOMIC_ALLOW_MODESET)) ||
+	    (!(flags & DRM_MODE_PAGE_FLIP_EVENT) && event_token))
+		return -EINVAL;
+	ids = kcalloc(object_count, sizeof(*ids), GFP_KERNEL);
+	counts = kcalloc(object_count, sizeof(*counts), GFP_KERNEL);
+	property_ids = kcalloc(property_count, sizeof(*property_ids), GFP_KERNEL);
+	values = kcalloc(property_count, sizeof(*values), GFP_KERNEL);
+	if (!ids || !counts || !property_ids || !values) {
+		result = -ENOMEM;
+		goto done;
+	}
+	for (index = 0; index < object_count; index++) {
+		if (!objects[index].object_id || !objects[index].property_count ||
+		    objects[index].first_property != cursor ||
+		    objects[index].property_count > property_count - cursor) {
+			result = -EINVAL;
+			goto done;
+		}
+		ids[index] = objects[index].object_id;
+		counts[index] = objects[index].property_count;
+		cursor += counts[index];
+	}
+	if (cursor != property_count) {
+		result = -EINVAL;
+		goto done;
+	}
+	for (index = 0; index < property_count; index++) {
+		struct drm_mode_get_property property = {
+			.prop_id = properties[index].property_id,
+		};
+
+		if (!properties[index].property_id ||
+		    (properties[index].value_kind != 1 &&
+		     properties[index].value_kind != 2 &&
+		     properties[index].value_kind != 3)) {
+			result = -EOPNOTSUPP;
+			goto done;
+		}
+		/* Atomic values are usually scalars, but these named properties
+		 * interpret the number as a Linux pointer or FD. A fixed property ID
+		 * would be wrong on a second GPU; inspect the live property instead. */
+		result = check_owner(file);
+		if (!result)
+			result = private_ioctl(file, DRM_IOCTL_MODE_GETPROPERTY,
+					       &property);
+		if (result)
+			goto done;
+		if ((!strncmp(property.name, "IN_FENCE_FD", sizeof(property.name)) &&
+		     properties[index].value != U64_MAX) ||
+		    (!strncmp(property.name, "OUT_FENCE_PTR", sizeof(property.name)) &&
+		     properties[index].value) ||
+		    (!strncmp(property.name, "WRITEBACK_OUT_FENCE_PTR",
+			      sizeof(property.name)) && properties[index].value)) {
+			result = -EOPNOTSUPP;
+			goto done;
+		}
+		property_ids[index] = properties[index].property_id;
+		values[index] = properties[index].value;
+	}
+	argument.objs_ptr = (uintptr_t)ids;
+	argument.count_props_ptr = (uintptr_t)counts;
+	argument.props_ptr = (uintptr_t)property_ids;
+	argument.prop_values_ptr = (uintptr_t)values;
+	result = check_owner(file);
+	if (!result)
+		result = private_ioctl(file, DRM_IOCTL_MODE_ATOMIC, &argument);
+done:
+	kfree(values);
+	kfree(property_ids);
+	kfree(counts);
+	kfree(ids);
+	return result;
+}
+
 int kobox_linux_drm_poll_events(struct kobox_linux_drm_file *file,
 				u32 requested, u32 *ready)
 {
@@ -1454,6 +2010,47 @@ int kobox_linux_drm_poll_events(struct kobox_linux_drm_file *file,
 		return result;
 	mask = vfs_poll(file->guard, NULL);
 	*ready = requested && (mask & (EPOLLIN | EPOLLRDNORM));
+	return 0;
+}
+
+static int event_timestamp(struct kobox_linux_drm_file *file, void *data)
+{
+	struct drm_event header;
+	u64 timestamp;
+	int result;
+
+	memcpy(&header, data, sizeof(header));
+	if (header.type == DRM_EVENT_VBLANK ||
+	    header.type == DRM_EVENT_FLIP_COMPLETE) {
+		struct drm_event_vblank event;
+
+		if (header.length != sizeof(event))
+			return -EUCLEAN;
+		memcpy(&event, data, sizeof(event));
+		if (event.tv_usec >= USEC_PER_SEC)
+			return -EUCLEAN;
+		timestamp = (u64)event.tv_sec * NSEC_PER_SEC +
+			(u64)event.tv_usec * NSEC_PER_USEC;
+		result = file_timestamp(file, timestamp, &timestamp);
+		if (result || timestamp / NSEC_PER_SEC > U32_MAX)
+			return result ?: -EOVERFLOW;
+		event.tv_sec = timestamp / NSEC_PER_SEC;
+		event.tv_usec = (timestamp % NSEC_PER_SEC) / NSEC_PER_USEC;
+		memcpy(data, &event, sizeof(event));
+	} else if (header.type == DRM_EVENT_CRTC_SEQUENCE) {
+		struct drm_event_crtc_sequence event;
+
+		if (header.length != sizeof(event))
+			return -EUCLEAN;
+		memcpy(&event, data, sizeof(event));
+		if (event.time_ns < 0)
+			return -EUCLEAN;
+		result = file_timestamp(file, event.time_ns, &timestamp);
+		if (result || timestamp > S64_MAX)
+			return result ?: -EOVERFLOW;
+		event.time_ns = timestamp;
+		memcpy(data, &event, sizeof(event));
+	}
 	return 0;
 }
 
@@ -1500,12 +2097,19 @@ int kobox_linux_drm_read_events(struct kobox_linux_drm_file *file,
 			break;
 		}
 		memcpy((u8 *)output + copied, event->event, length);
+		/* Translate the private copy, not Linux's queued event. Query and
+		 * completion timestamps must use the same epoch for Present/GLX. */
+		result = event_timestamp(file, (u8 *)output + copied);
+		if (result) {
+			kfree(event);
+			break;
+		}
 		copied += length;
 		kfree(event);
 	}
 	mutex_unlock(&drm_file->event_read_lock);
 	*bytes = copied;
-	return 0;
+	return result;
 }
 
 /* Driver-private handlers receive only fully decoded, private kernel buffers.
@@ -1695,6 +2299,8 @@ int kobox_linux_drm_syncobj_wait(struct kobox_linux_drm_file *file,
 	result = check_owner(file);
 	if (result)
 		return result;
+	argument.timeout_nsec = file_deadline(file, timeout_nsec);
+	argument.deadline_nsec = file_deadline(file, fence_deadline_ns);
 	result = decode_handles(handle_bytes, handle_count, &handles);
 	if (result)
 		return result;

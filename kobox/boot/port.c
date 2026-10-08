@@ -75,6 +75,19 @@ int __wrap_kernel_execve(const char *filename, const char *const *argv,
 	return __real_kernel_execve(filename, argv, envp);
 }
 
+void __real_prepare_namespace(void);
+
+void __wrap_prepare_namespace(void)
+{
+	/* CONFIG_BLOCK makes upstream PID 1 attempt a physical root mount before
+	 * kernel_execve. A hosted sandbox has only a private rootfs for its
+	 * modules; the PachaOS root belongs to filed outside this Linux process.
+	 * Keep the upstream path intact for non-hosted launches. */
+	if (kobox_linux_boot_host_init())
+		return;
+	__real_prepare_namespace();
+}
+
 /* Keep upstream mm/vmalloc.c unchanged. Once its ioremap page tables are
  * complete, publish the authoritative PTEs to the host mapping backend. A
  * failed publication is returned to the normal ioremap rollback path. */

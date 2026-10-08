@@ -14,6 +14,8 @@ struct kobox_drm_query {
 	uint64_t generation, session_id, capability, fence_correlation;
 	uint32_t command_set_id, command_id;
 	uint32_t object_id, object_type, mode_flags;
+	uint32_t gamma_count;
+	uint64_t event_token, sequence;
 	uint32_t poll_events;
 	size_t capacity[4], offset[4];
 	struct kb2_amdgpu_cs_part cs_parts[KB2_AMDGPU_CS_PARTS];
@@ -38,6 +40,8 @@ struct kobox_drm_query_api {
 	int (*version)(struct kobox_linux_drm_file *, const size_t *,
 		       struct kobox_linux_drm_version *);
 	int (*get_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t *);
+	int (*get_client)(struct kobox_linux_drm_file *, int32_t,
+			  struct kobox_linux_drm_client *);
 	int (*amdgpu_info)(struct kobox_linux_drm_file *, uint32_t,
 		const uint32_t *, void *, size_t);
 	int (*amdgpu_simple)(struct kobox_linux_drm_file *, uint32_t,
@@ -51,6 +55,14 @@ struct kobox_drm_query_api {
 	int (*master)(struct kobox_linux_drm_file *, bool);
 	int (*get_magic)(struct kobox_linux_drm_file *, uint32_t *);
 	int (*auth_magic)(struct kobox_linux_drm_file *, uint32_t);
+	int (*wait_vblank)(struct kobox_linux_drm_file *, uint32_t,
+		uint32_t, uint64_t, struct kobox_linux_drm_vblank *);
+	int (*crtc_get_sequence)(struct kobox_linux_drm_file *, uint32_t,
+		struct kobox_linux_drm_crtc_sequence *);
+	int (*crtc_queue_sequence)(struct kobox_linux_drm_file *, uint32_t,
+		uint32_t, uint64_t, uint64_t, uint64_t *);
+	int (*gamma)(struct kobox_linux_drm_file *, bool, uint32_t, uint32_t,
+		uint16_t *, uint16_t *, uint16_t *);
 	int (*resources)(struct kobox_linux_drm_file *, uint32_t *, size_t,
 		uint32_t *, size_t, uint32_t *, size_t, uint32_t *, size_t,
 		struct kobox_linux_drm_resources *);
@@ -67,6 +79,8 @@ struct kobox_drm_query_api {
 		const struct kobox_linux_drm_mode *);
 	int (*page_flip)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		uint32_t, uint32_t, uint64_t);
+	int (*set_plane)(struct kobox_linux_drm_file *,
+		const struct kobox_linux_drm_plane_set *);
 	int (*cursor)(struct kobox_linux_drm_file *,
 		const struct kobox_linux_drm_cursor *);
 	int (*dirty_fb)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
@@ -76,10 +90,32 @@ struct kobox_drm_query_api {
 	int (*add_fb)(struct kobox_linux_drm_file *,
 		struct kobox_linux_drm_fb *);
 	int (*remove_fb)(struct kobox_linux_drm_file *, uint32_t);
+	int (*destroy_dumb)(struct kobox_linux_drm_file *, uint32_t);
+	int (*set_property)(struct kobox_linux_drm_file *, uint32_t,
+		uint32_t, uint64_t);
+	int (*get_fb)(struct kobox_linux_drm_file *, uint32_t,
+		struct kobox_linux_drm_fb *);
+	int (*get_fb2)(struct kobox_linux_drm_file *, uint32_t,
+		struct kobox_linux_drm_fb2 *);
 	int (*add_fb2)(struct kobox_linux_drm_file *,
 		struct kobox_linux_drm_fb2 *);
 	int (*object_properties)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
 		struct kobox_linux_drm_property_value *, size_t, uint32_t *);
+	int (*plane_resources)(struct kobox_linux_drm_file *, uint32_t *, size_t,
+		uint32_t *);
+	int (*plane)(struct kobox_linux_drm_file *, uint32_t, uint32_t *, size_t,
+		struct kobox_linux_drm_plane *);
+	int (*property)(struct kobox_linux_drm_file *, uint32_t, uint64_t *, size_t,
+		struct kobox_linux_drm_property_enum *, size_t,
+		struct kobox_linux_drm_property *);
+	int (*property_blob)(struct kobox_linux_drm_file *, uint32_t, void *,
+		size_t, uint32_t *);
+	int (*create_property_blob)(struct kobox_linux_drm_file *, const void *,
+		size_t, uint32_t *);
+	int (*destroy_property_blob)(struct kobox_linux_drm_file *, uint32_t);
+	int (*atomic)(struct kobox_linux_drm_file *, uint32_t,
+		const struct kobox_linux_drm_atomic_object *, size_t,
+		const struct kobox_linux_drm_atomic_property *, size_t, uint64_t);
 	int (*poll_events)(struct kobox_linux_drm_file *, uint32_t, uint32_t *);
 	int (*read_events)(struct kobox_linux_drm_file *, void *, size_t, size_t *);
 	int (*gem_close)(struct kobox_linux_drm_file *, uint32_t);

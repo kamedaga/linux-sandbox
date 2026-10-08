@@ -3,21 +3,443 @@
 #include "dma_gate.h"
 #include "exception.h"
 #include "pressure_gate.h"
+#include "allocation_gate.h"
 
 #include <linux/dma-mapping.h>
 #include <linux/completion.h>
 #include <linux/cpu.h>
+#include <linux/file.h>
+#include <linux/fs.h>
 #include <linux/iommu.h>
+#include <linux/irq_work.h>
 #include <linux/kthread.h>
 #include <linux/panic_notifier.h>
 #include <linux/mm.h>
+#include <linux/mount.h>
 #include <linux/pci.h>
 #include <linux/rcupdate.h>
 #include <linux/virtio.h>
+#include <linux/xarray.h>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #include <linux/virtio_config.h>
 #pragma GCC diagnostic pop
+
+#define DMA_XARRAY_WAIT HZ
+#define DMA_XARRAY_VICTIM 7UL
+#define DMA_XARRAY_TARGET (ULONG_MAX >> 1)
+
+struct dma_xarray_gate {
+	struct xarray array;
+	struct irq_work irq;
+	struct completion done;
+	unsigned int cpu, hooks, callbacks;
+	int error;
+	bool armed, releasing, queued;
+};
+
+/* A timed-out IRQ still owns this state. Static storage avoids freeing its
+ * array or callback argument merely because the bounded test wait expired.
+ * The boot gate is a single caller; matching an armed array excludes normal
+ * DMA activity on either CPU from the injection hook.
+ */
+static struct dma_xarray_gate xarray_gate;
+
+static void dma_xarray_irq(struct irq_work *work)
+{
+	struct dma_xarray_gate *gate = container_of(work,
+		struct dma_xarray_gate, irq);
+
+	if (!in_hardirq() || !irqs_disabled() ||
+	    raw_smp_processor_id() != gate->cpu ||
+	    spin_is_locked(&gate->array.xa_lock)) {
+		WRITE_ONCE(gate->error, -EDEADLK);
+	} else if (xa_erase(&gate->array, DMA_XARRAY_VICTIM) !=
+		   xa_mk_value(1)) {
+		WRITE_ONCE(gate->error, -EINVAL);
+	}
+	WRITE_ONCE(gate->callbacks, READ_ONCE(gate->callbacks) + 1);
+	complete(&gate->done);
+}
+
+void kobox_linux_dma_gate_xarray_locked(struct xarray *xa,
+	unsigned long index, bool releasing)
+{
+	struct dma_xarray_gate *gate = &xarray_gate;
+
+	if (!READ_ONCE(gate->armed) || xa != &gate->array ||
+	    index != DMA_XARRAY_TARGET || releasing != gate->releasing)
+		return;
+	gate->hooks++;
+	/* Detect the old ordinary xa_lock path before scheduling an IRQ that
+	 * would otherwise spin forever behind its interrupted lock owner.
+	 */
+	if (!irqs_disabled() || !spin_is_locked(&xa->xa_lock)) {
+		gate->error = -EACCES;
+		return;
+	}
+	if (gate->queued || READ_ONCE(gate->callbacks) ||
+	    !irq_work_queue(&gate->irq)) {
+		gate->error = -EINVAL;
+		return;
+	}
+	gate->queued = true;
+	if (READ_ONCE(gate->callbacks))
+		gate->error = -EDEADLK;
+}
+
+static int dma_xarray_case(gfp_t gfp, bool releasing, bool disabled)
+{
+	struct dma_xarray_gate *gate = &xarray_gate;
+	unsigned long flags = 0;
+	int result;
+
+	memset(gate, 0, sizeof(*gate));
+	xa_init_flags(&gate->array, XA_FLAGS_LOCK_IRQ);
+	init_completion(&gate->done);
+	gate->irq = IRQ_WORK_INIT_HARD(dma_xarray_irq);
+	gate->releasing = releasing;
+	result = xa_err(xa_store_irq(&gate->array, DMA_XARRAY_VICTIM,
+				   xa_mk_value(1), GFP_KERNEL));
+	if (result)
+		goto out_array;
+	if (releasing) {
+		result = kobox_linux_dma_gate_xa_reserve(&gate->array,
+			DMA_XARRAY_TARGET, GFP_KERNEL);
+		if (result)
+			goto out_array;
+	}
+	/* Unlike get_cpu(), migration pinning permits the legitimate
+	 * GFP_KERNEL slow allocation path to sleep and release the XA lock.
+	 */
+	migrate_disable();
+	gate->cpu = raw_smp_processor_id();
+	WRITE_ONCE(gate->armed, true);
+	if (disabled)
+		local_irq_save(flags);
+	if (releasing) {
+		kobox_linux_dma_gate_xa_release(&gate->array, DMA_XARRAY_TARGET);
+		result = 0;
+	} else {
+		result = kobox_linux_dma_gate_xa_reserve(&gate->array,
+			DMA_XARRAY_TARGET, gfp);
+	}
+	WRITE_ONCE(gate->armed, false);
+	if (irqs_disabled() != disabled || gate->hooks != 1 ||
+	    (disabled && READ_ONCE(gate->callbacks)))
+		gate->error = -EINVAL;
+	if (disabled)
+		local_irq_restore(flags);
+	/* A failed mask-preservation assertion must not leave the bounded
+	 * completion wait atomic. The gate entered with interrupts enabled.
+	 */
+	if (irqs_disabled())
+		local_irq_enable();
+	if (gate->queued) {
+		if (!wait_for_completion_timeout(&gate->done, DMA_XARRAY_WAIT)) {
+			migrate_enable();
+			return -ETIMEDOUT;
+		}
+		irq_work_sync(&gate->irq);
+	}
+	migrate_enable();
+	if (!result && (gate->error || !gate->queued || gate->callbacks != 1))
+		result = gate->error ?: -EINVAL;
+	if (!releasing)
+		kobox_linux_dma_gate_xa_release(&gate->array, DMA_XARRAY_TARGET);
+	if (!result && !xa_empty(&gate->array))
+		result = -EINVAL;
+out_array:
+	xa_destroy(&gate->array);
+	return result;
+}
+
+static int dma_xarray_preserve(void)
+{
+	struct dma_xarray_gate *gate = &xarray_gate;
+	unsigned long flags;
+	int result;
+
+	memset(gate, 0, sizeof(*gate));
+	xa_init_flags(&gate->array, XA_FLAGS_LOCK_IRQ);
+	/* A negative control proves that the hook detects ordinary unmasked
+	 * locking without queuing the IRQ which caused the production deadlock.
+	 */
+	gate->armed = true;
+	xa_lock(&gate->array);
+	kobox_linux_dma_gate_xarray_locked(&gate->array, DMA_XARRAY_TARGET,
+					 false);
+	xa_unlock(&gate->array);
+	gate->armed = false;
+	if (gate->error != -EACCES || gate->hooks != 1 || gate->queued ||
+	    gate->callbacks || irqs_disabled())
+		return -EINVAL;
+	gate->error = 0;
+	result = xa_err(xa_store_irq(&gate->array, DMA_XARRAY_TARGET,
+				   xa_mk_value(2), GFP_KERNEL));
+	if (result)
+		goto out;
+	/* Reservation cleanup must never erase a real entry installed by a
+	 * concurrent successful mapper. IRQsave must also preserve nested masks.
+	 */
+	local_irq_save(flags);
+	result = kobox_linux_dma_gate_xa_reserve(&gate->array,
+		DMA_XARRAY_TARGET, GFP_ATOMIC);
+	kobox_linux_dma_gate_xa_release(&gate->array, DMA_XARRAY_TARGET);
+	if (!irqs_disabled() || xa_load(&gate->array, DMA_XARRAY_TARGET) !=
+	    xa_mk_value(2))
+		result = -EINVAL;
+	local_irq_restore(flags);
+	if (irqs_disabled())
+		result = -EINVAL;
+out:
+	xa_destroy(&gate->array);
+	return result;
+}
+
+#if defined(CONFIG_FAILSLAB) && defined(CONFIG_FAIL_PAGE_ALLOC) && \
+	defined(CONFIG_FAULT_INJECTION_DEBUG_FS)
+static int dma_xarray_persistent(void)
+{
+	struct {
+		const char *name, *value;
+		char saved[32];
+		struct file *file;
+		bool changed;
+	} controls[] = {
+		{.name = "failslab/cache-filter", .value = "N"},
+		{.name = "failslab/task-filter", .value = "Y"},
+		{.name = "failslab/interval", .value = "1"},
+		{.name = "failslab/space", .value = "0"},
+		{.name = "failslab/times", .value = "-1"},
+		{.name = "failslab/probability", .value = "100"},
+	};
+	const gfp_t modes[] = {GFP_ATOMIC, GFP_ATOMIC, GFP_KERNEL};
+	struct file_system_type *type;
+	struct vfsmount *mount;
+	struct xarray array;
+	unsigned int i, mode;
+	int result = 0;
+
+	if (READ_ONCE(current->make_it_fail) || READ_ONCE(current->fail_nth))
+		return -EBUSY;
+	type = get_fs_type("debugfs");
+	if (!type)
+		return -ENOENT;
+	mount = kern_mount(type);
+	put_filesystem(type);
+	if (IS_ERR(mount))
+		return PTR_ERR(mount);
+	/* A single fail_nth is recovered by XArray's fallback allocation.
+	 * Persistent upstream failures must cover both attempts, but only this
+	 * task is marked during the helper: IRQs and other tasks stay unaffected.
+	 * Save controls before changing them and restore even partial setup.
+	 */
+	for (i = 0; i < ARRAY_SIZE(controls); i++) {
+		loff_t position = 0;
+		ssize_t bytes;
+
+		controls[i].file = file_open_root_mnt(mount, controls[i].name,
+						    O_RDWR, 0);
+		if (IS_ERR(controls[i].file)) {
+			result = PTR_ERR(controls[i].file);
+			controls[i].file = NULL;
+			goto restore;
+		}
+		bytes = vfs_read(controls[i].file,
+			(char __user *)controls[i].saved,
+			sizeof(controls[i].saved) - 1, &position);
+		if (bytes <= 0) {
+			result = bytes ?: -EINVAL;
+			goto restore;
+		}
+		controls[i].saved[bytes] = '\0';
+		position = 0;
+		controls[i].changed = true;
+		bytes = vfs_write(controls[i].file,
+			(const char __user *)controls[i].value,
+			strlen(controls[i].value), &position);
+		if (bytes != strlen(controls[i].value)) {
+			result = bytes < 0 ? bytes : -EINVAL;
+			goto restore;
+		}
+	}
+	for (mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+		unsigned long flags = 0;
+		bool disabled = mode == 1, bad_mask;
+
+		xa_init_flags(&array, XA_FLAGS_LOCK_IRQ);
+		result = xa_err(xa_store_irq(&array, DMA_XARRAY_VICTIM,
+					    xa_mk_value(1), GFP_KERNEL));
+		if (result) {
+			xa_destroy(&array);
+			goto restore;
+		}
+		if (disabled)
+			local_irq_save(flags);
+		WRITE_ONCE(current->make_it_fail, 1);
+		result = kobox_linux_dma_gate_xa_reserve(&array,
+			DMA_XARRAY_TARGET, modes[mode] | __GFP_NOWARN);
+		WRITE_ONCE(current->make_it_fail, 0);
+		bad_mask = irqs_disabled() != disabled;
+		if (disabled)
+			local_irq_restore(flags);
+		if (irqs_disabled())
+			local_irq_enable();
+		kobox_linux_dma_gate_xa_release(&array, DMA_XARRAY_TARGET);
+		if (result != -ENOMEM || bad_mask ||
+		    xa_load(&array, DMA_XARRAY_TARGET) ||
+		    xa_load(&array, DMA_XARRAY_VICTIM) != xa_mk_value(1)) {
+			pr_err("kobox-dma: xarray persistent mode=%u result=%d bad_mask=%u\n",
+				mode, result, bad_mask);
+			result = -EINVAL;
+			xa_destroy(&array);
+			goto restore;
+		}
+		result = kobox_linux_dma_gate_xa_reserve(&array,
+			DMA_XARRAY_TARGET, modes[mode]);
+		kobox_linux_dma_gate_xa_release(&array, DMA_XARRAY_TARGET);
+		if (!result && (irqs_disabled() ||
+		    xa_erase(&array, DMA_XARRAY_VICTIM) != xa_mk_value(1) ||
+		    !xa_empty(&array)))
+			result = -EINVAL;
+		xa_destroy(&array);
+		if (result)
+			goto restore;
+		pr_info("kobox-dma: xarray persistent mode=%u irq_disabled=%u result=-ENOMEM unwind/preserve/recovery PASS\n",
+			mode, disabled);
+	}
+restore:
+	WRITE_ONCE(current->make_it_fail, 0);
+	for (i = ARRAY_SIZE(controls); i; i--) {
+		loff_t position = 0;
+		ssize_t bytes;
+
+		if (controls[i - 1].changed) {
+			bytes = vfs_write(controls[i - 1].file,
+				(const char __user *)controls[i - 1].saved,
+				strlen(controls[i - 1].saved), &position);
+			if (bytes != strlen(controls[i - 1].saved) && !result)
+				result = bytes < 0 ? bytes : -EINVAL;
+		}
+		if (controls[i - 1].file)
+			__fput_sync(controls[i - 1].file);
+	}
+	kern_unmount(mount);
+	return result;
+}
+
+static int dma_xarray_failures(void *argument)
+{
+	const struct {
+		gfp_t gfp;
+		bool disabled;
+	} modes[] = {{GFP_ATOMIC, false}, {GFP_ATOMIC, true},
+		     {GFP_KERNEL, false}};
+	struct xarray array;
+	unsigned int mode, nth, failed, injected;
+	int result;
+
+	for (mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+		failed = 0;
+		injected = 0;
+		pr_info("kobox-dma: xarray fail_nth start mode=%u irq_disabled=%u\n",
+			mode, modes[mode].disabled);
+		/* Walk every allocation point until nth lies beyond this operation.
+		 * The upstream per-task counter never affects cleanup or recovery.
+		 */
+		for (nth = 1; nth <= 64; nth++) {
+			unsigned int remaining;
+			unsigned long flags = 0;
+			bool bad_mask;
+
+			xa_init_flags(&array, XA_FLAGS_LOCK_IRQ);
+			if (modes[mode].disabled)
+				local_irq_save(flags);
+			WRITE_ONCE(current->fail_nth, nth);
+			result = kobox_linux_dma_gate_xa_reserve(&array,
+				DMA_XARRAY_TARGET, modes[mode].gfp | __GFP_NOWARN);
+			remaining = READ_ONCE(current->fail_nth);
+			WRITE_ONCE(current->fail_nth, 0);
+			bad_mask = irqs_disabled() != modes[mode].disabled;
+			if (modes[mode].disabled)
+				local_irq_restore(flags);
+			if (irqs_disabled())
+				local_irq_enable();
+			if (bad_mask || (result && result != -ENOMEM) ||
+			    (result && remaining)) {
+				pr_err("kobox-dma: xarray fail_nth mask/result mode=%u nth=%u result=%d remaining=%u bad_mask=%u\n",
+					mode, nth, result, remaining, bad_mask);
+				xa_destroy(&array);
+				return -EINVAL;
+			}
+			if (result)
+				failed++;
+			if (!remaining)
+				injected++;
+			kobox_linux_dma_gate_xa_release(&array, DMA_XARRAY_TARGET);
+			if (!xa_empty(&array)) {
+				pr_err("kobox-dma: xarray fail_nth unwind mode=%u nth=%u result=%d remaining=%u head=%px entry=%px\n",
+					mode, nth, result, remaining,
+					array.xa_head, xa_load(&array, DMA_XARRAY_TARGET));
+				xa_destroy(&array);
+				return -EINVAL;
+			}
+			result = kobox_linux_dma_gate_xa_reserve(&array,
+				DMA_XARRAY_TARGET, modes[mode].gfp);
+			kobox_linux_dma_gate_xa_release(&array, DMA_XARRAY_TARGET);
+			if (result || !xa_empty(&array) || irqs_disabled()) {
+				pr_err("kobox-dma: xarray fail_nth recovery mode=%u nth=%u result=%d empty=%u masked=%u\n",
+					mode, nth, result, xa_empty(&array), irqs_disabled());
+				xa_destroy(&array);
+				return -EINVAL;
+			}
+			xa_destroy(&array);
+			if (remaining)
+				break;
+		}
+		if (!injected || nth > 64) {
+			pr_err("kobox-dma: xarray fail_nth exhausted mode=%u failed=%u nth=%u\n",
+				mode, failed, nth);
+			return -EINVAL;
+		}
+		pr_info("kobox-dma: xarray fail_nth mode=%u irq_disabled=%u injected=%u ENOMEM=%u swept=%u recovered=%u\n",
+			mode, modes[mode].disabled, injected, failed, nth, nth);
+	}
+	return dma_xarray_persistent();
+}
+#endif
+
+int kobox_linux_dma_xarray_verify(void)
+{
+	int result;
+
+	if (irqs_disabled())
+		return -EINVAL;
+	result = dma_xarray_case(GFP_ATOMIC, false, false);
+	if (!result)
+		result = dma_xarray_case(GFP_ATOMIC, false, true);
+	if (!result)
+		result = dma_xarray_case(GFP_KERNEL, false, false);
+	if (!result)
+		result = dma_xarray_case(GFP_ATOMIC, true, false);
+	if (!result)
+		result = dma_xarray_case(GFP_ATOMIC, true, true);
+	if (!result)
+		result = dma_xarray_preserve();
+#if defined(CONFIG_FAILSLAB) && defined(CONFIG_FAIL_PAGE_ALLOC) && \
+	defined(CONFIG_FAULT_INJECTION_DEBUG_FS)
+	if (!result)
+		result = kobox_linux_with_allocation_failures(dma_xarray_failures, NULL);
+	if (!result)
+		pr_info("kobox-dma: xarray controlled ENOMEM unwind/recovery PASS\n");
+#else
+	pr_info("kobox-dma: xarray ENOMEM injection unavailable in this config\n");
+#endif
+	if (!result)
+		pr_info("kobox-dma: xarray same-CPU hardIRQ defer/drain IRQrestore GFP_KERNEL/ATOMIC reserved-only release PASS\n");
+	return result;
+}
 
 static int transfer(const struct kobox_linux_dma_test *test, dma_addr_t iova,
 		    u32 *value, bool write)
@@ -919,6 +1341,10 @@ int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 	    !report || report->size != sizeof(*report))
 		return -EINVAL;
 	report->phase = 1;
+	result = kobox_linux_dma_xarray_verify();
+	if (result)
+		goto out;
+	report->cases++;
 	result = kobox_linux_pci_scan(pci, &bridge);
 	if (result)
 		goto out;

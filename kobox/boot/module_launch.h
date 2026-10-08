@@ -7,7 +7,9 @@
 #include "device_port.h"
 #include "input_port.h"
 #include "net_port.h"
+#include "block_port.h"
 #include "firmware_files.h"
+#include "fs_mount.h"
 #include <kobox2/module_progress.h>
 
 /* Borrowed immutable package data, local to one sandbox process. One launch
@@ -31,17 +33,32 @@ struct kobox_linux_module_launch {
 	/* Optional device attachment; readiness precedes lifecycle publication. */
 	const struct kobox_linux_device_launch *device;
 	/* Device-class-neutral PCI attachment. Mutually exclusive with device. */
-	const struct kobox_linux_device_port_config *pci_device;
+	const struct kobox_linux_device_port_config *pci_devices;
+	size_t pci_device_count;
 	/* USB input events are captured after the upstream HID stack loads. */
 	uint32_t capture_input;
 	/* Ethernet-frame service for the single PCI NIC in this generation. */
 	uint32_t capture_network;
+	/* Block I/O shares the same PCI ownership as input for USB storage.
+	 * Write access is an explicit launch-time policy, never inferred from
+	 * whether Linux registered a writable disk. */
+	uint32_t capture_block;
+	uint32_t block_write;
+	struct kobox_linux_block_key block_write_key;
+	/* The storage service uses its own VFS data plane, never block RPC. */
+	const struct kobox_linux_fs_mount_config *filesystem;
 	/* Optional process-local progress callback. Called by the Linux opening
 	 * task before potentially blocking driver work; it must not call Linux. */
 	void (*progress)(void *context, unsigned phase, size_t module_index,
 			 int status);
 	void *progress_context;
 	const struct kobox_linux_lifecycle *lifecycle;
+};
+
+struct kobox_linux_io_service {
+	struct kobox_linux_input_port *input;
+	struct kobox_linux_block_port *block;
+	struct kobox_linux_fs_service *filesystem;
 };
 
 struct kobox_linux_module_launch_report {

@@ -11,6 +11,46 @@
 	} \
 } while (0)
 
+static int sparse_notifications(void)
+{
+	struct kobox_machine_domain cpu;
+	enum kobox_machine_notification notification;
+	uint64_t count;
+	unsigned int kind, i;
+	bool dispatch;
+
+	CHECK(kobox_machine_domain_init(&cpu) == KOBOX_MACHINE_OK);
+	CHECK(kobox_machine_domain_enter(&cpu, &cpu) == KOBOX_MACHINE_OK);
+	count = 99;
+	notification = KOBOX_MACHINE_NOTIFICATION_COUNT;
+	CHECK(!kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(count == 0 && notification == KOBOX_MACHINE_NOTIFICATION_COUNT);
+	CHECK(kobox_machine_domain_irq_disable(&cpu) == KOBOX_MACHINE_OK);
+	count = 99;
+	CHECK(!kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(count == 99);
+	for (kind = 0; kind < KOBOX_MACHINE_NOTIFICATION_COUNT; kind++)
+		for (i = 0; i <= kind; i++)
+			CHECK(kobox_machine_domain_notify(&cpu, kind) == KOBOX_MACHINE_OK);
+	CHECK(kobox_machine_domain_irq_enable(&cpu, &dispatch) == KOBOX_MACHINE_OK);
+	CHECK(dispatch);
+	for (kind = 0; kind < KOBOX_MACHINE_NOTIFICATION_COUNT; kind++) {
+		CHECK(kobox_machine_domain_irq_take(&cpu, &notification, &count));
+		CHECK((unsigned int)notification == kind && count == kind + 1);
+		CHECK(kobox_machine_domain_irq_return(&cpu));
+	}
+	/* The last kind must remain reachable after all earlier counters were
+	 * empty, including after a prior full empty scan. */
+	CHECK(!kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(count == 0);
+	CHECK(kobox_machine_domain_notify(&cpu, KOBOX_MACHINE_VM_EVENT) == KOBOX_MACHINE_OK);
+	CHECK(kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(notification == KOBOX_MACHINE_VM_EVENT && count == 1);
+	CHECK(kobox_machine_domain_irq_return(&cpu));
+	CHECK(!kobox_machine_domain_pending(&cpu));
+	return 0;
+}
+
 int main(void)
 {
 	struct kobox_machine_domain cpu;
@@ -23,6 +63,7 @@ int main(void)
 	CHECK(kobox_machine_domain_enter(&cpu, &first) == KOBOX_MACHINE_OK);
 	CHECK(!kobox_machine_domain_can_enter(&cpu, &second));
 	CHECK(kobox_machine_domain_close(&cpu) == KOBOX_MACHINE_BUSY);
+	CHECK(!sparse_notifications());
 	CHECK(kobox_machine_domain_handoff(&cpu, &second, &first) ==
 	      KOBOX_MACHINE_INVALID);
 	CHECK(cpu.owner == &first);

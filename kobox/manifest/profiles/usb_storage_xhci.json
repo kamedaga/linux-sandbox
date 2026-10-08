@@ -1,0 +1,54 @@
+{
+  "format": "kobox-linux-runtime-profile-dev",
+  "name": "usb-storage-xhci",
+  "linux_tag": "v6.18.48",
+  "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
+  "kernel_release": "6.18.48+",
+  "config_sha256": "28866d420ffa43626b559d988727faa27fa76b967c3d4713be951abbb2c0ee78",
+  "toolchain": {
+    "compiler": "clang", "compiler_version": "18.1.8",
+    "linker": "lld", "linker_version": "18.1.8"
+  },
+  "kernel_runtime": {
+    "name": "linux-runtime", "artifact": "vmlinux",
+    "root_symbol": "start_kernel", "root_source": "init/main.o",
+    "linker_script": "arch/x86/kernel/vmlinux.lds.S",
+    "driver_closure": "modules-only", "process_lifecycle": "one-boot",
+    "shutdown": "quiesce-modules-then-exit", "upper_api_overrides": [],
+    "required_sections": [".text", ".rodata", ".data", ".init.text", ".init.data", ".data..percpu", ".bss"],
+    "required_boundaries": [
+      ["__init_begin", "__init_end"], ["__initcall_start", "__initcall_end"],
+      ["__per_cpu_start", "__per_cpu_end"],
+      ["__sched_class_highest", "__sched_class_lowest"],
+      ["__start___param", "__stop___param"], ["__setup_start", "__setup_end"]
+    ],
+    "required_initcall_order": ["__initcall_start", "__initcall0_start", "__initcall1_start", "__initcall2_start", "__initcall3_start", "__initcall4_start", "__initcall5_start", "__initcallrootfs_start", "__initcall6_start", "__initcall7_start", "__initcall_end"],
+    "required_scheduler_classes": ["stop_sched_class", "dl_sched_class", "rt_sched_class", "fair_sched_class", "idle_sched_class"]
+  },
+  "roots": [
+    "drivers/usb/host/xhci-pci.ko", "drivers/hid/usbhid/usbhid.ko",
+    "drivers/hid/hid-generic.ko", "drivers/input/evdev.ko",
+    "drivers/usb/storage/usb-storage.ko", "drivers/scsi/sd_mod.ko"
+  ],
+  "explicit_dependencies": [],
+  "resource_slots": [
+    {"slot_id": 1, "name": "pci-function", "schema": "kobox2.pci-function", "resource_type": "device", "required_rights": 7, "minimum_count": 1, "maximum_count": 1, "reset_required": true, "consumers": ["linux-runtime"]},
+    {"slot_id": 2, "name": "dma-domain", "schema": "kobox2.dma-domain", "resource_type": "device", "required_rights": 5, "minimum_count": 1, "maximum_count": 1, "reset_required": false, "consumers": ["linux-runtime"]},
+    {"slot_id": 3, "name": "irq-endpoint", "schema": "kobox2.irq-endpoint", "resource_type": "notification", "required_rights": 1, "minimum_count": 1, "maximum_count": 2048, "reset_required": false, "consumers": ["linux-runtime"]}
+  ],
+  "required_config": {
+    "CONFIG_64BIT": "y", "CONFIG_KOBOX_HOSTED": "y",
+    "CONFIG_BLOCK": "y", "CONFIG_SCSI": "m", "CONFIG_BLK_DEV_SD": "m",
+    "CONFIG_USB_STORAGE": "m", "CONFIG_INPUT": "y", "CONFIG_INPUT_EVDEV": "m",
+    "CONFIG_USB_SUPPORT": "y", "CONFIG_USB": "m",
+    "CONFIG_USB_XHCI_HCD": "m", "CONFIG_USB_XHCI_PCI": "m",
+    "CONFIG_HID_SUPPORT": "y", "CONFIG_HID": "m",
+    "CONFIG_HID_GENERIC": "m", "CONFIG_USB_HID": "m",
+    "CONFIG_MODULES": "y", "CONFIG_MODULE_UNLOAD": "y",
+    "CONFIG_PRINTK": "y", "CONFIG_SYSFS": "y",
+    "CONFIG_PCI": "y", "CONFIG_PCI_MSI": "y",
+    "CONFIG_VMAP_STACK": "n", "CONFIG_X86_KERNEL_IBT": "n",
+    "CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS": "n",
+    "CONFIG_X86_VSYSCALL_EMULATION": "n", "CONFIG_ISA_DMA_API": "n"
+  }
+}

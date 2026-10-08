@@ -29,6 +29,8 @@ struct kobox_posix_permit {
 
 struct kobox_posix_task {
 	struct kobox_posix_thread thread;
+	void *stack_base;
+	size_t stack_size;
 	struct kobox_posix_permit dispatch;
 	void *(*entry)(void *);
 	void *argument;

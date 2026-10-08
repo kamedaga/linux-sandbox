@@ -169,6 +169,34 @@ bool kobox_linux_memory_address_is_ram(unsigned long address)
 }
 EXPORT_SYMBOL(kobox_linux_memory_address_is_ram);
 
+static bool native_window_contains(unsigned long address, size_t size,
+				   unsigned long base, size_t capacity)
+{
+	unsigned long offset = address - base;
+
+	return offset < capacity && size <= capacity - offset;
+}
+
+bool kobox_linux_memory_native_range(unsigned long address, size_t size)
+{
+	if (!memory_layout || size > ULONG_MAX - address)
+		return false;
+	/* These are host-owned kernel windows. Endpoint-only RAM checks would
+	 * also accept a range spanning the unmapped gap between image and RAM.
+	 * vmalloc holes remain subject to upstream exception-table fixups.
+	 */
+	return native_window_contains(address, size, (unsigned long)_text,
+		PAGE_ALIGN(__bss_stop - _text)) ||
+		native_window_contains(address, size, page_offset_base,
+			memory_layout->ram_size) ||
+		native_window_contains(address, size,
+			(unsigned long)memory_layout->vmemmap_base,
+			memory_layout->vmemmap_size) ||
+		native_window_contains(address, size,
+			(unsigned long)memory_layout->vmalloc_base,
+			memory_layout->vmalloc_size);
+}
+
 bool __virt_addr_valid(unsigned long address)
 {
 	unsigned long physical;
@@ -233,6 +261,19 @@ unsigned long kobox_provider_get_task_size_limit(void)
 }
 
 #ifndef KOBOX_TASK_PORT_PHASE
+/* provider_percpu.h masks host notifications around this_cpu_*(). The
+ * standalone memory phase is one thread with no notification delivery, so
+ * there is nothing to mask; the task port supplies the real operations. */
+unsigned long kobox_provider_preempt_save(void)
+{
+	return 0;
+}
+
+void kobox_provider_preempt_restore(unsigned long flags)
+{
+	(void)flags;
+}
+
 unsigned long kobox_provider_irq_save_flags(void)
 {
 	return kobox_runtime_thread_state()->irq_disable_depth != 0;
@@ -537,6 +578,7 @@ static void protect_direct_range(unsigned long start, unsigned long end)
 {
 	unsigned long address, begin;
 	unsigned int protection, cache;
+	int status;
 
 	if (!direct_tables_ready)
 		return;
@@ -551,33 +593,29 @@ static void protect_direct_range(unsigned long start, unsigned long end)
 		} while (address < end &&
 			 host_pte_protection(kernel_pte(address)) == protection &&
 			 host_pte_cache(kernel_pte(address)) == cache);
-		/* Large BO cache changes can otherwise disappear behind a pending
-		 * DRM ioctl. Keep this at the existing CPA boundary; normal small
-		 * mappings do not flood the RAM service log. */
-#ifdef KOBOX_BOOT_RUNTIME
-		if (address - begin >= 128 * 1024)
-			pr_info("kobox-mmio: direct range begin offset=%#lx bytes=%#lx cache=%u prot=%u\n",
-				begin - page_offset_base, address - begin, cache, protection);
-#endif
-		if (memory_layout->operations->set_cache &&
-		    kobox_host_call(memory_layout->operations->set_cache(memory_layout->ram_backing,
-			begin - page_offset_base, address - begin, cache)))
+		/* A driver can perform hundreds of successful CPA transitions in one
+		 * ioctl. Per-span success logs evict the actual failure from the RAM
+		 * ring; report the exact failed span instead. */
+		status = memory_layout->operations->set_cache ?
+			kobox_host_call(memory_layout->operations->set_cache(
+				memory_layout->ram_backing,
+				begin - page_offset_base, address - begin, cache)) : 0;
+		if (status) {
+			pr_err("kobox-mmio: direct range cache failed offset=%#lx bytes=%#lx cache=%u status=%d\n",
+			       begin - page_offset_base, address - begin, cache, status);
 			panic("hosted direct-map cache policy failed");
+		}
 		if (!memory_layout->operations->set_cache && cache != KOBOX_LINUX_MEMORY_CACHE_WB)
 			panic("hosted direct-map cache policy unavailable");
-#ifdef KOBOX_BOOT_RUNTIME
-		if (address - begin >= 128 * 1024)
-			pr_info("kobox-mmio: direct range cache ready offset=%#lx bytes=%#lx\n",
-				begin - page_offset_base, address - begin);
-#endif
-		if (kobox_host_call(memory_layout->operations->protect(memory_layout->direct_window,
-			begin - page_offset_base, address - begin, protection)))
+		status = kobox_host_call(memory_layout->operations->protect(
+			memory_layout->direct_window,
+			begin - page_offset_base, address - begin, protection));
+		if (status) {
+			pr_err("kobox-mmio: direct range protect failed offset=%#lx bytes=%#lx prot=%u status=%d\n",
+			       begin - page_offset_base, address - begin,
+			       protection, status);
 			panic("hosted direct-map protection failed");
-#ifdef KOBOX_BOOT_RUNTIME
-		if (address - begin >= 128 * 1024)
-			pr_info("kobox-mmio: direct range mapped offset=%#lx bytes=%#lx\n",
-				begin - page_offset_base, address - begin);
-#endif
+		}
 	}
 }
 
@@ -596,14 +634,21 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 		BUG();
 	if (start >= end)
 		return;
-	if (offset_in_page(start) || (end != ULONG_MAX && offset_in_page(end)))
-		BUG();
 	/* CPA keeps its primary address in start even when aliases require a
 	 * global flush. The sentinel covers every window, including a direct
 	 * map below that address; it is not the upper bound of a range.
 	 */
-	if (end == TLB_FLUSH_ALL)
+	if (end == TLB_FLUSH_ALL) {
 		start = 0;
+	} else {
+		/* Native x86 invalidation accepts byte addresses; in particular
+		 * pmd_free_pte_page() uses addr + PAGE_SIZE - 1. Host mapping
+		 * operations require whole pages, including both boundary pages.
+		 * Preserve the all-range sentinel instead of overflowing PAGE_ALIGN.
+		 */
+		start &= PAGE_MASK;
+		end = end > ULONG_MAX - (PAGE_SIZE - 1) ? ULONG_MAX : PAGE_ALIGN(end);
+	}
 	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
 	protect_direct_range(start, end);
 	/* The host owns translations for the direct map and core image. This

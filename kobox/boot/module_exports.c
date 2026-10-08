@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/export.h>
+#include <linux/sched/task_stack.h>
 #include <asm/current.h>
 #include <asm/irqflags.h>
 #include <asm/percpu.h>
@@ -16,6 +17,7 @@
  * Upstream modpost generates the actual ksymtab and symbol-version records.
  */
 EXPORT_SYMBOL_GPL(kobox_provider_current_task);
+EXPORT_SYMBOL_GPL(kobox_task_object_is_on_stack);
 EXPORT_SYMBOL_GPL(kobox_provider_current_percpu_offset);
 /* Loadable drivers use these hosted CPU/IRQ hooks through the same header
  * overlays as the boot core; modpost must see their real core exports. */

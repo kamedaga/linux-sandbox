@@ -96,11 +96,12 @@ correctly. After real `vfree()` and upstream `vm_unmap_aliases()` to drain lazy
 TLB invalidation, the same alias must fault via upstream's
 exception-table-protected `__get_kernel_nofault` load. The host vmap boundary
 revokes the mapping, making late embedded timer/work/RCU accesses fail instead
-of relying only on a magic word in still-mapped allocator storage. The native
-x86 `copy_from_kernel_nofault()` address filter rejects host user addresses,
-including hosted kernel vmalloc addresses; the oracle deliberately uses the
-architecture's fault-safe load for this known fixture mapping. It does not
-certify that native address-filter API or replace it with a success stub.
+of relying only on a magic word in still-mapped allocator storage. The oracle
+deliberately uses the architecture's fault-safe load for this known fixture
+mapping, independently of address classification. The kobox architecture hook
+classifies only complete ranges inside its owned hosted-kernel windows; upstream
+nofault copies and exception-table recovery remain unchanged. This revocation
+oracle does not certify the classifier or replace fault recovery with a stub.
 
 All helper threads are created before holding an atomic callback. In the
 deterministic cases, after upstream has completed IRQ-thread startup/initial

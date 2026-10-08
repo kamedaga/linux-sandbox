@@ -22,16 +22,90 @@ LOAD_SPEC.loader.exec_module(boot_load)
 
 
 class BootBuildTest(unittest.TestCase):
+    def test_nofault_filter_replaces_only_architecture_address_classification(self):
+        symbol = "copy_from_kernel_nofault_allowed"
+        definitions = {symbol: [
+            {"source_object": "arch/x86/mm/maccess.o", "symbol_type": "T"},
+            {"source_object": "mm/maccess.o", "symbol_type": "W"},
+        ]}
+        self.assertEqual(len(boot.validate_machine_overrides({symbol}, definitions)), 2)
+        for owner, kind in (("fs/d_path.o", "T"), ("mm/maccess.o", "T"),
+                            ("arch/x86/mm/maccess.o", "W")):
+            with self.subTest(owner=owner, kind=kind), self.assertRaises(boot.BootBuildError):
+                boot.validate_machine_overrides({symbol}, {symbol: [
+                    {"source_object": owner, "symbol_type": kind},
+                ]})
+        for operation in ("copy_from_kernel_nofault", "copy_to_kernel_nofault",
+                          "strncpy_from_kernel_nofault"):
+            with self.subTest(operation=operation), self.assertRaises(boot.BootBuildError):
+                boot.validate_machine_overrides({operation}, {operation: [
+                    {"source_object": "mm/maccess.o", "symbol_type": "T"},
+                ]})
+        for profile in ("gpu", "amdgpu", "usb-hid", "usb-storage", "network",
+                        "virtio-net", "nvme", "storage"):
+            with self.subTest(profile=profile):
+                self.assertEqual(boot.sources.support_sources(False, profile).count(
+                    "kobox/mm/nofault.c"), 1)
+
+    def test_storage_port_is_opt_in_and_has_no_device_or_gpu_dependency(self):
+        production = boot.sources.support_sources(False, "storage")
+        testing = boot.sources.support_sources(True, "storage")
+        self.assertIn("kobox/boot/fs_port.c", production)
+        self.assertNotIn("kobox/boot/fs_port.c", boot.sources.support_sources(False))
+        self.assertNotIn("kobox/boot/fs_port_gate.c", production)
+        self.assertNotIn("kobox/boot/fs_workload.c", production)
+        self.assertIn("kobox/boot/fs_port_gate.c", testing)
+        self.assertIn("kobox/boot/fs_workload.c", testing)
+        self.assertNotIn("kobox/boot/virtio_gate.c", testing)
+        self.assertFalse(set(production) & set(boot.sources.GPU_SOURCES))
+        self.assertFalse(set(production) & set(boot.sources.BLOCK_SOURCES))
+        self.assertEqual(len(testing), len(set(testing)))
+
     def test_fpu_signal_uses_machine_compile_overlay(self):
         self.assertEqual(
             set(boot.MACHINE_COMPILE_OVERLAYS),
-            {"arch/x86/kernel/fpu/signal.o", "arch/x86/mm/pat/set_memory.o"},
+            {"arch/x86/kernel/fpu/signal.o", "arch/x86/mm/pat/set_memory.o",
+             "arch/x86/kernel/traps.o"},
         )
         flags = boot.MACHINE_COMPILE_OVERLAYS["arch/x86/kernel/fpu/signal.o"]
         self.assertEqual(flags[0], "-include")
         self.assertTrue(flags[1].endswith("kobox_fpu_signal_compile.h"))
         self.assertTrue(boot.MACHINE_COMPILE_OVERLAYS[
             "arch/x86/mm/pat/set_memory.o"][1].endswith("kobox_cpa_compile.h"))
+        self.assertTrue(boot.MACHINE_COMPILE_OVERLAYS[
+            "arch/x86/kernel/traps.o"][1].endswith("kobox_traps_compile.h"))
+
+    def test_hosted_register_display_is_only_an_architecture_override(self):
+        self.assertEqual(boot.validate_machine_overrides({"__show_regs"}, {
+            "__show_regs": [{"source_object": "arch/x86/kernel/process_64.o", "symbol_type": "T"}],
+        })[0]["symbol"], "__show_regs")
+        for name in ("__warn", "report_bug", "show_regs", "fixup_exception"):
+            with self.subTest(name=name), self.assertRaises(boot.BootBuildError):
+                boot.validate_machine_overrides({name}, {
+                    name: [{"source_object": "arch/x86/kernel/process_64.o", "symbol_type": "T"}],
+                })
+
+    def test_exception_gate_is_diagnostic_only_and_non_gpu_gates_do_not_import_drm(self):
+        for profile in ("gpu", "amdgpu", "usb-hid", "usb-storage", "network", "nvme", "storage"):
+            production = boot.sources.support_sources(False, profile)
+            testing = boot.sources.support_sources(True, profile)
+            with self.subTest(profile=profile):
+                self.assertNotIn("kobox/boot/exception_gate.c", production)
+                self.assertIn("kobox/boot/exception_gate.c", testing)
+                self.assertEqual("kobox/boot/virtio_gate.c" in testing, profile in ("gpu", "amdgpu"))
+
+    def test_module_cleanup_drains_file_references_before_nonblocking_unload(self):
+        source = pathlib.Path(__file__).with_name("module_launch.c").read_text()
+        # A hosted lifecycle has no syscall return to run deferred fput. Keep
+        # the release boundary after port quiescence, never after module unload.
+        close = source.index("kobox_linux_block_port_close(block_port)")
+        task_work = source.index("\n\ttask_work_run();", close)
+        delayed = source.index("\n\tflush_delayed_fput();", task_work)
+        unload = source.index("__x64_sys_delete_module(&regs)", delayed)
+        self.assertLess(close, task_work)
+        self.assertLess(task_work, delayed)
+        self.assertLess(delayed, unload)
+        self.assertIn("regs.si = O_NONBLOCK;", source[delayed:unload])
 
     def test_gate_sources_are_explicit_and_disjoint(self):
         production = boot.sources.support_sources(False)

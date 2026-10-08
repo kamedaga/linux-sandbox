@@ -42,6 +42,10 @@ struct kobox_linux_drm_service_prime {
 	uint64_t prime_id;
 	uint64_t length;
 	uint64_t page_count;
+	/* Exported BOs can live in WC RAM or a device BAR. The host must use
+	 * the same mapping policy as the pinned owner, not assume WB RAM. */
+	uint32_t cache_policy;
+	uint32_t backing_kind;
 };
 
 #ifdef __KERNEL__

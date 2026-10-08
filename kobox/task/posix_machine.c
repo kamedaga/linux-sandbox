@@ -2,6 +2,7 @@
 
 #include "posix_machine.h"
 #include "../host/posix/host.h"
+#include "../arch/x86_64/fp_entry.h"
 
 #include <errno.h>
 
@@ -143,6 +144,12 @@ static int host_task_create(
 {
 	return kobox_posix_task_start(
 		(struct kobox_posix_task **)task_out, entry, argument);
+}
+
+static uint8_t host_task_on_stack(void *opaque, const void *object)
+{
+	const struct kobox_posix_task *task = opaque;
+	return (uintptr_t)object - (uintptr_t)task->stack_base < task->stack_size;
 }
 
 static int host_task_wake(void *task)
@@ -291,22 +298,39 @@ static int host_clockevent_stop(uint32_t cpu)
 	return host_clockevent_control(cpu, true);
 }
 
-static int host_cpu_irq_disable(uint32_t cpu)
+static __attribute__((noinline, used)) int host_cpu_irq_disable_body(uint32_t cpu)
 {
 	return cpu < KOBOX_LINUX_MEMORY_LOGICAL_CPUS ?
 		kobox_posix_cpu_irq_disable(&cpus[cpu]) : -1;
 }
 
-static int host_cpu_irq_enable(uint32_t cpu)
+static __attribute__((noinline, used)) int host_cpu_irq_enable_body(uint32_t cpu)
 {
 	return cpu < KOBOX_LINUX_MEMORY_LOGICAL_CPUS ?
 		kobox_posix_cpu_irq_enable(&cpus[cpu]) : -1;
 }
 
-static uint8_t host_cpu_irq_disabled(uint32_t cpu)
+static __attribute__((noinline, used)) uint8_t host_cpu_irq_disabled_body(uint32_t cpu)
 {
 	return cpu < KOBOX_LINUX_MEMORY_LOGICAL_CPUS &&
 		kobox_posix_cpu_irq_disabled(&cpus[cpu]);
+}
+
+/* POSIX helpers may call libc or dispatch the guest. Save at the table's
+ * actual ABI entry, before a C prologue can change the caller's vectors. */
+static __attribute__((naked)) int host_cpu_irq_disable(uint32_t cpu __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(host_cpu_irq_disable_body);
+}
+
+static __attribute__((naked)) int host_cpu_irq_enable(uint32_t cpu __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(host_cpu_irq_enable_body);
+}
+
+static __attribute__((naked)) uint8_t host_cpu_irq_disabled(uint32_t cpu __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(host_cpu_irq_disabled_body);
 }
 
 static uint64_t host_cpu_notification_sequence(uint32_t cpu)
@@ -362,6 +386,7 @@ const struct kobox_linux_task_host_operations kobox_task_posix_operations = {
 	.size = sizeof(kobox_task_posix_operations),
 	.identity = KOBOX_LINUX_TASK_HOST_IDENTITY,
 	.task_bind_current = host_task_bind_current,
+	.task_on_stack = host_task_on_stack,
 	.task_create = host_task_create,
 	.task_wake = host_task_wake,
 	.task_park = host_task_park,

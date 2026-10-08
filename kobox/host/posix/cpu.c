@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "host.h"
+#include "../../arch/x86_64/fp_entry.h"
 
 #include <errno.h>
 #include <ucontext.h>
@@ -43,7 +44,7 @@ int kobox_posix_current_cpu(uint32_t *cpu_out)
 	return 0;
 }
 
-int kobox_posix_notifications_save(uint64_t *mask_out)
+static __attribute__((noinline, used)) int notifications_save_body(uint64_t *mask_out)
 {
 	sigset_t notifications;
 	sigset_t previous;
@@ -66,7 +67,7 @@ int kobox_posix_notifications_save(uint64_t *mask_out)
 	return 0;
 }
 
-int kobox_posix_notifications_restore(uint64_t mask)
+static __attribute__((noinline, used)) int notifications_restore_body(uint64_t mask)
 {
 	sigset_t unblocked;
 	unsigned int cpu;
@@ -79,6 +80,18 @@ int kobox_posix_notifications_restore(uint64_t mask)
 			sigaddset(&unblocked, SIGRTMIN + (int)cpu);
 	}
 	return pthread_sigmask(SIG_UNBLOCK, &unblocked, NULL);
+}
+
+__attribute__((naked)) int kobox_posix_notifications_save(
+	uint64_t *mask_out __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(notifications_save_body);
+}
+
+__attribute__((naked)) int kobox_posix_notifications_restore(
+	uint64_t mask __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(notifications_restore_body);
 }
 
 static void dispatch_pending(void)

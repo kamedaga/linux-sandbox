@@ -78,9 +78,10 @@ deviceは実Linux vmalloc領域を使い、使用前に正しく読めること�
 aliasへのupstream `__get_kernel_nofault`のexception-table付きloadがfaultになることを要求します。
 hostのvmap境界がmappingを実際に無効化するので、埋め込んだtimer／work／RCUへの遅れたアクセスを、
 まだ読めるallocator領域上のmagic値だけで検出する方式ではありません。
-native x86の`copy_from_kernel_nofault()`のaddress filterはhost user addressを拒否し、hosted kernelの
-vmalloc領域も対象になるため、この既知のfixture mappingにはarchのfault-safe loadを使います。
-nativeのaddress-filter APIを認定したり、成功stubへ置換したりはしません。
+この既知のfixture mappingには、address分類から独立してarchのfault-safe loadを使います。
+koboxのarchitecture hookは、自身が所有するhosted-kernel window内に全体が収まる範囲だけを
+認めます。upstreamのnofault copyとexception-table recoveryは変更しません。このmapping失効の
+oracleはclassifierを認定するものではなく、fault recoveryを成功stubへ置換するものでもありません。
 
 helper threadはatomic callbackを保持する前にすべて生成します。確定的な保持試験では、upstreamの
 IRQ-thread初期affinity設定と起動完了を待ち、公開scheduler affinity APIでそのthreadをcontroller CPUへ

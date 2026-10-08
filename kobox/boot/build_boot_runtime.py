@@ -55,6 +55,7 @@ MACHINE_DEFINITIONS = {
     ),
     "arch/x86/kernel/process_64.o": (
         "x86_gsbase_read_cpu_inactive", "x86_gsbase_write_cpu_inactive",
+        "__show_regs",
     ),
     "arch/x86/kernel/fpu/core.o": ("fpu_thread_struct_whitelist",),
     "arch/x86/kernel/cpu/mtrr/generic.o": ("mtrr_type_lookup",),
@@ -76,6 +77,7 @@ MACHINE_DEFINITIONS = {
     ),
     "arch/x86/mm/fault.o": ("pgd_lock",),
     "arch/x86/mm/physaddr.o": ("__virt_addr_valid",),
+    "arch/x86/mm/maccess.o": ("copy_from_kernel_nofault_allowed",),
     "arch/x86/kernel/tsc.o": ("sched_clock", "sched_clock_noinstr"),
     "arch/x86/kernel/smp.o": ("smp_ops",),
     "arch/x86/kernel/time.o": ("time_init",),
@@ -93,6 +95,10 @@ MACHINE_LOCAL_EXPORTS = {
 # Apply these after the complete canonical build so Kbuild recompiles only the
 # named unchanged source with the architecture contract it requires.
 MACHINE_COMPILE_OVERLAYS = {
+    "arch/x86/kernel/traps.o": (
+        "-include",
+        str(SCRIPT_DIR / "include/linux/kobox_traps_compile.h"),
+    ),
     "arch/x86/kernel/fpu/signal.o": (
         "-include",
         str(SCRIPT_DIR / "include/linux/kobox_fpu_signal_compile.h"),
@@ -104,6 +110,7 @@ MACHINE_COMPILE_OVERLAYS = {
 }
 
 WEAK_MACHINE_HOOKS = {
+    "mm/maccess.o": ("copy_from_kernel_nofault_allowed",),
     "mm/execmem.o": ("execmem_arch_setup",),
     "init/main.o": ("trap_init",),
     "kernel/irq_work.o": ("arch_irq_work_raise",),
@@ -409,7 +416,8 @@ def link_runtime(arguments):
     )
     task.run([
         arguments.ld, "-static", "-Bsymbolic", "-z", "defs",
-        "--wrap=kernel_execve", "--wrap=ioremap_page_range",
+        "--wrap=kernel_execve", "--wrap=prepare_namespace",
+        "--wrap=ioremap_page_range",
         "--wrap=get_vm_area_caller", "--wrap=memtype_kernel_map_sync",
         "--wrap=set_direct_map_invalid_noflush",
         "--wrap=set_direct_map_default_noflush",
@@ -449,9 +457,41 @@ def build_inputs(arguments):
                               f"-DKOBOX_BOOT_GPU={int(arguments.device_profile in ('gpu', 'amdgpu'))}",
                               f"-DKOBOX_BOOT_VIRTIO_GPU={int(arguments.device_profile == 'gpu')}",
                               f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network'))}",
-                              f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile == 'usb-hid')}"]
+                              f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile in ('usb-hid', 'usb-storage'))}",
+                              f"-DKOBOX_BOOT_BLOCK={int(arguments.device_profile in ('usb-storage', 'nvme'))}",
+                              f"-DKOBOX_BOOT_FS={int(arguments.device_profile == 'storage')}"]
     if arguments.with_gates:
         arguments.extra_cflags.append("-DKOBOX_RUNTIME_GATES=1")
+    if arguments.fs_internal_bench:
+        if arguments.device_profile != "storage":
+            raise BootBuildError("FS internal benchmark requires the storage profile")
+        arguments.extra_cflags.append("-DKOBOX_FS_INTERNAL_BENCH=1")
+        if arguments.fs_bench_elapsed_only:
+            arguments.extra_cflags.append("-DKOBOX_FS_BENCH_ELAPSED_ONLY=1")
+        else:
+            arguments.extra_cflags.append("-DKOBOX_FS_SERVICE_PROFILE=1")
+    elif arguments.fs_bench_elapsed_only:
+        raise BootBuildError("elapsed-only measurement requires --fs-internal-bench")
+    if arguments.fs_handoff_bench_only:
+        if not arguments.fs_internal_bench or not arguments.fs_bench_elapsed_only:
+            raise BootBuildError("handoff-only measurement requires elapsed-only FS benchmark")
+        arguments.extra_cflags.append("-DKOBOX_FS_HANDOFF_BENCH_ONLY=1")
+    if arguments.fs_publication_bench:
+        if not arguments.fs_internal_bench or not arguments.fs_bench_elapsed_only or arguments.fs_handoff_bench_only:
+            raise BootBuildError("publication measurement requires elapsed-only FS benchmark, not handoff-only")
+        arguments.extra_cflags.append("-DKOBOX_FS_PUBLICATION_BENCH=1")
+    if arguments.fs_executor_bench:
+        if not arguments.fs_publication_bench or not arguments.fs_inline_disabled:
+            raise BootBuildError("executor comparison requires publication benchmark and worker-only control")
+        arguments.extra_cflags.append("-DKOBOX_FS_EXECUTOR_BENCH=1")
+    if arguments.fs_inline_disabled:
+        # Comparison control only: every data request goes to a worker, as
+        # before inline (nowait) owner execution existed.
+        arguments.extra_cflags.append("-DKOBOX_FS_INLINE_DISABLED=1")
+    if arguments.percpu_generic_irq:
+        # Comparison control only: the upstream IRQ-disabling this_cpu_*()
+        # fallback instead of the notification-masked one in provider_percpu.h.
+        arguments.extra_cflags.append("-DKOBOX_PERCPU_GENERIC_IRQ=1")
 
     print(f"Compiling all {len(objects)} canonical boot objects", flush=True)
     # vmlinux_o is the upstream full-tree target, including lib-y inputs.
@@ -462,6 +502,10 @@ def build_inputs(arguments):
     )
     common_cflags = arguments.extra_cflags
     for source_object, flags in MACHINE_COMPILE_OVERLAYS.items():
+        if source_object == "arch/x86/kernel/traps.o":
+            trap_source = (arguments.source_tree / "arch/x86/kernel/traps.c").read_text()
+            if trap_source.count("TASK_SIZE_MAX") != 2 or trap_source.count("if (addr < TASK_SIZE_MAX)") != 2:
+                raise BootBuildError("upstream trap address checks changed; review the hosted text overlay")
         arguments.extra_cflags = [*common_cflags, *flags]
         memory.compile_linux_objects(arguments, [source_object])
     arguments.extra_cflags = common_cflags
@@ -524,8 +568,9 @@ def build_inputs(arguments):
 
 def compile_hosted_modules(arguments):
     inventory = json.loads(arguments.module_inventory.read_text(encoding="utf-8"))
-    expected = {"usb-hid": "usb-hid-xhci", "virtio-net": "virtio-net",
-                "network": "network", "amdgpu": "amdgpu"}
+    expected = {"usb-hid": "usb-hid-xhci", "usb-storage": "usb-storage-xhci",
+                "nvme": "nvme", "virtio-net": "virtio-net",
+                "network": "network", "amdgpu": "amdgpu", "storage": "storage"}
     if inventory.get("format") != "kobox-linux-driver-closure-inventory-dev" or \
             inventory.get("profile") != expected.get(arguments.device_profile):
         raise BootBuildError("hosted module inventory does not match the runtime profile")
@@ -618,7 +663,22 @@ def parse_arguments():
     parser.add_argument("--cpu-arch", choices=("x86_64",), default="x86_64")
     parser.add_argument("--with-gates", action="store_true",
                         help="Link test workloads; omitted for the production core")
-    parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "virtio-net", "network", "amdgpu"),
+    parser.add_argument("--fs-inline-disabled", action="store_true",
+                        help="comparison control: never execute FS requests inline on the ring owner")
+    parser.add_argument("--percpu-generic-irq", action="store_true",
+                        help="comparison control: build upstream's IRQ-disabling this_cpu_*() fallback")
+    parser.add_argument("--fs-internal-bench", action="store_true",
+                        help="Run IPC-free FS diagnostics before READY; off in production")
+    parser.add_argument("--fs-bench-elapsed-only", action="store_true",
+                        help="Keep the FS benchmark workload without hot-path diagnostic probes")
+    parser.add_argument("--fs-handoff-bench-only", action="store_true",
+                        help="Measure two same-CPU Linux tasks without filesystem operations")
+    parser.add_argument("--fs-publication-bench", action="store_true",
+                        help="Compare owner/worker publication into private buffers, without IPC/LPR")
+    parser.add_argument("--fs-executor-bench", action="store_true",
+                        help="Compare private executor intake/recycle against worker-only submit/collect")
+    parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "usb-storage", "nvme",
+                                                     "virtio-net", "network", "amdgpu", "storage"),
                         default="gpu", help="Select a hosted device profile")
     parser.add_argument("--drm-exec-profile", action="store_true",
                         help="Opt-in bounded EXECBUFFER stage timing in the owned DRM bridge")

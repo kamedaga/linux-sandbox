@@ -444,9 +444,9 @@ static void set_phase(struct cleanup_case *test, unsigned int phase)
 
 static int read_alias(const void *address, u32 *value)
 {
-	/* Probe the known fixture mapping using upstream's exception-table load.
-	 * The native x86 copy_from_kernel_nofault address filter rejects all host
-	 * userspace addresses, including this hosted kernel's own vmalloc range.
+	/* Probe the known fixture alias using upstream's exception-table load.
+	 * The oracle tests mapping revocation directly, independently of the
+	 * machine's hosted-kernel address-window classifier.
 	 */
 	pagefault_disable();
 	__get_kernel_nofault(value, address, u32, fault);

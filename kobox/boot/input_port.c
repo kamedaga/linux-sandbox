@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "input_port.h"
 #include "diagnostic.h"
+#include "../arch/x86_64/host_call.h"
+#include "../task/time_port.h"
 
+#include <linux/bug.h>
 #include <linux/errno.h>
 #include <linux/bitmap.h>
 #include <linux/input.h>
-#include <linux/ktime.h>
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -29,6 +31,8 @@ struct kobox_linux_input_port {
 	size_t head, count;
 	uint32_t next_id;
 	uint64_t next_sequence, overwritten;
+	struct kobox_linux_input_notify notify;
+	int notify_error;
 };
 
 static const struct input_device_id usb_input_ids[] = {
@@ -36,15 +40,33 @@ static const struct input_device_id usb_input_ids[] = {
 	{ },
 };
 
+/* The lock orders ring publication and notification. A full bounded read
+ * re-notifies remaining data, so the host may yield without losing an edge. */
+static void notify_records(struct kobox_linux_input_port *port)
+{
+	int result;
+
+	if (!port->count || !port->notify.notify || port->notify_error)
+		return;
+	result = kobox_host_call(port->notify.notify(port->notify.context));
+	if (result)
+		port->notify_error = result;
+}
+
 /* Called with port->lock. Losing the oldest record is explicit in both the
  * cumulative counter and the sequence gap; consumers must resnapshot. */
 static void append_record(struct kobox_linux_input_port *port,
 			  struct kobox_linux_input_record *record)
 {
+	const struct kobox_linux_task_host_operations *host = kobox_task_host();
 	size_t tail;
 
 	record->sequence = port->next_sequence++;
-	record->monotonic_ns = ktime_get_mono_fast_ns();
+	/* Linux timekeeping starts at this sandbox's boot, not at host boot.
+	 * evdev consumers compare these timestamps with their host monotonic
+	 * clock (for debounce/gesture deadlines), so publish that clock domain
+	 * at capture rather than guessing an offset later at the receiver. */
+	BUG_ON(!host || kobox_host_call(host->monotonic_ns(&record->monotonic_ns)));
 	if (port->count == KOBOX_INPUT_RECORD_CAPACITY) {
 		port->head = (port->head + 1) % KOBOX_INPUT_RECORD_CAPACITY;
 		port->count--;
@@ -53,6 +75,8 @@ static void append_record(struct kobox_linux_input_port *port,
 	tail = (port->head + port->count) % KOBOX_INPUT_RECORD_CAPACITY;
 	port->records[tail] = *record;
 	port->count++;
+	if (port->count == 1)
+		notify_records(port);
 }
 
 static unsigned int on_events(struct input_handle *handle,
@@ -241,6 +265,28 @@ void kobox_linux_input_port_close(struct kobox_linux_input_port *port)
 	kfree(port);
 }
 
+/* Binding is single-owner and includes pending arrivals. No input can slip
+ * between this initial recheck and later empty-to-nonempty notifications. */
+int kobox_linux_input_port_bind_notify(struct kobox_linux_input_port *port,
+			 const struct kobox_linux_input_notify *notify)
+{
+	unsigned long flags;
+	int result;
+
+	if (!port || !notify || !notify->notify)
+		return -EINVAL;
+	spin_lock_irqsave(&port->lock, flags);
+	if (port->notify.notify) {
+		spin_unlock_irqrestore(&port->lock, flags);
+		return -EBUSY;
+	}
+	port->notify = *notify;
+	notify_records(port);
+	result = port->notify_error;
+	spin_unlock_irqrestore(&port->lock, flags);
+	return result;
+}
+
 int kobox_linux_input_port_read(struct kobox_linux_input_port *port,
 			      struct kobox_linux_input_record *records,
 			      size_t capacity, size_t *count,
@@ -248,6 +294,7 @@ int kobox_linux_input_port_read(struct kobox_linux_input_port *port,
 {
 	unsigned long flags;
 	size_t index, available;
+	int result;
 
 	if (!port || !records || !capacity || !count || !overwritten)
 		return -EINVAL;
@@ -261,8 +308,10 @@ int kobox_linux_input_port_read(struct kobox_linux_input_port *port,
 	port->count -= available;
 	*count = available;
 	*overwritten = port->overwritten;
+	notify_records(port);
+	result = port->notify_error;
 	spin_unlock_irqrestore(&port->lock, flags);
-	return 0;
+	return result;
 }
 
 int kobox_linux_input_port_snapshot(struct kobox_linux_input_port *port,

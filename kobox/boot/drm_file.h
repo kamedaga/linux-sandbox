@@ -26,6 +26,11 @@ struct kobox_linux_drm_version {
 	char description[256];
 };
 
+struct kobox_linux_drm_client {
+	uint32_t authenticated;
+	uint64_t process_id, user_id, magic, ioctl_count;
+};
+
 struct kobox_linux_drm_resources {
 	uint32_t fb_count, crtc_count, connector_count, encoder_count;
 	uint32_t min_width, max_width, min_height, max_height;
@@ -44,6 +49,37 @@ struct kobox_linux_drm_property_value {
 	uint64_t value;
 };
 
+struct kobox_linux_drm_property_enum {
+	uint64_t value;
+	char name[32];
+};
+
+struct kobox_linux_drm_property {
+	uint32_t flags, value_count, enum_count;
+	char name[32];
+};
+
+struct kobox_linux_drm_plane {
+	uint32_t plane_id, crtc_id, fb_id, possible_crtcs;
+	uint32_t gamma_size, format_count;
+};
+
+struct kobox_linux_drm_plane_set {
+	uint32_t plane_id, crtc_id, fb_id, flags;
+	int32_t crtc_x, crtc_y;
+	uint32_t crtc_width, crtc_height;
+	uint32_t source_x, source_y, source_width, source_height;
+};
+
+struct kobox_linux_drm_atomic_object {
+	uint32_t object_id, first_property, property_count;
+};
+
+struct kobox_linux_drm_atomic_property {
+	uint32_t property_id, value_kind;
+	uint64_t value;
+};
+
 struct kobox_linux_drm_connector {
 	uint32_t encoder_id, connector_id, connector_type, connector_type_id;
 	uint32_t connection, width_mm, height_mm, subpixel;
@@ -58,6 +94,16 @@ struct kobox_linux_drm_encoder {
 struct kobox_linux_drm_crtc {
 	uint32_t crtc_id, fb_id, x, y, gamma_size, mode_valid;
 	struct kobox_linux_drm_mode mode;
+};
+
+struct kobox_linux_drm_vblank {
+	uint32_t type, sequence;
+	uint64_t timestamp_ns;
+};
+
+struct kobox_linux_drm_crtc_sequence {
+	uint32_t active;
+	uint64_t sequence, timestamp_ns;
 };
 
 struct kobox_linux_drm_rectangle {
@@ -201,7 +247,20 @@ int kobox_linux_drm_set_client_cap(struct kobox_linux_drm_file *file,
 				    uint64_t capability, uint64_t value);
 int kobox_linux_drm_master(struct kobox_linux_drm_file *file, bool acquire);
 int kobox_linux_drm_get_magic(struct kobox_linux_drm_file *file, uint32_t *magic);
+int kobox_linux_drm_get_client(struct kobox_linux_drm_file *file, int32_t index,
+			      struct kobox_linux_drm_client *client);
 int kobox_linux_drm_auth_magic(struct kobox_linux_drm_file *file, uint32_t magic);
+int kobox_linux_drm_wait_vblank(struct kobox_linux_drm_file *file,
+		uint32_t type, uint32_t sequence, uint64_t event_token,
+		struct kobox_linux_drm_vblank *out);
+int kobox_linux_drm_crtc_get_sequence(struct kobox_linux_drm_file *file,
+		uint32_t crtc_id, struct kobox_linux_drm_crtc_sequence *out);
+int kobox_linux_drm_crtc_queue_sequence(struct kobox_linux_drm_file *file,
+		uint32_t crtc_id, uint32_t flags, uint64_t sequence,
+		uint64_t event_token, uint64_t *actual_sequence);
+int kobox_linux_drm_gamma(struct kobox_linux_drm_file *file, bool set,
+		uint32_t crtc_id, uint32_t count, uint16_t *red,
+		uint16_t *green, uint16_t *blue);
 int kobox_linux_drm_resources(struct kobox_linux_drm_file *file,
 		uint32_t *fbs, size_t fb_capacity,
 		uint32_t *crtcs, size_t crtc_capacity,
@@ -226,6 +285,8 @@ int kobox_linux_drm_set_crtc(struct kobox_linux_drm_file *file,
 int kobox_linux_drm_page_flip(struct kobox_linux_drm_file *file,
 		uint32_t crtc_id, uint32_t fb_id, uint32_t flags,
 		uint32_t sequence, uint64_t event_token);
+int kobox_linux_drm_set_plane(struct kobox_linux_drm_file *file,
+		const struct kobox_linux_drm_plane_set *plane);
 int kobox_linux_drm_cursor(struct kobox_linux_drm_file *file,
 		const struct kobox_linux_drm_cursor *cursor);
 int kobox_linux_drm_dirty_fb(struct kobox_linux_drm_file *file,
@@ -236,12 +297,40 @@ int kobox_linux_drm_add_fb(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_fb *framebuffer);
 int kobox_linux_drm_remove_fb(struct kobox_linux_drm_file *file,
 		uint32_t fb_id);
+int kobox_linux_drm_destroy_dumb(struct kobox_linux_drm_file *file,
+		uint32_t handle);
+int kobox_linux_drm_set_property(struct kobox_linux_drm_file *file,
+		uint32_t connector_id, uint32_t property_id, uint64_t value);
+int kobox_linux_drm_get_fb(struct kobox_linux_drm_file *file,
+		uint32_t fb_id, struct kobox_linux_drm_fb *out);
+int kobox_linux_drm_get_fb2(struct kobox_linux_drm_file *file,
+		uint32_t fb_id, struct kobox_linux_drm_fb2 *out);
 int kobox_linux_drm_add_fb2(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_fb2 *framebuffer);
 int kobox_linux_drm_object_properties(struct kobox_linux_drm_file *file,
 		uint32_t object_id, uint32_t object_type,
 		struct kobox_linux_drm_property_value *properties,
 		size_t property_capacity, uint32_t *property_count);
+int kobox_linux_drm_plane_resources(struct kobox_linux_drm_file *file,
+		uint32_t *planes, size_t capacity, uint32_t *count);
+int kobox_linux_drm_plane(struct kobox_linux_drm_file *file,
+		uint32_t plane_id, uint32_t *formats, size_t capacity,
+		struct kobox_linux_drm_plane *out);
+int kobox_linux_drm_property(struct kobox_linux_drm_file *file,
+		uint32_t property_id, uint64_t *values, size_t value_capacity,
+		struct kobox_linux_drm_property_enum *enums, size_t enum_capacity,
+		struct kobox_linux_drm_property *out);
+int kobox_linux_drm_property_blob(struct kobox_linux_drm_file *file,
+		uint32_t blob_id, void *data, size_t capacity, uint32_t *required);
+int kobox_linux_drm_create_property_blob(struct kobox_linux_drm_file *file,
+		const void *data, size_t bytes, uint32_t *blob_id);
+int kobox_linux_drm_destroy_property_blob(struct kobox_linux_drm_file *file,
+		uint32_t blob_id);
+int kobox_linux_drm_atomic(struct kobox_linux_drm_file *file,
+		uint32_t flags, const struct kobox_linux_drm_atomic_object *objects,
+		size_t object_count,
+		const struct kobox_linux_drm_atomic_property *properties,
+		size_t property_count, uint64_t event_token);
 int kobox_linux_drm_create_dumb(struct kobox_linux_drm_file *file,
 		struct kobox_linux_drm_dumb_buffer *buffer);
 int kobox_linux_drm_poll_events(struct kobox_linux_drm_file *file,

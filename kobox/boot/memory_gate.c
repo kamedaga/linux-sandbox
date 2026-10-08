@@ -279,6 +279,14 @@ static int sparse_mapping(struct kobox_linux_boot_memory_report *report)
 		return fail(report, __LINE__);
 	flush_cache_vunmap(start, end);
 	vm_area_unmap_pages(area, start + 2 * PAGE_SIZE, start + 3 * PAGE_SIZE);
+	/* x86 page-table teardown flushes through the last byte of a page,
+	 * not necessarily an aligned exclusive end. The host must still revoke
+	 * that page while retaining live neighbors in the same sparse span.
+	 */
+	flush_tlb_kernel_range(start + 2 * PAGE_SIZE, start + 3 * PAGE_SIZE - 1);
+	if (read_alias((void *)(start + 2 * PAGE_SIZE), &value) != -EFAULT)
+		return fail(report, __LINE__);
+	flush_tlb_kernel_range(start + 1, end - 1);
 	flush_tlb_kernel_range(start, end);
 	/* VMALLOC_END is inclusive, whereas the flush range is half-open. */
 	__flush_tlb_all();

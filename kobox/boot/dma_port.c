@@ -22,6 +22,9 @@
 #include <linux/virtio_config.h>
 #pragma GCC diagnostic pop
 #include "../../drivers/iommu/iommu-priv.h"
+#ifdef KOBOX_RUNTIME_GATES
+#include "dma_gate.h"
+#endif
 
 struct hosted_dma_domain;
 
@@ -78,6 +81,11 @@ static void record_map_failure(struct kobox_linux_dma_port *port,
 	atomic64_inc(&port->map_failures);
 	atomic64_set(&port->last_failure_bytes, bytes);
 	atomic_set(&port->last_map_error, error);
+	/* Drivers may translate a mapping failure into RESOURCE and retry forever
+	 * before their device is published. Preserve the underlying failure here,
+	 * with rate limiting so a retry loop cannot exhaust the diagnostic log. */
+	dev_err_ratelimited(port->device, "kobox-dma: mapping failed bytes=%zu error=%d\n",
+			    bytes, error);
 }
 
 int kobox_linux_dma_snapshot(struct device *device,
@@ -466,6 +474,53 @@ struct hosted_dma_domain {
 	raw_spinlock_t lock;
 };
 
+/* Completion IRQs erase entries from these arrays. A reservation outside
+ * dma->lock must also mask IRQs while holding xa_lock, or an interrupt can
+ * recursively acquire its own lock. XA_FLAGS_LOCK_IRQ is additionally
+ * required for __xa_cmpxchg's GFP_KERNEL allocation unlock/relock; IRQ-save
+ * preserves callers already in hardirq instead of unconditionally enabling.
+ */
+static int dma_xa_reserve(struct xarray *xa, unsigned long index, gfp_t gfp)
+{
+	unsigned long flags;
+	void *entry;
+
+	might_alloc(gfp);
+	xa_lock_irqsave(xa, flags);
+#ifdef KOBOX_RUNTIME_GATES
+	kobox_linux_dma_gate_xarray_locked(xa, index, false);
+#endif
+	entry = __xa_cmpxchg(xa, index, NULL, XA_ZERO_ENTRY, gfp);
+	xa_unlock_irqrestore(xa, flags);
+	return xa_err(entry);
+}
+
+static void dma_xa_release(struct xarray *xa, unsigned long index)
+{
+	unsigned long flags;
+
+	xa_lock_irqsave(xa, flags);
+#ifdef KOBOX_RUNTIME_GATES
+	kobox_linux_dma_gate_xarray_locked(xa, index, true);
+#endif
+	/* Releasing a reservation must not erase a concurrently published page. */
+	__xa_cmpxchg(xa, index, XA_ZERO_ENTRY, NULL, 0);
+	xa_unlock_irqrestore(xa, flags);
+}
+
+#ifdef KOBOX_RUNTIME_GATES
+int kobox_linux_dma_gate_xa_reserve(struct xarray *xa, unsigned long index,
+				  gfp_t gfp)
+{
+	return dma_xa_reserve(xa, index, gfp);
+}
+
+void kobox_linux_dma_gate_xa_release(struct xarray *xa, unsigned long index)
+{
+	dma_xa_release(xa, index);
+}
+#endif
+
 /* Ordinary RAM carries a port reference until invalidation. A non-compound
  * high-order allocation has zero-refcount tail pages: its allocation head
  * retains the whole block, while the DMA API caller owns any mapped subset
@@ -519,7 +574,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 {
 	struct hosted_dma_domain *dma = hosted(domain);
 	const struct kobox_linux_dma_host *host = &dma->port->host;
-	size_t length, index, stored = 0;
+	size_t length = 0, index, stored = 0;
 	unsigned long flags;
 	unsigned int protection = 0;
 	u64 end;
@@ -533,8 +588,12 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 	    check_add_overflow((u64)physical, (u64)length, &end) ||
 	    end > (u64)max_pfn << PAGE_SHIFT ||
 	    !IS_ALIGNED(iova | physical, PAGE_SIZE) ||
-	    prot & ~(IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE | IOMMU_NOEXEC))
+	    prot & ~(IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE | IOMMU_NOEXEC)) {
+		record_map_failure(dma->port, length, -EINVAL);
+		pr_err_ratelimited("kobox-dma: invalid range iova=%#lx physical=%#llx page-size=%zu count=%zu prot=%x\n",
+			iova, physical, pgsize, count, prot);
 		return -EINVAL;
+	}
 	if (prot & IOMMU_READ)
 		protection |= KOBOX_DMA_DEVICE_READ;
 	if (prot & IOMMU_WRITE)
@@ -556,13 +615,13 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 			result = -EINVAL;
 			goto rollback;
 		}
-		result = xa_reserve(&dma->pages, key, gfp);
+		result = dma_xa_reserve(&dma->pages, key, gfp);
 		if (result)
 			goto rollback;
 		if (host->map_page_list) {
-			result = xa_reserve(&dma->states, key, gfp);
+			result = dma_xa_reserve(&dma->states, key, gfp);
 			if (result) {
-				xa_release(&dma->pages, key);
+				dma_xa_release(&dma->pages, key);
 				goto rollback;
 			}
 		}
@@ -580,7 +639,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		} else {
 			if (pin && !folio_try_get(folio)) {
 				raw_spin_unlock_irqrestore(&dma->lock, flags);
-				xa_release(&dma->pages, key);
+				dma_xa_release(&dma->pages, key);
 				result = -EFAULT;
 				goto rollback;
 			}
@@ -598,9 +657,9 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 			}
 		}
 		raw_spin_unlock_irqrestore(&dma->lock, flags);
-		xa_release(&dma->pages, key);
+		dma_xa_release(&dma->pages, key);
 		if (host->map_page_list)
-			xa_release(&dma->states, key);
+			dma_xa_release(&dma->states, key);
 		if (result)
 			goto rollback;
 		stored++;
@@ -945,8 +1004,8 @@ static struct iommu_domain *allocate_domain(struct device *device)
 		.aperture_start = port->host.aperture_start,
 		.aperture_end = port->host.aperture_end, .force_aperture = true,
 	};
-	xa_init(&dma->pages);
-	xa_init(&dma->states);
+	xa_init_flags(&dma->pages, XA_FLAGS_LOCK_IRQ);
+	xa_init_flags(&dma->states, XA_FLAGS_LOCK_IRQ);
 	if (port->host.map_page_list) {
 		dma->page_capacity = port->host.ram_size / PAGE_SIZE;
 		for (cpu = 0; cpu < nr_cpu_ids; cpu++) {

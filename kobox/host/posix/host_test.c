@@ -511,6 +511,9 @@ static int test_cpu_handoff(struct kobox_posix_cpu *cpu)
 
 	atomic_init(&test.entered, 0);
 	CHECK(kobox_posix_task_bind_current(&main_task) == 0);
+	CHECK(main_task->stack_base && main_task->stack_size);
+	CHECK((uintptr_t)&test - (uintptr_t)main_task->stack_base <
+	      main_task->stack_size);
 	test.main_task = main_task;
 	CHECK(kobox_posix_task_start(
 		&worker_task, handoff_worker, &test) == 0);

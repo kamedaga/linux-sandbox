@@ -10,6 +10,12 @@ native pthread stackとhostのFS/GSはhostが管理し、taskのkernel開始関�
 実行します。PID 1が使う`user_mode_thread()`のkernel開始経路も回帰試験に含めます。このtaskは
 user mmも`PF_KTHREAD`も持ちません。通常のuser address spaceのcloneとuser命令への復帰は未対応です。
 
+`task_on_stack` は、Linux へ入る前に記録した native stack の範囲を、待機や割当なしで判定します。
+task-stack header overlay は upstream の判定にこの範囲を加え、`blk_rq_map_kern()` の既存の
+bounce buffer 経路を利用します。NVMe の時刻設定などの stack buffer を Linux RAM と誤認すると、
+公開前の初期化で RESOURCE retry が継続するためです。変更はサイズ検証付きの内部 task-host 契約で、
+core と host をセットで再ビルドします。kernel syscall の追加や upstream driver の変更はありません。
+
 boot fixtureは実memory bootstrap、`init_task`、`sched_init()`、`workqueue_init_early()`、
 `rcu_init()`、timer/softirq初期化、host clocksourceに接続したLinux timekeepingを使います。
 CPU 1のidle taskはLinuxの`fork_idle()`で生成し、実`kthreadd`とCPU stopper threadを使います。

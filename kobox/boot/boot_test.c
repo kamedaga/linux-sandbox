@@ -20,6 +20,7 @@
 #include "cleanup_gate.h"
 #include "memory_gate.h"
 #include "vfs_gate.h"
+#include "fs_port_gate.h"
 #include "shmem_gate.h"
 #include "pressure_gate.h"
 #include "vm_gate.h"
@@ -74,12 +75,16 @@ static int (*verify_exec)(const struct kobox_exec_test *, struct kobox_exec_repo
 static struct kobox_linux_module_image exec_image;
 static struct kobox_posix_vm_service *exec_vm_service;
 static int (*verify_vfs)(struct kobox_linux_vfs_report *report);
+static int (*verify_fs_port)(const struct kobox_fs_image *,
+			     struct kobox_fs_port_report *);
+static struct kobox_fs_image fs_image;
 static int (*verify_shmem)(struct kobox_linux_shmem_report *report);
 static int (*verify_pressure)(struct kobox_linux_pressure_report *report);
 static int (*verify_pci)(const struct kobox_linux_pci_host *,
 			 struct kobox_linux_pci_report *, int (*)(void *));
 static int (*verify_dma)(const struct kobox_linux_pci_host *,
 			 const struct kobox_linux_dma_test *, struct kobox_linux_dma_report *);
+static int (*verify_dma_xarray)(void);
 static int (*verify_irq)(const struct kobox_linux_pci_host *,
 			 const struct kobox_linux_irq_test *, struct kobox_linux_irq_report *);
 static int (*verify_virtio)(const struct kobox_linux_virtio_test *,
@@ -369,6 +374,17 @@ static void kernel_main(void *argument)
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
+	if (!status && verify_dma_xarray) {
+		status = verify_dma_xarray();
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"DMA xarray Gate: status=%d\n", status);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
 	if (!status && verify_dma) {
 		status = verify_dma(resource_host->pci, resource_host->dma, &dma);
 		resources_drained = dma.drained;
@@ -419,6 +435,29 @@ static void kernel_main(void *argument)
 			if (length > 0 && (size_t)length < sizeof(message))
 				(void)write(STDERR_FILENO, message, length);
 		}
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_fs_port) {
+		struct kobox_fs_port_report fs = {0};
+
+		status = verify_fs_port(&fs_image, &fs);
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		if (!status && msync(fs_image.data, fs_image.length, MS_SYNC))
+			status = -errno;
+		length = snprintf(message, sizeof(message),
+			"FS_PORT status=%d stage=%u handles=%u shared_reads=%u cpu_mask=%x close_races=%u warnings=%llu\n"
+			"FS_RESULT fs=ext4 checks=%u digest=%llu line=%u actual=%lld expected=%lld\n"
+			"FS_RESULT fs=tmpfs checks=%u digest=%llu line=%u actual=%lld expected=%lld\n",
+			status, fs.stage, fs.handles, fs.shared_reads, fs.cpu_mask, fs.close_races,
+			(unsigned long long)fs.warnings,
+			fs.ext4.checks, (unsigned long long)fs.ext4.digest,
+			fs.ext4.line, (long long)fs.ext4.actual, (long long)fs.ext4.expected,
+			fs.tmpfs.checks, (unsigned long long)fs.tmpfs.digest,
+			fs.tmpfs.line, (long long)fs.tmpfs.actual, (long long)fs.tmpfs.expected);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
 		if (kobox_posix_notifications_restore(notification_mask))
 			__builtin_trap();
 	}
@@ -800,7 +839,8 @@ int kobox_boot_test_run(int argc, char **argv,
 
 	resource_host = resources;
 	module_host.lifecycle = resources ? resources->lifecycle : NULL;
-	CHECK(argc == 2 || (argc == 5 && !strcmp(argv[2], "--elf-exec")) ||
+	CHECK(argc == 2 || (argc == 4 && !strcmp(argv[2], "--fs-port")) ||
+	      (argc == 5 && !strcmp(argv[2], "--elf-exec")) ||
 	      (argc == 7 && !strcmp(argv[2], "--modules")) ||
 	      (argc == 8 && (!strcmp(argv[2], "--resource-port") ||
 			    !strcmp(argv[2], "--resource-port-fail")) && resources) ||
@@ -837,6 +877,7 @@ int kobox_boot_test_run(int argc, char **argv,
 					!strcmp(argv[2], "--vm-probe-death") ||
 					!strcmp(argv[2], "--vm-probe-rollback"))) ||
 	      (argc == 3 && (!strcmp(argv[2], "--timed-wait") ||
+					!strcmp(argv[2], "--dma-xarray") ||
 					!strcmp(argv[2], "--rcu") ||
 					!strcmp(argv[2], "--workqueue") ||
 					!strcmp(argv[2], "--cleanup") ||
@@ -861,6 +902,22 @@ int kobox_boot_test_run(int argc, char **argv,
 	address = core->lookup(core->loader, "kobox_linux_boot_memory_verify");
 	CHECK(address);
 	memcpy(&verify_memory, &address, sizeof(verify_memory));
+	if (argc == 4 && !strcmp(argv[2], "--fs-port")) {
+		struct stat info;
+		int fd = open(argv[3], O_RDWR | O_CLOEXEC);
+
+		CHECK(fd >= 0);
+		CHECK(!fstat(fd, &info) && S_ISREG(info.st_mode) &&
+		      info.st_size == (32LL << 20));
+		fs_image.length = info.st_size;
+		fs_image.data = mmap(NULL, fs_image.length, PROT_READ | PROT_WRITE,
+				     MAP_SHARED, fd, 0);
+		CHECK(fs_image.data != MAP_FAILED);
+		CHECK(!close(fd));
+		address = core->lookup(core->loader, "kobox_linux_fs_port_verify");
+		CHECK(address);
+		memcpy(&verify_fs_port, &address, sizeof(verify_fs_port));
+	}
 	if (resources && resources->pci) {
 		CHECK(argc == 2);
 		address = core->lookup(core->loader, resources->pci_verifier ?
@@ -933,6 +990,7 @@ int kobox_boot_test_run(int argc, char **argv,
 		}
 	}
 	if (argc == 4 && strcmp(argv[2], "--client-run") &&
+	    strcmp(argv[2], "--fs-port") &&
 	    strcmp(argv[2], "--syscall") && strcmp(argv[2], "--fd-transfer") &&
 	    strcmp(argv[2], "--fd-exit-race") && strcmp(argv[2], "--fd-inheritance") &&
 	    strcmp(argv[2], "--fork") && strcmp(argv[2], "--clone") && strcmp(argv[2], "--thread") &&
@@ -993,6 +1051,11 @@ int kobox_boot_test_run(int argc, char **argv,
 		address = core->lookup(core->loader, "kobox_linux_allocation_verify");
 		CHECK(address);
 		memcpy(&verify_pressure, &address, sizeof(verify_pressure));
+	}
+	if (argc == 3 && !strcmp(argv[2], "--dma-xarray")) {
+		address = core->lookup(core->loader, "kobox_linux_dma_xarray_verify");
+		CHECK(address);
+		memcpy(&verify_dma_xarray, &address, sizeof(verify_dma_xarray));
 	}
 	if (argc == 3 && (!strcmp(argv[2], "--rcu") || !strcmp(argv[2], "--all"))) {
 		address = core->lookup(core->loader, "kobox_linux_rcu_verify");

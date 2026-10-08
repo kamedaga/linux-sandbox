@@ -596,6 +596,23 @@ if(KOBOX_LINUX_TASK_BUILD_DIR)
 		PUBLIC kobox_posix_bootstrap kobox_posix_mm kobox_posix_vm)
 	add_executable(kobox_linux_boot_test boot/boot_test_main.c)
 	target_link_libraries(kobox_linux_boot_test PRIVATE kobox_linux_boot_gate)
+	set(KOBOX_LINUX_STORAGE_RUNTIME_CORE "" CACHE FILEPATH
+		"Storage profile core built with --with-gates")
+	set(KOBOX_FS_NATIVE_TEST "" CACHE FILEPATH
+		"Static native Linux fs_port reference workload")
+	set(KOBOX_FS_NATIVE_ISO "" CACHE FILEPATH
+		"Linux live ISO with serial root console (Alpine virt)")
+	if(KOBOX_LINUX_STORAGE_RUNTIME_CORE AND KOBOX_FS_NATIVE_TEST AND KOBOX_FS_NATIVE_ISO)
+		add_test(NAME kobox2.linux_fs_port
+			COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/boot/test_fs_port.py"
+				--core "${KOBOX_LINUX_STORAGE_RUNTIME_CORE}"
+				--host-test $<TARGET_FILE:kobox_linux_boot_test>
+				--native-test "${KOBOX_FS_NATIVE_TEST}" --iso "${KOBOX_FS_NATIVE_ISO}"
+				--qemu "${KOBOX_QEMU_SYSTEM_X86_64}"
+				--out "${CMAKE_CURRENT_BINARY_DIR}/fs-port-results" --new-run)
+		set_tests_properties(kobox2.linux_fs_port PROPERTIES
+			TIMEOUT 180 LABELS "linux-runtime;integration;linux-storage")
+	endif()
 	add_executable(kobox_linux_module_smoke_test boot/module_smoke_test.c)
 	target_compile_options(kobox_linux_module_smoke_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 	target_link_libraries(kobox_linux_module_smoke_test PRIVATE kobox_linux_boot_gate)

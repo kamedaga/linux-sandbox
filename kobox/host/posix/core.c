@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _GNU_SOURCE
 #include "core.h"
+#include "../../arch/x86_64/fp_entry.h"
 #include "../../boot/image_layout.h"
 
 #include <errno.h>
@@ -39,7 +40,7 @@ static int native_protection(unsigned int protection)
 	return native;
 }
 
-static struct kobox_runtime_thread_state *thread_state(void *context)
+static KOBOX_GPR_LEAF struct kobox_runtime_thread_state *thread_state(void *context)
 {
 	(void)context;
 	return &runtime_thread;

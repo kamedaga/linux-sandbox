@@ -10,6 +10,12 @@
 #ifndef KOBOX_BOOT_NET
 #define KOBOX_BOOT_NET 0
 #endif
+#ifndef KOBOX_BOOT_BLOCK
+#define KOBOX_BOOT_BLOCK 0
+#endif
+#ifndef KOBOX_BOOT_FS
+#define KOBOX_BOOT_FS 0
+#endif
 #ifndef KOBOX_BOOT_VIRTIO_GPU
 #define KOBOX_BOOT_VIRTIO_GPU 1
 #endif
@@ -21,6 +27,7 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/fcntl.h>
+#include <linux/file.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -28,6 +35,7 @@
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/string.h>
+#include <linux/task_work.h>
 #include <asm/ptrace.h>
 #include "../../kernel/module/internal.h"
 
@@ -91,7 +99,19 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 #elif KOBOX_BOOT_INPUT
 	struct kobox_linux_input_port *input_port = NULL;
 #endif
-	struct kobox_linux_device_port *pci_device = NULL;
+#if KOBOX_BOOT_BLOCK
+	struct kobox_linux_block_port *block_port = NULL;
+#endif
+#if KOBOX_BOOT_BLOCK || KOBOX_BOOT_FS
+	struct kobox_linux_io_service io_service = {0};
+#endif
+#if KOBOX_BOOT_FS
+	struct kobox_linux_fs_mount *filesystem = NULL;
+#endif
+	struct kobox_linux_device_port **pci_devices = NULL;
+#if KOBOX_BOOT_FS
+	struct pci_dev **filesystem_devices = NULL;
+#endif
 	struct kobox_linux_firmware_store *firmware_store = NULL;
 	void *service = NULL;
 	size_t index, prior;
@@ -100,17 +120,27 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (!launch || launch->size != sizeof(*launch) || !launch->modules ||
 	    !launch->count || launch->count > 64 || !launch->lifecycle ||
 	    !report || report->size != sizeof(*report) ||
-	    (launch->device && launch->pci_device) ||
+	    (launch->device && launch->pci_device_count) ||
+	    (!!launch->pci_devices != !!launch->pci_device_count) ||
 	    (!KOBOX_BOOT_GPU && launch->device) ||
-	    (launch->capture_input && !launch->pci_device) ||
-	    (launch->capture_network && !launch->pci_device) ||
+	    (launch->capture_input && launch->pci_device_count != 1) ||
+	    (launch->capture_network && launch->pci_device_count != 1) ||
+	    (launch->capture_block && launch->pci_device_count != 1) ||
+	    (launch->block_write && !launch->capture_block) ||
+	    (launch->block_write && !launch->block_write_key.diskseq) ||
+	    (!launch->block_write && (launch->block_write_key.diskseq ||
+		launch->block_write_key.major || launch->block_write_key.minor)) ||
 	    (launch->capture_input && launch->capture_network) ||
 	    (!!launch->progress != !!launch->progress_context) ||
 	    launch->capture_input > 1 ||
 	    launch->capture_network > 1 ||
+	    launch->capture_block > 1 || launch->block_write > 1 ||
 	    (KOBOX_BOOT_GPU && (launch->capture_input || launch->capture_network)) ||
 	    (!KOBOX_BOOT_INPUT && launch->capture_input) ||
-	    (!KOBOX_BOOT_NET && launch->capture_network))
+	    (!KOBOX_BOOT_NET && launch->capture_network) ||
+	    (!KOBOX_BOOT_BLOCK && launch->capture_block) ||
+	    (launch->filesystem && (!KOBOX_BOOT_FS || !launch->pci_device_count ||
+		launch->capture_block || launch->capture_input || launch->capture_network)))
 		return -EINVAL;
 	if ((!launch->firmware && launch->firmware_count) ||
 	    launch->firmware_count > KOBOX_FIRMWARE_MAX_FILES)
@@ -133,6 +163,14 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		goto unlock;
 	}
 	launch_consumed = true;
+	if (launch->pci_device_count) {
+		pci_devices = kcalloc(launch->pci_device_count,
+				      sizeof(*pci_devices), GFP_KERNEL);
+		if (!pci_devices) {
+			result = -ENOMEM;
+			goto unlock;
+		}
+	}
 	result = kobox_linux_firmware_install(launch->firmware,
 					      launch->firmware_count,
 					      &firmware_store);
@@ -145,13 +183,13 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 			goto finish_device;
 	} else
 #endif
-	if (launch->pci_device) {
-		report_progress(launch, KOBOX_MODULE_PROGRESS_PCI_PREPARE, 0, 0);
-		result = kobox_linux_device_port_prepare(launch->pci_device,
-						 &pci_device);
+	for (index = 0; index < launch->pci_device_count; index++) {
+		report_progress(launch, KOBOX_MODULE_PROGRESS_PCI_PREPARE, index, 0);
+		result = kobox_linux_device_port_prepare(&launch->pci_devices[index],
+						 &pci_devices[index]);
 		if (result)
 			goto finish_device;
-		report_progress(launch, KOBOX_MODULE_PROGRESS_PCI_READY, 0, 0);
+		report_progress(launch, KOBOX_MODULE_PROGRESS_PCI_READY, index, 0);
 	}
 	result = register_module_notifier(&session.notifier);
 	if (result)
@@ -195,18 +233,19 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (!result && device)
 		result = kobox_linux_device_ready(device, &report->device);
 #endif
-	if (!result && pci_device) {
-		struct pci_dev *pci = kobox_linux_device_port_pci(pci_device);
-
+	if (!result && launch->pci_device_count) {
 		report_progress(launch, KOBOX_MODULE_PROGRESS_PROBE_WAIT, 0, 0);
 		wait_for_device_probe();
-		if (!pci || !pci->driver ||
-		    (launch->pci_device->expected_class &&
-		     pci->class != launch->pci_device->expected_class))
-			result = -ENODEV;
-		else {
-			report->pci_bound = 1;
-			report_progress(launch, KOBOX_MODULE_PROGRESS_PROBE_BOUND, 0, 0);
+		for (index = 0; !result && index < launch->pci_device_count; index++) {
+			struct pci_dev *pci = kobox_linux_device_port_pci(pci_devices[index]);
+			u32 expected = launch->pci_devices[index].expected_class;
+
+			if (!pci || !pci->driver || (expected && pci->class != expected))
+				result = -ENODEV;
+			else {
+				report->pci_bound++;
+				report_progress(launch, KOBOX_MODULE_PROGRESS_PROBE_BOUND, index, 0);
+			}
 		}
 	}
 #if KOBOX_BOOT_INPUT
@@ -215,17 +254,48 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (!result)
 		service = input_port;
 #endif
+#if KOBOX_BOOT_BLOCK
+	if (!result && launch->capture_block)
+		result = kobox_linux_block_port_open(&block_port,
+			kobox_linux_device_port_pci(pci_devices[0]),
+			launch->block_write ? &launch->block_write_key : NULL);
+	if (!result) {
+#if KOBOX_BOOT_INPUT
+		io_service.input = input_port;
+#endif
+		io_service.block = block_port;
+		service = &io_service;
+	}
+#endif
 #if KOBOX_BOOT_NET
 	if (!result && launch->capture_network) {
 		report_progress(launch, KOBOX_MODULE_PROGRESS_NET_OPEN, 0, 0);
 		result = kobox_linux_net_port_open(&net_port,
-				kobox_linux_device_port_pci(pci_device),
+				kobox_linux_device_port_pci(pci_devices[0]),
 				launch->progress, launch->progress_context);
 		if (!result)
 			report_progress(launch, KOBOX_MODULE_PROGRESS_NET_READY, 0, 0);
 	}
 	if (!result)
 		service = net_port;
+#endif
+#if KOBOX_BOOT_FS
+	if (!result && launch->filesystem) {
+		filesystem_devices = kcalloc(launch->pci_device_count,
+					      sizeof(*filesystem_devices), GFP_KERNEL);
+		if (!filesystem_devices)
+			result = -ENOMEM;
+		else {
+			for (index = 0; index < launch->pci_device_count; index++)
+				filesystem_devices[index] = kobox_linux_device_port_pci(pci_devices[index]);
+			result = kobox_linux_fs_mount_open(&filesystem, launch->filesystem,
+					filesystem_devices, launch->pci_device_count);
+		}
+		if (!result) {
+			io_service.filesystem = kobox_linux_fs_mount_service(filesystem);
+			service = &io_service;
+		}
+	}
 #endif
 #if KOBOX_BOOT_GPU
 	service = kobox_linux_device_service(device);
@@ -253,6 +323,14 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (input_port)
 		kobox_linux_input_port_close(input_port);
 #endif
+#if KOBOX_BOOT_BLOCK
+	if (block_port)
+		kobox_linux_block_port_close(block_port);
+#endif
+#if KOBOX_BOOT_FS
+	if (filesystem)
+		report->cleanup_result = kobox_linux_fs_mount_close(filesystem);
+#endif
 #if KOBOX_BOOT_NET
 	if (net_port)
 		kobox_linux_net_port_close(net_port);
@@ -271,6 +349,14 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 #endif
 	if (report->cleanup_result)
 		goto unregister_notifier;
+	/* Hosted lifecycle calls do not cross Linux's syscall-return boundary.
+	 * Completed block reads can therefore still own a driver module through
+	 * fput's task_work/delayed-fput lists. After service quiescence and port
+	 * close, drain both before checking module references; a busy module
+	 * after this boundary remains a real cleanup failure, not a retry case.
+	 */
+	task_work_run();
+	flush_delayed_fput();
 	for (index = report->loaded; index; index--) {
 		regs.di = (unsigned long)launch->modules[index - 1].name;
 		regs.si = O_NONBLOCK;
@@ -305,15 +391,20 @@ finish_device:
 				report->device.render_closed);
 	}
 #endif
-	if (pci_device && !report->cleanup_result &&
-	    report->loaded == report->unloaded) {
-		report->cleanup_result = kobox_linux_device_port_finish(pci_device);
-		if (!report->cleanup_result)
-			report->pci_detached = 1;
-		else
-			kobox_linux_boot_diagnostic(
-				"kobox-modules: cleanup PCI port status=%d\n",
-				report->cleanup_result);
+	if (!report->cleanup_result && report->loaded == report->unloaded) {
+		for (index = launch->pci_device_count; index; index--) {
+			if (!pci_devices[index - 1])
+				continue;
+			report->cleanup_result = kobox_linux_device_port_finish(pci_devices[index - 1]);
+			if (report->cleanup_result) {
+				kobox_linux_boot_diagnostic(
+					"kobox-modules: cleanup PCI port=%zu status=%d\n",
+					index - 1, report->cleanup_result);
+				break;
+			}
+			pci_devices[index - 1] = NULL;
+			report->pci_detached++;
+		}
 	}
 	if (!report->cleanup_result && report->loaded == report->unloaded) {
 		report->cleanup_result =
@@ -324,6 +415,10 @@ finish_device:
 				report->cleanup_result);
 	}
 unlock:
+#if KOBOX_BOOT_FS
+	kfree(filesystem_devices);
+#endif
+	kfree(pci_devices);
 	mutex_unlock(&launch_lock);
 	report->result = result ?: report->cleanup_result;
 	if (report->result)

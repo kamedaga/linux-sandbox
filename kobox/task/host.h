@@ -26,6 +26,8 @@ struct kobox_linux_task_host_operations {
 	size_t size;
 	uint64_t identity;
 	int (*task_bind_current)(void **task_out);
+	/* Leaf, nonblocking classification using bounds recorded before entry. */
+	uint8_t (*task_on_stack)(void *task, const void *object);
 	int (*task_create)(void **task_out, void *(*entry)(void *),
 			   void *argument);
 	int (*task_wake)(void *task);
@@ -43,12 +45,23 @@ struct kobox_linux_task_host_operations {
 	int (*cpu_stop)(uint32_t cpu);
 	int (*cpu_notify)(uint32_t cpu,
 			  enum kobox_linux_task_notification notification);
+	/* IRQ and notification primitives preserve the caller's legacy FP/SSE bank across
+	 * their entire ABI entry/return. Integer-only mask fast paths need no FP
+	 * transition; a provider that dispatches or calls libc protects its own
+	 * slow entry before C can clobber vectors. Clock entries below specify
+	 * the same guarantee; the remaining callbacks do not make
+	 * this guarantee and still use the ordinary host FP boundary. IRQ enable
+	 * can execute notifications and migrate; its whole entry/return, not just
+	 * the eventual callback, must retain the caller's bank. */
 	int (*cpu_irq_disable)(uint32_t cpu);
 	int (*cpu_irq_enable)(uint32_t cpu);
 	int (*notifications_save)(uint64_t *mask_out);
 	int (*notifications_restore)(uint64_t mask);
 	uint8_t (*cpu_irq_disabled)(uint32_t cpu);
 	uint64_t (*cpu_notification_sequence)(uint32_t cpu);
+	/* Clock entries also retain the caller's legacy FP/SSE bank, including
+	 * errors and signal return. Integer-only native providers rely on their
+	 * checked syscall boundary; libc providers protect their entire entry. */
 	int (*monotonic_ns)(uint64_t *time_out);
 	int (*realtime_ns)(uint64_t *time_out);
 	int (*clockevent_arm)(uint32_t cpu, uint64_t monotonic_deadline_ns);

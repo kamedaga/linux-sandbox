@@ -28,6 +28,7 @@ struct kobox_linux_input_device_info {
 
 struct kobox_linux_input_record {
 	uint64_t sequence;
+	/* Capture time in the host operations' monotonic clock domain. */
 	uint64_t monotonic_ns;
 	uint32_t device_id;
 	uint32_t kind;
@@ -35,11 +36,21 @@ struct kobox_linux_input_record {
 	int32_t value;
 };
 
+/* Process-local host callback, never a wire pointer. notify must not sleep or
+ * reenter the port: it runs under the ring lock, also from input IRQ context.
+ * The host context stays alive until close has quiesced the input handler. */
+struct kobox_linux_input_notify {
+	void *context;
+	int (*notify)(void *context);
+};
+
 #ifdef __KERNEL__
 struct kobox_linux_input_port;
 
 int kobox_linux_input_port_open(struct kobox_linux_input_port **out);
 void kobox_linux_input_port_close(struct kobox_linux_input_port *port);
+int kobox_linux_input_port_bind_notify(struct kobox_linux_input_port *port,
+			 const struct kobox_linux_input_notify *notify);
 int kobox_linux_input_port_read(struct kobox_linux_input_port *port,
 			      struct kobox_linux_input_record *records,
 			      size_t capacity, size_t *count,

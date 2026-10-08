@@ -8,6 +8,7 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/smp.h>
 #include <linux/stop_machine.h>
 #include <trace/events/ipi.h>
@@ -99,7 +100,11 @@ static int gate_wait_counter(uint64_t *counter, uint64_t minimum)
 
 static bool gate_current_matches(void)
 {
-	return current == raw_cpu_read(current_task) &&
+	unsigned long native_stack_object = 0;
+
+	return object_is_on_stack(&native_stack_object) &&
+		!object_is_on_stack(&task_report) &&
+		current == raw_cpu_read(current_task) &&
 		task_cpu(current) == (int)raw_smp_processor_id() &&
 		raw_cpu_read(gate_cpu_marker) == 0xabc000UL + raw_smp_processor_id();
 }

@@ -9,7 +9,36 @@
 #include <asm/segment.h>
 #include <asm/proto.h>
 #include <asm/trapnr.h>
+#include <asm/kdebug.h>
 #include <uapi/asm/prctl.h>
+
+void __show_regs(struct pt_regs *regs, enum show_regs_mode mode,
+		 const char *level)
+{
+	/* Hardware RDMSR/CR/DR reads fault in the hosted process and would recurse
+	 * while reporting the original WARN. Preserve the saved register dump and
+	 * identify virtual task state explicitly, never invent physical CPU state.
+	 */
+	show_iret_regs(regs, level);
+	printk("%s ORIG_RAX: %016lx\n", level, regs->orig_ax);
+	printk("%sRAX: %016lx RBX: %016lx RCX: %016lx\n",
+	       level, regs->ax, regs->bx, regs->cx);
+	printk("%sRDX: %016lx RSI: %016lx RDI: %016lx\n",
+	       level, regs->dx, regs->si, regs->di);
+	printk("%sRBP: %016lx R08: %016lx R09: %016lx\n",
+	       level, regs->bp, regs->r8, regs->r9);
+	printk("%sR10: %016lx R11: %016lx R12: %016lx\n",
+	       level, regs->r10, regs->r11, regs->r12);
+	printk("%sR13: %016lx R14: %016lx R15: %016lx\n",
+	       level, regs->r13, regs->r14, regs->r15);
+	if (mode == SHOW_REGS_SHORT)
+		return;
+	printk("%shosted task FS: %016lx(%04x) GS: %016lx(%04x) DS: %04x ES: %04x\n",
+	       level, current->thread.fsbase, current->thread.fsindex,
+	       current->thread.gsbase, current->thread.gsindex,
+	       current->thread.ds, current->thread.es);
+	printk("%shosted: hardware MSR/control/debug registers unavailable\n", level);
+}
 
 bool kobox_x86_user_mode(const struct kobox_x86_user_regs *registers)
 {

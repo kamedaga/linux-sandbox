@@ -32,6 +32,20 @@ struct kobox_linux_dma_report {
 };
 
 #ifdef __KERNEL__
+#ifdef KOBOX_RUNTIME_GATES
+#include <linux/gfp_types.h>
+struct xarray;
+
+/* Gate-only bridges exercise the production helpers, not a second lock
+ * implementation. The after-lock hook ignores all unarmed DMA requests.
+ */
+void kobox_linux_dma_gate_xarray_locked(struct xarray *xa,
+	unsigned long index, bool releasing);
+int kobox_linux_dma_gate_xa_reserve(struct xarray *xa,
+	unsigned long index, gfp_t gfp);
+void kobox_linux_dma_gate_xa_release(struct xarray *xa, unsigned long index);
+int kobox_linux_dma_xarray_verify(void);
+#endif
 int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 			   const struct kobox_linux_dma_test *test,
 			   struct kobox_linux_dma_report *report);

@@ -39,12 +39,12 @@ struct kobox_linux_device_session {
 };
 
 #if !KOBOX_BOOT_VIRTIO_GPU
-/* These are inspection abort limits, not a claim about the card's thermal
- * rating. This profile cannot read the board surface after driver unload,
- * so keep the driver alive only for a short, continuously sampled window.
+/* This is a conservative thermal abort threshold, not the card's rating.
+ * Elapsed time is diagnostic only: a desktop may stay active until its owner
+ * requests stop. Stopping a healthy driver on a timer would interrupt that
+ * session and remove the very thermal feedback needed while it runs.
  */
 #define KOBOX_INSPECT_TEMP_LIMIT_MC 70000u
-#define KOBOX_INSPECT_MAX_NS (120ULL * NSEC_PER_SEC)
 
 int kobox_linux_device_inspection_monitor(void *context)
 {
@@ -74,11 +74,6 @@ int kobox_linux_device_inspection_monitor(void *context)
 		kobox_linux_boot_diagnostic("kobox-drm: inspection abort temperature_mc=%u limit_mc=%u\n",
 					    temperature, KOBOX_INSPECT_TEMP_LIMIT_MC);
 		return -ERANGE;
-	}
-	if (elapsed_ns >= KOBOX_INSPECT_MAX_NS) {
-		kobox_linux_boot_diagnostic("kobox-drm: inspection time limit reached elapsed_ms=%llu\n",
-					    (unsigned long long)(elapsed_ns / NSEC_PER_MSEC));
-		return -ETIME;
 	}
 	return 0;
 }

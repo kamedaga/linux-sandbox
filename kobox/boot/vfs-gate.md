@@ -8,6 +8,8 @@ objects / 129 initcall targets remain unchanged from step 1. The builder now
 requires their VFS source owners and rejects VFS, fput, iput and task-work
 replacements.
 
+The separate opt-in storage port below does not change this lifetime workload.
+
 Run `kobox_linux_boot_test CORE.so --vfs`, or CTest
 `kobox2.linux_vfs_lifetime_gate`. `--all` also runs this gate, after the mandatory
 boot/service/SMP/memory checks and before the chapter-1 detailed regressions.
@@ -117,3 +119,87 @@ This gate covers kernel-side VFS calls and Linux FD lifetime in the sandbox.
 It does not certify a userspace syscall entry, user-copy fault handling,
 mount-namespace propagation, shared mappings, memory-pressure policy, GEM,
 external-client FDs or DRM IPC. Those retain their own implementation gates.
+
+## Storage port and differential gate (dev)
+
+`fs_port.c` is an opt-in GPL, process-local port (`--device-profile storage`).
+It owns a reference to a granted mount and a dynamically allocated xarray of
+`struct file` references. Handles are nonzero, monotonically increasing and
+never reused within a port. The table mutex protects lookup plus `get_file()`
+and removal; no filesystem I/O holds that mutex. Dup retains the same file,
+including its upstream flags and offset. Offset operations follow Linux's
+`FMODE_ATOMIC_POS` locking contract, including the union used by nonseekable
+files. Concurrent close cannot invalidate a reference already acquired by I/O.
+Callers must retain the port and immutable credentials throughout each call,
+and quiesce callers before destroying the port.
+
+Every request uses `override_creds()` / `revert_creds()`. Open uses the pinned
+`build_open_flags()` and `do_file_open_root()`, including openat2 resolve flags.
+Read/write use `kernel_read()` / `kernel_write()` after checking their required
+access modes. Other operations use `iterate_dir()`, `vfs_getattr()`, upstream
+parent lookup and mutation helpers, `vfs_get_link()`, `do_ftruncate()` and
+`vfs_fsync()`. Getdents returns aligned `linux_dirent64` records, without a
+fixed name array or an artificial transfer limit. The previous record and
+final record receive upstream directory cookies; padding is zeroed.
+
+This is **not a wire ABI or a complete syscall adapter**. Paths currently use
+the granted mount as their root, not an arbitrary openat directory handle.
+The getattr API returns a real `kstat`; Linux's private `vfs_statx()` wrapper
+and its mount-ID augmentation are not exported by this interface. Controller
+credential validation, request umask/context, full at-style/schema semantics,
+device authorization/UUID selection, and hardware package/service integration
+belong to the subsequent controller integration. No Linux structures cross
+the controller protocol boundary.
+
+`manifest/profiles/storage.config` enables modular ext4, jbd2, mbcache and
+crc16. It is separate from existing pinned device profiles. The test-only
+`storage_test.config` instead embeds those implementations and one 32 MiB brd
+disk; it fixes base-page/no-swap conditions for the existing shmem gate.
+The storage core grants no GPU or virtio device. It omits the unrelated virtio
+device gate, rather than inventing sync-file or hardware stubs.
+
+From the kobox2 root, use LLVM/LLD 18.1.8 and the matching Kbuild host libelf
+environment. `HOST_CC` selects the POSIX test compiler; `MUSL_CC` selects the
+static native reference compiler (set `REALGCC` when using a musl wrapper).
+The output directory must be fresh because provider caches pin canonical
+config, vmlinux and archive identities:
+
+```sh
+export HOST_CC=/usr/bin/cc
+export MUSL_CC=/usr/bin/musl-gcc
+export REALGCC=/usr/bin/x86_64-linux-gnu-gcc
+OUT=/absolute/path/to/fresh-artifacts/fs-port
+bash linux-sandbox/kobox/boot/build_fs_port_test.sh "$OUT"
+python3 linux-sandbox/kobox/boot/test_fs_port.py \
+  --core "$OUT/runtime/linux-boot-runtime.so" \
+  --host-test "$OUT/host/linux-sandbox/kobox/kobox_linux_boot_test" \
+  --native-test "$OUT/native-test" --iso /path/to/alpine-virt.iso \
+  --out "$OUT/results" --new-run
+```
+
+The launcher runs after real `start_kernel()` and mandatory boot/memory gates.
+It copies a **new disposable ext4 image**, not a rootfs, into brd through real
+block-file I/O, mounts ext4 through `fs_context`, and tests tmpfs separately.
+It drains task work, delayed fput and RCU, unmounts ext4, invalidates the block
+cache and exports the resulting disk before the host syncs its mapping.
+
+One shared C workload runs through the port and native Linux syscalls in a
+serial-console Alpine guest, chrooted into fresh ext4 and tmpfs mounts. It
+checks sparse/positioned I/O, truncate and extension, append, dup offsets,
+open-unlink lifetime, O_PATH errors, UID/GID/supplementary-group DAC, sticky
+directories, rename/exchange/noreplace, symlinks and resolve restrictions,
+255/256-byte names, short directory buffers, cookies, names/types/duplicates,
+and fsync/fdatasync. Directory order and padding are deliberately not treated
+as a contract: ext4 hash seeds and syscall buffer padding may differ.
+
+Additional port-only tests retain 10,000 simultaneous handles per filesystem,
+reject stale handles, perform 512 shared-offset reads across both CPUs in
+total, and race read against close 1,024 times. Linux warnings fail the gate.
+Both exported ext4 images must pass `e2fsck -fn`, with persisted renamed and
+credential-owned data verified by debugfs. Results keep executable/source
+snapshots, hashes, core inventory, native QEMU arguments and console logs.
+
+For CTest, configure `KOBOX_LINUX_STORAGE_RUNTIME_CORE`, `KOBOX_FS_NATIVE_TEST`
+and `KOBOX_FS_NATIVE_ISO`; `kobox2.linux_fs_port` keeps a fresh results directory
+on each run. Separately, `build_fs_port_test.sh NEW_OUTPUT --modules-only`
+builds and checks the real four-module closure without brd or builtin ext4.

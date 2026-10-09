@@ -4,7 +4,7 @@
   "linux_tag": "v6.18.48",
   "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
   "kernel_release": "6.18.48+",
-  "config_sha256": "b4b2fdb7b0fd3c2c1e9c3e57ce1ab756fd7921e1952cf76292c2ce17fc3e4a14",
+  "config_sha256": "a66c9c67624f44f81790c429ee1e8d43a26cc680c810c7e457efc6c5354444da",
   "toolchain": {
     "compiler": "clang",
     "compiler_version": "18.1.8",
@@ -148,6 +148,7 @@
     "CONFIG_EXT4_FS_POSIX_ACL": "y",
     "CONFIG_JBD2": "m",
     "CONFIG_FS_MBCACHE": "m",
-    "CONFIG_CRC16": "m"
+    "CONFIG_CRC16": "m",
+    "CONFIG_CRC_OPTIMIZATIONS": "y"
   }
 }

@@ -66,6 +66,14 @@ static void __init hosted_cpu_features(void)
 	set_cpu_cap(cpu, X86_FEATURE_NX);
 	set_cpu_cap(cpu, X86_FEATURE_NOPL);
 	set_cpu_cap(cpu, X86_FEATURE_ALWAYS);
+	/* CRC32 (SSE4.2) runs on general registers only: no FP or vector state,
+	 * so no kernel_fpu section the hosted FP model would have to support.
+	 * It is what selects the crc32c instruction that ext4/jbd2 metadata
+	 * checksums use. PCLMULQDQ and wider forms stay unreported; they need
+	 * vector registers. All host CPUs share the boot CPU's ISA. */
+	cpuid(1, &eax, &ebx, &ecx, &edx);
+	if (ecx & BIT(X86_FEATURE_XMM4_2 % 32))
+		set_cpu_cap(cpu, X86_FEATURE_XMM4_2);
 	cpu->initialized = true;
 }
 

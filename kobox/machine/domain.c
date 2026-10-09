@@ -12,11 +12,14 @@ enum kobox_machine_result kobox_machine_domain_init(
 	domain->owner = NULL;
 	domain->handoff_released = true;
 	domain->accepting = true;
-	atomic_init(&domain->irq_depth, 0);
+	atomic_init(&domain->irq_storage, 0);
+	atomic_init(&domain->deferred_storage, 0);
+	domain->irq_depth = &domain->irq_storage;
+	domain->irq_deferred = &domain->deferred_storage;
 	atomic_init(&domain->stop_requested, false);
 	atomic_init(&domain->stopped, false);
 	atomic_init(&domain->sequence, 0);
-	if (!atomic_is_lock_free(&domain->irq_depth) ||
+	if (!atomic_is_lock_free(&domain->irq_storage) ||
 	    !atomic_is_lock_free(&domain->stop_requested) ||
 	    !atomic_is_lock_free(&domain->stopped) ||
 	    !atomic_is_lock_free(&domain->sequence))
@@ -93,7 +96,7 @@ KOBOX_GPR_LEAF bool kobox_machine_domain_pending(const struct kobox_machine_doma
 enum kobox_machine_result kobox_machine_domain_close(
 	struct kobox_machine_domain *domain)
 {
-	if (domain->owner || atomic_load_explicit(&domain->irq_depth,
+	if (domain->owner || atomic_load_explicit(domain->irq_depth,
 						memory_order_acquire) ||
 	    kobox_machine_domain_pending(domain))
 		return KOBOX_MACHINE_BUSY;
@@ -151,16 +154,33 @@ enum kobox_machine_result kobox_machine_domain_notify(
 	return KOBOX_MACHINE_OK;
 }
 
+/* Before the CPU runs guest code with notifications delivered, or on its
+ * owner with them masked: carry the current state into the guest's words. */
+enum kobox_machine_result kobox_machine_domain_bind_irq(
+	struct kobox_machine_domain *domain, atomic_uint *depth,
+	atomic_uint *deferred)
+{
+	if (!depth || !deferred || depth == deferred)
+		return KOBOX_MACHINE_INVALID;
+	atomic_store_explicit(depth, atomic_load_explicit(domain->irq_depth,
+		memory_order_acquire), memory_order_relaxed);
+	atomic_store_explicit(deferred, atomic_load_explicit(domain->irq_deferred,
+		memory_order_acquire), memory_order_relaxed);
+	domain->irq_depth = depth;
+	domain->irq_deferred = deferred;
+	return KOBOX_MACHINE_OK;
+}
+
 KOBOX_GPR_LEAF enum kobox_machine_result kobox_machine_domain_irq_disable(
 	struct kobox_machine_domain *domain)
 {
-	unsigned int depth = atomic_load_explicit(&domain->irq_depth,
+	unsigned int depth = atomic_load_explicit(domain->irq_depth,
 						memory_order_acquire);
 
 	for (;;) {
 		if (depth == UINT_MAX)
 			return KOBOX_MACHINE_OVERFLOW;
-		if (atomic_compare_exchange_weak_explicit(&domain->irq_depth,
+		if (atomic_compare_exchange_weak_explicit(domain->irq_depth,
 				&depth, depth + 1, memory_order_acq_rel,
 				memory_order_acquire))
 			return KOBOX_MACHINE_OK;
@@ -171,9 +191,9 @@ KOBOX_GPR_LEAF enum kobox_machine_result kobox_machine_domain_irq_enable(
 	struct kobox_machine_domain *domain, bool *dispatch)
 {
 	*dispatch = false;
-	if (!atomic_load_explicit(&domain->irq_depth, memory_order_acquire))
+	if (!atomic_load_explicit(domain->irq_depth, memory_order_acquire))
 		return KOBOX_MACHINE_INVALID;
-	*dispatch = atomic_fetch_sub_explicit(&domain->irq_depth, 1,
+	*dispatch = atomic_fetch_sub_explicit(domain->irq_depth, 1,
 					     memory_order_acq_rel) == 1;
 	return KOBOX_MACHINE_OK;
 }
@@ -184,8 +204,14 @@ bool kobox_machine_domain_irq_take(struct kobox_machine_domain *domain,
 {
 	unsigned int index;
 
-	if (atomic_load_explicit(&domain->irq_depth, memory_order_acquire))
+	if (atomic_load_explicit(domain->irq_depth, memory_order_acquire)) {
+		/* Disabled guest IRQs keep the counts; tell the guest's enable
+		 * path that there is something to deliver. */
+		if (kobox_machine_domain_pending(domain))
+			atomic_store_explicit(domain->irq_deferred, 1,
+					      memory_order_relaxed);
 		return false;
+	}
 	for (index = 0; index < KOBOX_MACHINE_NOTIFICATION_COUNT; index++) {
 		/* Empty IRQ checks are frequent. Do not acquire exclusive cacheline
 		 * ownership merely to replace zero with zero. A publication after
@@ -199,7 +225,7 @@ bool kobox_machine_domain_irq_take(struct kobox_machine_domain *domain,
 		*count = atomic_exchange_explicit(&domain->pending[index], 0,
 						 memory_order_acq_rel);
 		if (*count) {
-			atomic_store_explicit(&domain->irq_depth, 1,
+			atomic_store_explicit(domain->irq_depth, 1,
 					      memory_order_release);
 			*notification = (enum kobox_machine_notification)index;
 			return true;
@@ -211,8 +237,8 @@ bool kobox_machine_domain_irq_take(struct kobox_machine_domain *domain,
 
 bool kobox_machine_domain_irq_return(struct kobox_machine_domain *domain)
 {
-	if (atomic_load_explicit(&domain->irq_depth, memory_order_acquire) != 1)
+	if (atomic_load_explicit(domain->irq_depth, memory_order_acquire) != 1)
 		return false;
-	atomic_store_explicit(&domain->irq_depth, 0, memory_order_release);
+	atomic_store_explicit(domain->irq_depth, 0, memory_order_release);
 	return true;
 }

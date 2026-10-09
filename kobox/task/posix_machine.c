@@ -316,6 +316,18 @@ static __attribute__((noinline, used)) uint8_t host_cpu_irq_disabled_body(uint32
 		kobox_posix_cpu_irq_disabled(&cpus[cpu]);
 }
 
+static __attribute__((noinline, used)) int host_cpu_irq_bind_body(uint32_t cpu,
+	void *state, void *deferred)
+{
+	return cpu < KOBOX_LINUX_MEMORY_LOGICAL_CPUS ?
+		kobox_posix_cpu_irq_bind(&cpus[cpu], state, deferred) : -1;
+}
+
+static __attribute__((noinline, used)) int host_cpu_irq_deliver_body(void)
+{
+	return kobox_posix_cpu_irq_deliver();
+}
+
 /* POSIX helpers may call libc or dispatch the guest. Save at the table's
  * actual ABI entry, before a C prologue can change the caller's vectors. */
 static __attribute__((naked)) int host_cpu_irq_disable(uint32_t cpu __attribute__((unused)))
@@ -331,6 +343,17 @@ static __attribute__((naked)) int host_cpu_irq_enable(uint32_t cpu __attribute__
 static __attribute__((naked)) uint8_t host_cpu_irq_disabled(uint32_t cpu __attribute__((unused)))
 {
 	KOBOX_FP_ENTRY_BODY(host_cpu_irq_disabled_body);
+}
+
+static __attribute__((naked)) int host_cpu_irq_bind(uint32_t cpu __attribute__((unused)),
+	void *state __attribute__((unused)), void *deferred __attribute__((unused)))
+{
+	KOBOX_FP_ENTRY_BODY(host_cpu_irq_bind_body);
+}
+
+static __attribute__((naked)) int host_cpu_irq_deliver(void)
+{
+	KOBOX_FP_ENTRY_BODY(host_cpu_irq_deliver_body);
 }
 
 static uint64_t host_cpu_notification_sequence(uint32_t cpu)
@@ -404,6 +427,8 @@ const struct kobox_linux_task_host_operations kobox_task_posix_operations = {
 	.notifications_save = kobox_posix_notifications_save,
 	.notifications_restore = kobox_posix_notifications_restore,
 	.cpu_irq_disabled = host_cpu_irq_disabled,
+	.cpu_irq_bind = host_cpu_irq_bind,
+	.cpu_irq_deliver = host_cpu_irq_deliver,
 	.cpu_notification_sequence = host_cpu_notification_sequence,
 	.monotonic_ns = kobox_posix_monotonic_ns,
 	.realtime_ns = kobox_posix_realtime_ns,

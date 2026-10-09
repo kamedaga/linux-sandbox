@@ -356,7 +356,7 @@ int kobox_posix_cpu_leave(struct kobox_posix_cpu *cpu)
 	    !saved_signal_mask_valid)
 		return EINVAL;
 	if (atomic_load_explicit(
-		    &cpu->domain.irq_depth, memory_order_acquire) != 0)
+		    cpu->domain.irq_depth, memory_order_acquire) != 0)
 		return EBUSY;
 	sigemptyset(&signal_set);
 	sigaddset(&signal_set, cpu->signal_number);
@@ -575,10 +575,37 @@ int kobox_posix_cpu_stop(struct kobox_posix_cpu *cpu)
 	return 0;
 }
 
+int kobox_posix_cpu_irq_bind(struct kobox_posix_cpu *cpu, void *state,
+			     void *deferred)
+{
+	uint64_t mask;
+	int status;
+
+	if (!cpu || !cpu->initialized)
+		return EINVAL;
+	/* No upcall may record a deferral between copying and switching. */
+	if (kobox_posix_notifications_save(&mask))
+		__builtin_trap();
+	status = machine_status(kobox_machine_domain_bind_irq(&cpu->domain,
+		state, deferred));
+	if (kobox_posix_notifications_restore(mask))
+		__builtin_trap();
+	return status;
+}
+
+/* The guest enabled IRQs and saw the deferral hint: deliver on this
+ * thread's current CPU, as an enable through the host would have. */
+int kobox_posix_cpu_irq_deliver(void)
+{
+	if (atomic_load_explicit(&active_cpu, memory_order_acquire))
+		dispatch_pending();
+	return 0;
+}
+
 bool kobox_posix_cpu_irq_disabled(const struct kobox_posix_cpu *cpu)
 {
 	return cpu && cpu->initialized && atomic_load_explicit(
-		&cpu->domain.irq_depth, memory_order_acquire) != 0;
+		cpu->domain.irq_depth, memory_order_acquire) != 0;
 }
 
 uint64_t kobox_posix_cpu_notification_sequence(

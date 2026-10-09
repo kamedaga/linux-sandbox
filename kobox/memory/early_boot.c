@@ -258,6 +258,10 @@ static void memory_use_percpu(unsigned long offset)
 #endif
 }
 
+#if defined(KOBOX_PERCPU_SEGMENT) && defined(KOBOX_TASK_PORT_PHASE)
+void kobox_linux_task_bind_irq_words(void);
+#endif
+
 #ifdef KOBOX_TASK_PORT_PHASE
 void kobox_linux_memory_set_cpu(unsigned int cpu)
 {
@@ -891,6 +895,9 @@ void __init setup_per_cpu_areas(void)
 	}
 	/* start_kernel() invokes this hook before its boot-CPU setup hook. */
 	memory_use_percpu(__per_cpu_offset[0]);
+#if defined(KOBOX_PERCPU_SEGMENT) && defined(KOBOX_TASK_PORT_PHASE)
+	kobox_linux_task_bind_irq_words();
+#endif
 }
 
 static void __init setup_memory_zones(void)

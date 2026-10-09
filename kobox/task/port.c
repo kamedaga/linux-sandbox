@@ -412,27 +412,110 @@ void kobox_provider_preempt_restore(unsigned long flags)
 		BUG();
 }
 
+#ifdef KOBOX_PERCPU_SEGMENT
+/* Logical IRQ state as this CPU's own words, like the x86 flags register:
+ * the host machine domain reads and updates the same words (bound below),
+ * and Linux changes them with one %gs-relative instruction each, so neither
+ * a migration nor a notification can split an operation. A notification
+ * arriving while disabled stays pending and sets deferred; enable clears
+ * the state first and then checks deferred, and an upcall can only fall
+ * between those instructions, so none is lost. */
+struct kobox_irq_words {
+	u32 disabled;
+	u32 deferred;
+};
+static DEFINE_PER_CPU_ALIGNED(struct kobox_irq_words, irq_words);
+static bool irq_words_bound __read_mostly;
+
+/* Called once per-CPU areas exist, while only the boot CPU runs Linux with
+ * IRQs disabled; the host copies each domain's current state across. */
+void kobox_linux_task_bind_irq_words(void)
+{
+	unsigned int cpu;
+
+	if (!task_host->cpu_irq_bind || !task_host->cpu_irq_deliver)
+		return;
+	for_each_possible_cpu(cpu)
+		if (kobox_host_call(task_host->cpu_irq_bind(cpu,
+				&per_cpu(irq_words, cpu).disabled,
+				&per_cpu(irq_words, cpu).deferred)))
+			BUG();
+	WRITE_ONCE(irq_words_bound, true);
+	pr_info("kobox: logical IRQ state in per-CPU words\n");
+}
+
+static noinline void irq_words_deliver(void)
+{
+	raw_cpu_write(irq_words.deferred, 0);
+	barrier();
+	if (kobox_host_call(task_host->cpu_irq_deliver()))
+		BUG();
+}
+
+static __always_inline void irq_words_enable(void)
+{
+	barrier();
+	raw_cpu_write(irq_words.disabled, 0);
+	barrier();
+	if (unlikely(raw_cpu_read(irq_words.deferred)))
+		irq_words_deliver();
+}
+#endif
+
 unsigned long kobox_provider_irq_save_flags(void)
 {
 	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (likely(READ_ONCE(irq_words_bound))) {
+		unsigned long flags = raw_cpu_read(irq_words.disabled) != 0;
+
+		barrier();
+		return flags;
+	}
+#endif
 	return kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_QUERY);
 }
 
 void kobox_provider_irq_disable(void)
 {
 	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (likely(READ_ONCE(irq_words_bound))) {
+		raw_cpu_write(irq_words.disabled, 1);
+		barrier();
+		return;
+	}
+#endif
 	kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_DISABLE);
 }
 
 void kobox_provider_irq_enable(void)
 {
 	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (likely(READ_ONCE(irq_words_bound))) {
+		irq_words_enable();
+		return;
+	}
+#endif
 	kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_ENABLE);
 }
 
 unsigned long kobox_provider_irq_save(void)
 {
 	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (likely(READ_ONCE(irq_words_bound))) {
+		/* Read then set, like pushf; cli: if an interrupt (and so maybe
+		 * a migration) falls between them, the set lands on the CPU the
+		 * task now runs on, and the saved value was true when read. */
+		unsigned long flags = raw_cpu_read(irq_words.disabled) != 0;
+
+		raw_cpu_write(irq_words.disabled, 1);
+		barrier();
+		return flags;
+	}
+#endif
 	return kobox_irq_transaction(task_host, port_cpu, KOBOX_IRQ_SAVE);
 }
 
@@ -441,6 +524,17 @@ void kobox_provider_irq_restore(unsigned long flags)
 	/* Count here, not in the disable/enable entries, so a call-site
 	 * diagnostic attributes the restore to its Linux caller. */
 	task_bench_count(KOBOX_TASK_BENCH_IRQ);
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (likely(READ_ONCE(irq_words_bound))) {
+		if (flags) {
+			raw_cpu_write(irq_words.disabled, 1);
+			barrier();
+		} else {
+			irq_words_enable();
+		}
+		return;
+	}
+#endif
 	kobox_irq_transaction(task_host, port_cpu, flags ? KOBOX_IRQ_DISABLE : KOBOX_IRQ_ENABLE);
 }
 

@@ -58,6 +58,14 @@ struct kobox_linux_task_host_operations {
 	int (*notifications_save)(uint64_t *mask_out);
 	int (*notifications_restore)(uint64_t mask);
 	uint8_t (*cpu_irq_disabled)(uint32_t cpu);
+	/* Optional pair. bind moves cpu's logical IRQ state into the guest's
+	 * own CPU-local words (state, then the deferral hint); only called
+	 * before that CPU delivers notifications into the guest. Afterwards
+	 * the guest disables/enables by writing the state word itself, and
+	 * calls deliver after enabling when the hint is set: it delivers what
+	 * is pending on the calling thread's own CPU, whatever that now is. */
+	int (*cpu_irq_bind)(uint32_t cpu, void *state, void *deferred);
+	int (*cpu_irq_deliver)(void);
 	uint64_t (*cpu_notification_sequence)(uint32_t cpu);
 	/* Clock entries also retain the caller's legacy FP/SSE bank, including
 	 * errors and signal return. Integer-only native providers rely on their

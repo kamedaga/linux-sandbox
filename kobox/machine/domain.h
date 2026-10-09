@@ -44,7 +44,16 @@ struct kobox_machine_domain {
 	void *owner;
 	bool handoff_released;
 	bool accepting;
-	atomic_uint irq_depth;
+	/* Logical IRQ disable state, nonzero while disabled. It starts in
+	 * irq_storage; kobox_machine_domain_bind_irq() can move it into memory
+	 * the guest updates directly with single CPU-local instructions, so a
+	 * guest IRQ disable/enable needs no host call. Only the domain owner's
+	 * thread changes it, from guest code or from its own upcall. */
+	atomic_uint *irq_depth;
+	/* Set when an upcall left notifications pending because IRQs were
+	 * disabled; the guest checks it after enabling and asks for delivery. */
+	atomic_uint *irq_deferred;
+	atomic_uint irq_storage, deferred_storage;
 	atomic_bool stop_requested;
 	atomic_bool stopped;
 	atomic_uint_fast64_t sequence;
@@ -72,6 +81,9 @@ bool kobox_machine_domain_should_wait(const struct kobox_machine_domain *domain,
 enum kobox_machine_result kobox_machine_domain_notify(
 	struct kobox_machine_domain *domain,
 	enum kobox_machine_notification notification);
+enum kobox_machine_result kobox_machine_domain_bind_irq(
+	struct kobox_machine_domain *domain, atomic_uint *depth,
+	atomic_uint *deferred);
 enum kobox_machine_result kobox_machine_domain_irq_disable(
 	struct kobox_machine_domain *domain);
 enum kobox_machine_result kobox_machine_domain_irq_enable(

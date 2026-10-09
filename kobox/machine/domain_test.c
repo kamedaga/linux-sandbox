@@ -54,7 +54,8 @@ static int sparse_notifications(void)
 int main(void)
 {
 	struct kobox_machine_domain cpu;
-	int first, second;
+	int first = 1, second = 2;
+	atomic_uint state, deferred;
 	enum kobox_machine_notification notification;
 	uint64_t count;
 	bool dispatch;
@@ -106,10 +107,10 @@ int main(void)
 	CHECK(!dispatch);
 	CHECK(kobox_machine_domain_should_wait(&cpu, 2));
 	CHECK(!kobox_machine_domain_should_wait(&cpu, 1));
-	atomic_store(&cpu.irq_depth, UINT_MAX);
+	atomic_store(cpu.irq_depth, UINT_MAX);
 	CHECK(kobox_machine_domain_irq_disable(&cpu) == KOBOX_MACHINE_OVERFLOW);
-	CHECK(atomic_load(&cpu.irq_depth) == UINT_MAX);
-	atomic_store(&cpu.irq_depth, 0);
+	CHECK(atomic_load(cpu.irq_depth) == UINT_MAX);
+	atomic_store(cpu.irq_depth, 0);
 	atomic_store(&cpu.sequence, UINT64_MAX);
 	CHECK(kobox_machine_domain_notify(&cpu, KOBOX_MACHINE_TICK) ==
 	      KOBOX_MACHINE_OVERFLOW);
@@ -130,6 +131,28 @@ int main(void)
 	CHECK(kobox_machine_domain_notify(&cpu, KOBOX_MACHINE_TICK) ==
 	      KOBOX_MACHINE_OK);
 	CHECK(kobox_machine_domain_close(&cpu) == KOBOX_MACHINE_BUSY);
-	puts("machine domain: ownership, handoff, pending, nested IRQ, overflow OK");
+	/* Moving IRQ state into guest words carries it across; a take refused
+	 * while disabled leaves the counts and sets the deferral hint, and the
+	 * guest's own store enables delivery again. */
+	CHECK(kobox_machine_domain_bind_irq(&cpu, &state, &state) ==
+	      KOBOX_MACHINE_INVALID);
+	CHECK(kobox_machine_domain_irq_disable(&cpu) == KOBOX_MACHINE_OK);
+	atomic_store(cpu.irq_deferred, 0);
+	atomic_store(&state, 7);
+	atomic_store(&deferred, 7);
+	CHECK(kobox_machine_domain_bind_irq(&cpu, &state, &deferred) ==
+	      KOBOX_MACHINE_OK);
+	CHECK(atomic_load(&state) == 1 && atomic_load(&deferred) == 0);
+	CHECK(!kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(atomic_load(&deferred) == 1 && kobox_machine_domain_pending(&cpu));
+	atomic_store(&state, 0);
+	atomic_store(&deferred, 0);
+	CHECK(kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(notification == KOBOX_MACHINE_TICK && count == 1);
+	CHECK(atomic_load(&state) == 1);
+	CHECK(kobox_machine_domain_irq_return(&cpu) && atomic_load(&state) == 0);
+	CHECK(!kobox_machine_domain_irq_take(&cpu, &notification, &count));
+	CHECK(atomic_load(&deferred) == 0);
+	puts("machine domain: ownership, handoff, pending, nested IRQ, overflow, guest IRQ words OK");
 	return 0;
 }

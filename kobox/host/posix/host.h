@@ -233,6 +233,9 @@ uint64_t kobox_posix_cpu_pending(
 	const struct kobox_posix_cpu *cpu,
 	enum kobox_posix_notification notification);
 bool kobox_posix_cpu_irq_disabled(const struct kobox_posix_cpu *cpu);
+int kobox_posix_cpu_irq_bind(struct kobox_posix_cpu *cpu, void *state,
+			     void *deferred);
+int kobox_posix_cpu_irq_deliver(void);
 uint64_t kobox_posix_cpu_notification_sequence(
 	const struct kobox_posix_cpu *cpu);
 

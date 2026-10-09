@@ -2,21 +2,32 @@
 #include "fs_worker.h"
 #include "fs_service.h"
 #include "fs_bench.h"
+#include "lifecycle.h"
 #include "../task/diagnostic.h"
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/err.h>
+#include <linux/log2.h>
+#include <linux/math.h>
+#include <linux/math64.h>
+#include <asm/msr.h>
 #include <linux/fs_struct.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/overflow.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/cputime.h>
 #include <linux/smp.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/wait.h>
+
+/* About the cost of waking a worker on another logical CPU and handing its
+ * completion back, measured on the hosted pool: a job shorter than this is
+ * cheaper to leave queued for the owner than to move. */
+#define FS_OWNER_SLOW_NS (10 * NSEC_PER_USEC)
 
 struct fs_worker_client {
 	struct list_head link;
@@ -66,6 +77,9 @@ struct kobox_linux_fs_work {
 	size_t bytes, used, storage_bytes;
 	int error;
 	bool collected;
+	/* On the owner's private lists: the owner executes it, so it takes no
+	 * client running slot (that bounds worker occupancy only). */
+	bool held;
 #ifdef KOBOX_FS_INTERNAL_PROFILE
 	u64 completed_tick;
 #endif
@@ -99,6 +113,27 @@ struct kobox_linux_fs_workers {
 	bool burst, previous_burst;
 	/* Workers woken for a job that have not yet looked at runnable. */
 	unsigned int waking;
+	/* Jobs on client queued lists, runnable or held back by client_running. */
+	unsigned int queued;
+	/* Workers on the idle list; the others are woken or executing. */
+	unsigned int idle_workers;
+	/* The owner runs queued jobs itself whenever it would otherwise wait, so
+	 * a lone job needs no worker. */
+	bool owner_executes;
+	/* Owner-only FIFOs that workers never read, so they need no pool lock:
+	 * jobs admitted while short jobs need no helper, and their completions
+	 * awaiting the owner's collect. While the right is lent, the deputy acts
+	 * as owner and moves held jobs to the shared queue for workers. */
+	struct list_head owner_held, owner_done;
+	/* The owner's last executed job ran longer than a worker wake costs. */
+	bool owner_slow;
+	/* TSC cycles in FS_OWNER_SLOW_NS. The host clock is an indirect native
+	 * call costing a few percent of a burst of short jobs when read twice
+	 * per job, so it calibrates the cycle counter once at creation. */
+	u64 slow_cycles;
+	/* Executor of the opening task's asynchronous lifecycle: its deputy may
+	 * act as owner while the right is lent, and receives completion wakes. */
+	bool serving;
 	bool closed;
 #ifdef KOBOX_FS_INTERNAL_BENCH
 	u64 completion_wake_calls, collection_batches;
@@ -108,6 +143,7 @@ struct kobox_linux_fs_workers {
 	u64 ready_wake_ticks, collect_calls, completion_to_collect_ticks;
 	u64 new_work, reused_work, new_client, reused_client;
 	u64 single_submits, empty_wakes;
+	u64 owner_runs;
 #endif
 #if defined(KOBOX_FS_INTERNAL_PROFILE) || defined(KOBOX_RUNTIME_GATES)
 	u64 new_buffer, reused_buffer;
@@ -124,7 +160,10 @@ struct kobox_linux_fs_workers {
 
 static bool fs_worker_owner(struct kobox_linux_fs_workers *pool)
 {
-	return pool && pool->owner == current;
+	if (!pool)
+		return false;
+	return pool->serving ? kobox_linux_lifecycle_receiving(pool->owner) :
+	       pool->owner == current;
 }
 
 #ifdef KOBOX_FS_INTERNAL_PROFILE
@@ -201,6 +240,7 @@ void kobox_linux_fs_workers_profile_reset(struct kobox_linux_fs_workers *pool)
 	pool->new_work = pool->reused_work = 0;
 	pool->new_client = pool->reused_client = 0;
 	pool->single_submits = pool->empty_wakes = 0;
+	pool->owner_runs = 0;
 	pool->inline_hits = pool->inline_punts = 0;
 	pool->new_buffer = pool->reused_buffer = 0;
 }
@@ -227,6 +267,7 @@ void kobox_linux_fs_workers_profile_report(struct kobox_linux_fs_workers *pool)
 		pool->empty_wakes);
 	pr_info("FS_WORKER_BUFFER new=%llu reused=%llu\n",
 		pool->new_buffer, pool->reused_buffer);
+	pr_info("FS_WORKER_OWNER runs=%llu\n", pool->owner_runs);
 }
 #endif
 
@@ -463,6 +504,7 @@ static struct kobox_linux_fs_work *fs_worker_take(
 		work = list_first_entry(&client->queued,
 				       struct kobox_linux_fs_work, link);
 		list_del_init(&work->link);
+		pool->queued--;
 		client->running++;
 		/* Rotate one eligible client, without scanning idle/blocked clients
 		 * or draining every queued request of a greedy producer.
@@ -504,6 +546,36 @@ static struct fs_worker_context *fs_worker_idle(struct kobox_linux_fs_workers *p
 	return best;
 }
 
+/* Caller holds pool->lock. Whether queued work wants another awake worker.
+ *
+ * An owner that executes runs queued jobs itself between receptions, one per
+ * run, with no task switch. Waking a worker per job would put a burst back on
+ * the two-switch worker path: depth-8 stat and pread then ran at a fifth of
+ * owner execution's rate. Even one helper per other CPU halved it, because a
+ * cross-CPU wake and completion handoff cost microseconds, more than such a
+ * job. So workers help only after the owner's last job took longer than that
+ * (FS_OWNER_SLOW_NS), whatever its opcode, and then only enough to use the
+ * other logical CPUs; an awake worker takes the next job itself when it
+ * finishes, so these wakes are per burst, not per job. A sole job wakes
+ * nobody.
+ *
+ * While the deputy receives, the owner is executing an item that slept, so
+ * every runnable job gets a worker as before owner execution.
+ */
+static bool fs_worker_wanted(const struct kobox_linux_fs_workers *pool,
+	bool deputy)
+{
+	unsigned int helpers, awake;
+
+	if (!pool->owner_executes || deputy)
+		return true;
+	if (pool->queued < 2 || !pool->owner_slow)
+		return false;
+	helpers = min(pool->queued - 1, num_online_cpus() - 1);
+	awake = pool->config.workers - pool->idle_workers;
+	return awake < helpers;
+}
+
 /* Caller holds pool->lock. Wake one idle worker per runnable job; return the
  * workers to wake once the lock is dropped. Each runnable job is matched by a
  * woken or running worker that will look at runnable before it goes idle.
@@ -515,11 +587,13 @@ static unsigned int fs_worker_dispatch(struct kobox_linux_fs_workers *pool,
 	struct task_struct **wake, unsigned int capacity)
 {
 	struct fs_worker_context *worker;
+	const bool deputy = pool->serving && current != pool->owner;
 	unsigned int count = 0;
 
 	while (count < capacity && !list_empty(&pool->runnable) &&
-	       (worker = fs_worker_idle(pool))) {
+	       fs_worker_wanted(pool, deputy) && (worker = fs_worker_idle(pool))) {
 		list_del_init(&worker->idle);
+		pool->idle_workers--;
 		WRITE_ONCE(worker->woken, true);
 		pool->waking++;
 		wake[count++] = worker->task;
@@ -530,6 +604,11 @@ static unsigned int fs_worker_dispatch(struct kobox_linux_fs_workers *pool,
 static void fs_worker_owner_wake(struct kobox_linux_fs_workers *pool,
 	bool sync)
 {
+	/* The lifecycle knows whether its deputy receives for the owner now. */
+	if (pool->serving) {
+		kobox_linux_lifecycle_wake(pool->owner);
+		return;
+	}
 	/* An idle completion worker is about to sleep. Let Linux prefer a
 	 * same-CPU handoff instead of waking the owner on another idle CPU.
 	 * This is a placement hint, not affinity or a substitute for wakeup.
@@ -572,6 +651,7 @@ static int fs_worker_run(void *context)
 		if (!work) {
 			WRITE_ONCE(worker->woken, false);
 			list_add(&worker->idle, &pool->idle);
+			pool->idle_workers++;
 #ifdef KOBOX_FS_INTERNAL_PROFILE
 			pool->empty_wakes++;
 #endif
@@ -613,9 +693,11 @@ static int fs_worker_run(void *context)
 			if (!next) {
 				WRITE_ONCE(worker->woken, false);
 				list_add(&worker->idle, &pool->idle);
+				pool->idle_workers++;
 			}
 			WARN_ON_ONCE(!list_empty(&pool->runnable) &&
-				     !list_empty(&pool->idle) && !pool->waking);
+				     !list_empty(&pool->idle) && !pool->waking &&
+				     !pool->owner_executes);
 			spin_unlock(&pool->lock);
 			/* A synchronous wake pulls the owner toward this CPU. That suits a
 			 * lone request (this worker is about to sleep), not a burst whose
@@ -705,6 +787,16 @@ int kobox_linux_fs_workers_create(struct kobox_linux_fs_service *service,
 	}
 	pool->service = service;
 	pool->config = *config;
+	{
+		u64 cycles = rdtsc(), now = local_clock(), elapsed;
+
+		/* About 50 us once per pool; long enough to swamp clock jitter. */
+		do {
+			elapsed = local_clock() - now;
+		} while (elapsed < 50 * NSEC_PER_USEC);
+		pool->slow_cycles = div64_u64((rdtsc() - cycles) * FS_OWNER_SLOW_NS,
+			elapsed);
+	}
 	pool->owner = current;
 	get_task_struct(pool->owner);
 	INIT_LIST_HEAD(&pool->clients);
@@ -713,6 +805,8 @@ int kobox_linux_fs_workers_create(struct kobox_linux_fs_service *service,
 	INIT_LIST_HEAD(&pool->idle);
 	INIT_LIST_HEAD(&pool->free_clients);
 	INIT_LIST_HEAD(&pool->free_works);
+	INIT_LIST_HEAD(&pool->owner_held);
+	INIT_LIST_HEAD(&pool->owner_done);
 	spin_lock_init(&pool->lock);
 	init_waitqueue_head(&pool->control_ready);
 	init_waitqueue_head(&pool->owner_ready);
@@ -772,6 +866,7 @@ int kobox_linux_fs_workers_create(struct kobox_linux_fs_service *service,
 			get_task_struct(pool->tasks[i]);
 			pool->contexts[i].task = pool->tasks[i];
 			list_add_tail(&pool->contexts[i].idle, &pool->idle);
+			pool->idle_workers++;
 			wake_up_process(pool->tasks[i]);
 			continue;
 		}
@@ -799,6 +894,26 @@ out_contexts:
 	return error;
 }
 
+/* Private lease for input+output. Requests of nearby sizes (an open's path
+ * versus a close) share one class, so released storage is reused instead of
+ * being freed and reallocated on every alternation; exact matching did that
+ * for open/close, create/close and readdir. Slack is under a quarter of the
+ * request (256 bytes for small ones), private and never published. A class
+ * beyond a budget falls back to the exact size, so rounding never makes an
+ * admissible request inadmissible.
+ */
+static size_t fs_worker_lease(const struct kobox_linux_fs_workers *pool,
+	size_t bytes)
+{
+	size_t step = bytes <= 1024 ? 256 : rounddown_pow_of_two(bytes) / 4;
+	size_t lease = round_up(bytes, step);
+
+	if (lease < bytes || lease > pool->config.client_bytes ||
+	    lease > pool->config.total_bytes)
+		return bytes;
+	return lease;
+}
+
 static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 	u64 id, const void *input, size_t input_size, size_t response_capacity,
 	void *cookie)
@@ -820,6 +935,7 @@ static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 		return -EOVERFLOW;
 	if (bytes > pool->config.client_bytes || bytes > pool->config.total_bytes)
 		return -ENOMEM;
+	bytes = fs_worker_lease(pool, bytes);
 	spin_lock(&pool->lock);
 	client = fs_worker_client_find(pool, id);
 	if (client && client->revoked)
@@ -850,7 +966,8 @@ static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 	work->storage = NULL;
 	work->storage_bytes = 0;
 	error = kobox_linux_fs_request_prepare_owned(pool->service, id, input,
-		input_size, response_capacity, storage, &work->request, &work->response);
+		input_size, response_capacity, bytes, storage, &work->request,
+		&work->response);
 	if (error == -ENOMEM && pool->cached_bytes) {
 		/* This failure precedes VFS execution. Reclaim idle storage and
 		 * retry allocation once; never replay an executed filesystem op.
@@ -858,7 +975,7 @@ static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 		fs_worker_cache_trim(pool, pool->config.total_bytes - pool->bytes);
 		storage = NULL;
 		error = kobox_linux_fs_request_prepare_owned(pool->service, id, input,
-			input_size, response_capacity, NULL,
+			input_size, response_capacity, bytes, NULL,
 			&work->request, &work->response);
 	}
 	if (error)
@@ -884,8 +1001,11 @@ static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 		error = -EAGAIN;
 	else
 #endif
-	error = kobox_linux_fs_request_try_nowait(work->request, pool->owner_scope,
-		&work->used);
+	/* An executing owner runs the whole job below instead: a nowait attempt
+	 * would only repeat path walks and give up on everything that writes. */
+	error = pool->owner_executes ? -EAGAIN :
+		kobox_linux_fs_request_try_nowait(work->request, pool->owner_scope,
+			&work->used);
 	/* Executed, not the return value, says whether the job is done: an
 	 * encoding failure after execution must still be published. */
 	inline_done = kobox_linux_fs_request_executed(work->request);
@@ -915,7 +1035,18 @@ static int fs_worker_submit(struct kobox_linux_fs_workers *pool,
 		spin_unlock(&pool->lock);
 		return 0;
 	}
+	if (pool->owner_executes && current == pool->owner && !pool->queued &&
+	    !pool->owner_slow) {
+		/* Short jobs and nothing shared queued: the owner runs this one
+		 * itself, so skip the client queue, runnable list and worker
+		 * selection entirely. Admission order is kept. */
+		work->held = true;
+		list_add_tail(&work->link, &pool->owner_held);
+		spin_unlock(&pool->lock);
+		return 0;
+	}
 	list_add_tail(&work->link, &client->queued);
+	pool->queued++;
 	fs_worker_client_ready(pool, client);
 	/* An idle worker takes it now; otherwise a finishing worker will. */
 	count = fs_worker_dispatch(pool, wake, ARRAY_SIZE(wake));
@@ -942,6 +1073,135 @@ out_work:
 out_client:
 	if (new_client)
 		fs_worker_client_free(pool, client);
+	return error;
+}
+
+int kobox_linux_fs_workers_owner_executes(struct kobox_linux_fs_workers *pool)
+{
+	if (!fs_worker_owner(pool))
+		return -EINVAL;
+	spin_lock(&pool->lock);
+	/* Only before admission: earlier jobs were dispatched without a
+	 * reservation and a later switch must not strand one. */
+	if (pool->admitted) {
+		spin_unlock(&pool->lock);
+		return -EBUSY;
+	}
+	pool->owner_executes = true;
+	spin_unlock(&pool->lock);
+	return 0;
+}
+
+
+static void fs_worker_owner_execute(void *argument)
+{
+	struct kobox_linux_fs_work *work = argument;
+	struct kobox_linux_fs_workers *pool = work->pool;
+
+	work->error = kobox_linux_fs_request_execute_scope(work->request,
+		pool->owner_scope, &work->used);
+	/* Same publication point as a worker: after refs and task_work, and
+	 * before a lent right is taken back, so publication never waits. */
+	if (pool->config.publish)
+		kobox_host_call((pool->config.publish(work->cookie,
+			work->response, work->used, work->error), 0));
+}
+
+/* Caller holds pool->lock and acts as owner. Give the owner's held jobs to
+ * workers through the fair shared queue, as if admitted just now. */
+static void fs_worker_unhold(struct kobox_linux_fs_workers *pool)
+{
+	struct kobox_linux_fs_work *work, *next;
+
+	list_for_each_entry_safe(work, next, &pool->owner_held, link) {
+		list_del(&work->link);
+		work->held = false;
+		list_add_tail(&work->link, &work->client->queued);
+		pool->queued++;
+		fs_worker_client_ready(pool, work->client);
+	}
+}
+
+int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *pool)
+{
+	struct kobox_linux_fs_work *work;
+	struct task_struct *wake[4];
+	unsigned int count;
+	bool behind, slow;
+	u64 start = 0;
+
+	if (!fs_worker_owner(pool) || !pool->owner_executes)
+		return -EINVAL;
+	work = list_first_entry_or_null(&pool->owner_held,
+		struct kobox_linux_fs_work, link);
+	if (work) {
+		list_del(&work->link);
+		behind = !list_empty(&pool->owner_held) || READ_ONCE(pool->queued);
+	} else {
+		spin_lock(&pool->lock);
+		/* The same fair take as a worker: client_running bounds it too. */
+		work = fs_worker_take(pool);
+		behind = pool->queued;
+		spin_unlock(&pool->lock);
+		if (!work)
+			return 0;
+	}
+#ifdef KOBOX_FS_INTERNAL_PROFILE
+	pool->owner_runs++;
+#endif
+	/* The VFS call may sleep: then the lifecycle deputy receives meanwhile,
+	 * and gives whatever it sees held or queued to workers. Only a job with
+	 * others behind it is timed; a lone job's length decides nothing. */
+	if (behind)
+		start = rdtsc();
+	kobox_linux_lifecycle_execute(fs_worker_owner_execute, work);
+	slow = behind && rdtsc() - start > pool->slow_cycles;
+#ifdef KOBOX_FS_INTERNAL_PROFILE
+	work->completed_tick = kobox_fs_bench_ticks();
+#endif
+	if (work->held && !slow && !pool->owner_slow) {
+		list_add_tail(&work->link, &pool->owner_done);
+		return 1;
+	}
+	spin_lock(&pool->lock);
+	pool->owner_slow = slow;
+	/* Long jobs behind this one now get helpers on the other CPUs. */
+	if (slow)
+		fs_worker_unhold(pool);
+	count = fs_worker_dispatch(pool, wake, ARRAY_SIZE(wake));
+	if (work->held) {
+		list_add_tail(&work->link, &pool->owner_done);
+	} else {
+		work->client->running--;
+		fs_worker_client_ready(pool, work->client);
+		/* The owner collects its own completion; nobody needs a wake. A
+		 * job this made runnable is the owner's next run before it waits. */
+		list_add_tail(&work->link, &pool->completed);
+	}
+	spin_unlock(&pool->lock);
+	while (count)
+		wake_up_process(wake[--count]);
+	return 1;
+}
+
+static int fs_worker_serve_run(void *context)
+{
+	return kobox_linux_fs_workers_run(context);
+}
+
+int kobox_linux_fs_workers_serve(struct kobox_linux_fs_workers *pool)
+{
+	int error = kobox_linux_fs_workers_owner_executes(pool);
+
+	if (error)
+		return error;
+	error = kobox_linux_lifecycle_executor(fs_worker_serve_run, pool);
+	spin_lock(&pool->lock);
+	if (error)
+		pool->owner_executes = false;
+	else
+		pool->serving = true;
+	spin_unlock(&pool->lock);
 	return error;
 }
 
@@ -1024,7 +1284,30 @@ int kobox_linux_fs_workers_collect(struct kobox_linux_fs_workers *pool,
 	*response = NULL;
 	*used = 0;
 	*error = 0;
+	work = current == pool->owner ? list_first_entry_or_null(&pool->owner_done,
+		struct kobox_linux_fs_work, link) : NULL;
+	if (work) {
+		list_del_init(&work->link);
+		work->collected = true;
+		goto out;
+	}
 	spin_lock(&pool->lock);
+	if (pool->owner_executes && pool->serving && current != pool->owner) {
+		/* Jobs held or queued for the owner before it slept: give them
+		 * workers now, since the deputy may not admit anything new. */
+		struct task_struct *wake[4];
+		unsigned int count;
+
+		fs_worker_unhold(pool);
+		count = fs_worker_dispatch(pool, wake, ARRAY_SIZE(wake));
+
+		if (count) {
+			spin_unlock(&pool->lock);
+			while (count)
+				wake_up_process(wake[--count]);
+			spin_lock(&pool->lock);
+		}
+	}
 	if (list_empty(&pool->completed)) {
 		spin_unlock(&pool->lock);
 		return -EAGAIN;
@@ -1036,6 +1319,7 @@ int kobox_linux_fs_workers_collect(struct kobox_linux_fs_workers *pool,
 	pool->collection_batches++;
 #endif
 	spin_unlock(&pool->lock);
+out:
 #ifdef KOBOX_FS_INTERNAL_PROFILE
 	if (work->client) {
 		pool->collect_calls++;

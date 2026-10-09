@@ -223,7 +223,7 @@ static struct kobox_linux_fs_lane *executor_run_item(struct fs_executor *worker,
 		charged = true;
 		error = kobox_linux_fs_request_prepare_owned(pool->service,
 			lane->client, item.input, item.input_size, item.response_capacity,
-			storage, &request, &response);
+			bytes, storage, &request, &response);
 	}
 	/* The snapshot and its credential/file pins are now immutable. Return
 	 * intake before blocking VFS, so one sleeping client request does not

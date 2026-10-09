@@ -10,6 +10,7 @@
 #include <linux/refcount.h>
 #include <linux/sched/user.h>
 #include <linux/securebits.h>
+#include <linux/rcupdate.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/task_work.h>
@@ -34,12 +35,22 @@ struct fs_profile_call {
 #endif
 };
 
+/* One immutable authority version. A credential update publishes a new one
+ * instead of changing fields, so an RCU admission reads cred, generation and
+ * rights as one set. The old version and its cred ref are dropped only after
+ * a grace period, when no admission can still be taking a reference. */
+struct fs_authority {
+	const struct cred *cred;
+	u64 generation;
+	u64 rights;
+	struct rcu_head rcu;
+};
+
 struct fs_client {
 	struct kobox_linux_fs_port *port;
-	const struct cred *cred;
-	u64 credential_generation;
-	u64 rights;
+	struct fs_authority __rcu *authority;
 	refcount_t references;
+	struct rcu_head rcu;
 };
 
 struct kobox_linux_fs_service {
@@ -170,12 +181,37 @@ void kobox_linux_fs_profile_report(struct kobox_linux_fs_service *service)
 }
 #endif
 
+static void fs_authority_free(struct rcu_head *head)
+{
+	struct fs_authority *authority = container_of(head, struct fs_authority, rcu);
+
+	put_cred(authority->cred);
+	kfree(authority);
+}
+
+static struct fs_authority *fs_authority_create(const struct cred *cred,
+	u64 generation, u64 rights)
+{
+	struct fs_authority *authority = kmalloc(sizeof(*authority), GFP_KERNEL);
+
+	if (!authority)
+		return NULL;
+	authority->cred = get_cred(cred);
+	authority->generation = generation;
+	authority->rights = rights;
+	return authority;
+}
+
 static void fs_client_put(struct fs_client *client)
 {
 	if (client && refcount_dec_and_test(&client->references)) {
+		/* No admission can take a new reference now. The port teardown
+		 * may sleep and runs here; only the memory an RCU lookup may still
+		 * be reading waits for the grace period. */
 		kobox_linux_fs_destroy(client->port);
-		put_cred(client->cred);
-		kfree(client);
+		call_rcu(&rcu_dereference_protected(client->authority, 1)->rcu,
+			 fs_authority_free);
+		kfree_rcu(client, rcu);
 	}
 }
 
@@ -185,22 +221,32 @@ static struct fs_client *fs_client_get(struct kobox_linux_fs_service *service,
 {
 	struct fs_client *client;
 
+	struct fs_authority *authority;
+
 	if (!id || id > ULONG_MAX)
 		return ERR_PTR(-EACCES);
-	mutex_lock(&service->lock);
+	/* Every admission looks its client up here. RCU instead of the
+	 * registry mutex: the xarray, the client memory and each authority
+	 * version stay readable for a grace period after removal, and a client
+	 * already dropping its last reference is not revived. Registry changes
+	 * still serialize on the mutex, and the queue owner orders them against
+	 * the affected client's admissions as before. */
+	rcu_read_lock();
 	client = xa_load(&service->clients, id);
-	if (!client)
-		client = ERR_PTR(-EACCES);
-	else if (credential_generation &&
-		 credential_generation != client->credential_generation)
-		client = ERR_PTR(-ESTALE);
-	else {
-		refcount_inc(&client->references);
-		*cred = get_cred(client->cred);
-		if (rights)
-			*rights = client->rights;
+	if (!client || !refcount_inc_not_zero(&client->references)) {
+		rcu_read_unlock();
+		return ERR_PTR(-EACCES);
 	}
-	mutex_unlock(&service->lock);
+	authority = rcu_dereference(client->authority);
+	if (credential_generation && credential_generation != authority->generation) {
+		rcu_read_unlock();
+		fs_client_put(client);
+		return ERR_PTR(-ESTALE);
+	}
+	*cred = get_cred(authority->cred);
+	if (rights)
+		*rights = authority->rights;
+	rcu_read_unlock();
 	return client;
 }
 
@@ -249,6 +295,7 @@ int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
 				   u64 id, u64 credential_generation,
 				   const struct cred *cred, u64 rights)
 {
+	struct fs_authority *authority;
 	struct fs_client *client;
 	int error;
 
@@ -258,15 +305,19 @@ int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
 	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (!client)
 		return -ENOMEM;
+	authority = fs_authority_create(cred, credential_generation, rights);
+	if (!authority) {
+		kfree(client);
+		return -ENOMEM;
+	}
 	client->port = kobox_linux_fs_create(service->root);
 	if (IS_ERR(client->port)) {
 		error = PTR_ERR(client->port);
+		fs_authority_free(&authority->rcu);
 		kfree(client);
 		return error;
 	}
-	client->cred = get_cred(cred);
-	client->credential_generation = credential_generation;
-	client->rights = rights;
+	RCU_INIT_POINTER(client->authority, authority);
 	refcount_set(&client->references, 1);
 	mutex_lock(&service->lock);
 	/* Reusing an ID would let a queued request from a dead client act on
@@ -286,28 +337,33 @@ int kobox_linux_fs_service_credentials(struct kobox_linux_fs_service *service,
 				      u64 id, u64 generation,
 				      const struct cred *cred, u64 rights)
 {
+	struct fs_authority *authority, *old = NULL;
 	struct fs_client *client;
-	const struct cred *old = NULL;
 	int error = 0;
 
 	if (!service || !id || id > ULONG_MAX || !generation || !cred ||
 	    rights & ~(u64)KB2_FILESYSTEM_RIGHTS_VALID_MASK)
 		return -EINVAL;
+	authority = fs_authority_create(cred, generation, rights);
+	if (!authority)
+		return -ENOMEM;
 	mutex_lock(&service->lock);
 	client = xa_load(&service->clients, id);
 	if (!client)
 		error = -ENOENT;
-	else if (generation <= client->credential_generation)
+	else if (generation <= rcu_dereference_protected(client->authority,
+			lockdep_is_held(&service->lock))->generation)
 		error = -ESTALE;
 	else {
-		old = client->cred;
-		client->cred = get_cred(cred);
-		client->credential_generation = generation;
-		client->rights = rights;
+		old = rcu_dereference_protected(client->authority,
+			lockdep_is_held(&service->lock));
+		rcu_assign_pointer(client->authority, authority);
 	}
 	mutex_unlock(&service->lock);
 	if (old)
-		put_cred(old);
+		call_rcu(&old->rcu, fs_authority_free);
+	else
+		fs_authority_free(&authority->rcu);
 	return error;
 }
 
@@ -970,7 +1026,7 @@ int kobox_linux_fs_request_execute_scope(struct kobox_linux_fs_request *job,
 
 int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 	u64 client, const void *input, size_t input_size, size_t capacity,
-	struct kobox_linux_fs_request *storage,
+	size_t lease, struct kobox_linux_fs_request *storage,
 	struct kobox_linux_fs_request **request, void **response)
 {
 	struct kobox_linux_fs_request *job = storage;
@@ -990,8 +1046,12 @@ int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 		goto out_storage;
 	}
 	if (check_add_overflow(input_size, capacity, &bytes) ||
-	    check_add_overflow(sizeof(*job), bytes, &allocation)) {
+	    check_add_overflow(sizeof(*job), lease, &allocation)) {
 		error = -EOVERFLOW;
+		goto out_storage;
+	}
+	if (lease < bytes) {
+		error = -EINVAL;
 		goto out_storage;
 	}
 	/* The pool has already charged input/output and fixed request metadata.
@@ -1003,7 +1063,7 @@ int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 		return -ENOMEM;
 #endif
 	if (storage && (!storage->packed || !storage->recycled ||
-			storage->owned_bytes != bytes)) {
+			storage->owned_bytes != lease)) {
 		error = -EINVAL;
 		goto out_storage;
 	}
@@ -1015,7 +1075,7 @@ int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 		memset(job, 0, sizeof(*job));
 	job->packed = true;
 	job->recycled = false;
-	job->owned_bytes = bytes;
+	job->owned_bytes = lease;
 	job->snapshot = (u8 *)(job + 1);
 	output = job->snapshot + input_size;
 

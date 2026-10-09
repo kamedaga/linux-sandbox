@@ -569,7 +569,7 @@ static int bench_batch(struct fs_bench *bench, unsigned int depth)
 			}
 			error = kobox_linux_fs_request_prepare_owned(bench->service, 1,
 				bench->input, bench->input_size,
-				KB2_FILESYSTEM_RESPONSE_SIZE + 4096, storage, &job, &response);
+				KB2_FILESYSTEM_RESPONSE_SIZE + 4096, bytes, storage, &job, &response);
 			if (error)
 				return error;
 			error = kobox_linux_fs_request_execute_scope(job, bench->same_scope, &used);
@@ -923,7 +923,9 @@ int kobox_linux_fs_benchmark(struct vfsmount *root)
 	if (error)
 		goto out;
 #ifdef KOBOX_FS_CACHE_MATRIX
-	error = matrix_sandbox(&bench, root);
+	error = kobox_linux_fs_workers_owner_executes(bench.workers);
+	if (!error)
+		error = matrix_sandbox(&bench, root);
 	goto out;
 #endif
 #ifdef KOBOX_FS_PUBLICATION_BENCH
@@ -1025,6 +1027,10 @@ out:
 			size_t used;
 			int status;
 
+			/* An owner-executed job left queued by an error return has no
+			 * worker on its way; drain it here like any other wait. */
+			if (kobox_linux_fs_workers_run(bench.workers) > 0)
+				continue;
 			set_current_state(TASK_UNINTERRUPTIBLE);
 			cleanup = kobox_linux_fs_workers_collect(bench.workers,
 				&work, &cookie, &response, &used, &status);

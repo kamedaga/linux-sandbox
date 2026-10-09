@@ -59,6 +59,26 @@ int kobox_linux_lifecycle_wait(const struct kobox_linux_lifecycle *host);
 int kobox_linux_lifecycle_serve(const struct kobox_linux_lifecycle *host,
 			       void *service);
 void kobox_linux_lifecycle_interrupt(void);
+/* Optional executor for an asynchronous lifecycle, registered by start() on
+ * the opening task. When advance() is idle the opening task calls run before
+ * it sleeps; run executes at most one accepted item through
+ * kobox_linux_lifecycle_execute and returns 1, or 0 with nothing to run.
+ * Its completion must be collected by a later advance(), not by run.
+ */
+int kobox_linux_lifecycle_executor(int (*run)(void *context), void *context);
+/* Execute work that may sleep. On the opening task of an executing lifecycle
+ * the advance() right is lent to a resident deputy if work sleeps or a
+ * control event arrives, and is back when this returns. Elsewhere it is only
+ * the same call with the same sleep detection. */
+void kobox_linux_lifecycle_execute(void (*work)(void *argument), void *argument);
+/* Whether current may act as owner's receiver: the opening task unless the
+ * right is lent, the deputy while it is. Any other owner: current == owner. */
+bool kobox_linux_lifecycle_receiving(struct task_struct *owner);
+/* Wake owner's current receiver after publishing a completion for it. */
+void kobox_linux_lifecycle_wake(struct task_struct *owner);
+#ifdef KOBOX_RUNTIME_GATES
+unsigned int kobox_linux_lifecycle_gate_returns(void);
+#endif
 #endif
 
 #endif

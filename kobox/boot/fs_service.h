@@ -84,14 +84,16 @@ int kobox_linux_fs_request_prepare(struct kobox_linux_fs_service *service,
 /* Pool admission already charges these bytes. This variant owns input and
  * output together with the job, with no size cap beyond that admission budget.
  * The returned private response remains valid until request_destroy, including
- * after execution has dropped client/credential/file references. Optional
- * storage must be recycled with exactly input_size + response_capacity bytes;
+ * after execution has dropped client/credential/file references. lease is
+ * the private byte capacity, at least input_size + response_capacity; the
+ * rest is slack that is never published, so storage can serve requests of
+ * nearby sizes. Optional storage must be recycled with exactly lease bytes;
  * this call consumes it on both success and failure. This is a private Linux
  * helper, not a transport/host ABI or a cache of authenticated requests.
  */
 int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 	uint64_t client, const void *input, size_t input_size, size_t response_capacity,
-	struct kobox_linux_fs_request *storage,
+	size_t lease, struct kobox_linux_fs_request *storage,
 	struct kobox_linux_fs_request **request, void **response);
 /* Completed owned request only, after the caller releases its response lease.
  * Drop refs/task_work and clear authority metadata; return its byte capacity.

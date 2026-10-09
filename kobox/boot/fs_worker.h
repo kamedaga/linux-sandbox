@@ -59,6 +59,21 @@ int kobox_linux_fs_workers_submit(struct kobox_linux_fs_workers *workers,
  */
 int kobox_linux_fs_workers_submit_control(struct kobox_linux_fs_workers *workers,
 	const void *input, size_t input_size, size_t response_capacity, void *cookie);
+/* Owner only, before the first submit. From then on the owner must call run
+ * before every wait for a completion: a sole queued job wakes no worker.
+ */
+int kobox_linux_fs_workers_owner_executes(struct kobox_linux_fs_workers *workers);
+/* Owner only. Execute one runnable job on the calling owner, as a worker
+ * would, and queue its completion for collect. 1: executed, 0: none runnable.
+ * The job may block in VFS; without serve the owner receives nothing then.
+ */
+int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *workers);
+/* Owner only, from the asynchronous lifecycle's start() on its opening task,
+ * before the first submit: enable owner execution and register run as the
+ * lifecycle executor. A job that sleeps then lends reception to the
+ * lifecycle deputy, which acts as owner until the opening task takes it back.
+ */
+int kobox_linux_fs_workers_serve(struct kobox_linux_fs_workers *workers);
 int kobox_linux_fs_workers_collect(struct kobox_linux_fs_workers *workers,
 	struct kobox_linux_fs_work **work, void **cookie, const void **response,
 	size_t *used, int *error);

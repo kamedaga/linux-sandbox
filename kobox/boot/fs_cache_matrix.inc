@@ -316,10 +316,17 @@ static int64_t matrix_sandbox_call(void *context, struct matrix_call call, uint6
 	if (stages) stamps[2] = bench_ticks();
 #endif
 	for (;;) {
+		int ran = kobox_linux_fs_workers_run(bench->workers);
+
+		if (ran < 0) return ran;
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		error = kobox_linux_fs_workers_collect(bench->workers, &work,
 			&cookie, &response, &used, &operation);
-		if (error == -EAGAIN) { schedule(); __set_current_state(TASK_RUNNING); continue; }
+		if (error == -EAGAIN) {
+			if (!ran) schedule();
+			__set_current_state(TASK_RUNNING);
+			continue;
+		}
 		__set_current_state(TASK_RUNNING);
 		break;
 	}

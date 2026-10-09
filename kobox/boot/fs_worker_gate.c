@@ -323,7 +323,7 @@ static int worker_gate_payload(struct kobox_linux_fs_service *service, u64 handl
 		previous = storage;
 		storage = NULL;
 		PAYLOAD_EXPECT(kobox_linux_fs_request_prepare_owned(service, request.client,
-			input, size, capacity, previous, &job, &response), 0);
+			input, size, capacity, bytes, previous, &job, &response), 0);
 		if (previous)
 			PAYLOAD_EXPECT(job == previous, 1);
 		memset(input, 0xff, size);
@@ -681,6 +681,144 @@ out:
 #undef INLINE_EXPECT
 }
 
+/* Collect exactly one completion, waiting at most a second. An executing
+ * owner runs queued work before each wait, as it must. */
+static int owner_gate_collect(struct kobox_linux_fs_workers *workers,
+	unsigned long *cookies, bool owner)
+{
+	unsigned long deadline = jiffies + HZ;
+	struct kobox_linux_fs_work *work;
+	kb2_fs_response_t reply;
+	const void *response;
+	void *cookie;
+	size_t used;
+	int error, execution;
+
+	while ((error = kobox_linux_fs_workers_collect(workers, &work, &cookie,
+			&response, &used, &execution)) == -EAGAIN) {
+		if (time_after(jiffies, deadline))
+			return -ETIMEDOUT;
+		if (owner && kobox_linux_fs_workers_run(workers) > 0)
+			continue;
+		schedule_timeout_uninterruptible(1);
+	}
+	if (error)
+		return error;
+	error = execution ?: kb2_fs_response_decode(response, used, &reply);
+	if (!error && reply.result)
+		error = -EIO;
+	*cookies |= (unsigned long)cookie;
+	return kobox_linux_fs_workers_release(workers, work) ?: error;
+}
+
+/* Owner execution: a lone job wakes no worker and waits for the owner's run;
+ * a burst of short jobs is run by the owner too; the mode cannot be switched
+ * on with admitted work; close still drains a job held for the owner.
+ */
+static int worker_gate_owner(struct kobox_linux_fs_service *service)
+{
+	const struct kobox_linux_fs_worker_config config = {
+		.workers = 3, .client_running = 2,
+		.client_requests = 5, .total_requests = 10,
+		.client_bytes = 131072, .total_bytes = 262144, .control_bytes = 4096,
+	};
+	struct kobox_linux_fs_workers *workers = NULL;
+	struct kobox_linux_fs_work *work;
+	u8 input[KB2_FILESYSTEM_REQUEST_SIZE + 2];
+	kb2_fs_request_t request = {
+		.opcode = KB2_FILESYSTEM_OP_STATX, .client = 2, .generation = 1,
+		.sequence = 300, .mask = STATX_BASIC_STATS,
+		.path = { KB2_FILESYSTEM_REQUEST_SIZE, 2 },
+	};
+	const void *response;
+	unsigned long cookies;
+	void *cookie;
+	size_t used;
+	int error, execution, line = 0;
+
+#define OWNER_EXPECT(call, expected) do { \
+	error = (call); \
+	if (error != (expected)) { \
+		line = __LINE__; \
+		error = error ?: -EINVAL; \
+		goto out; \
+	} \
+} while (0)
+	memcpy(input + KB2_FILESYSTEM_REQUEST_SIZE, ".", 2);
+	OWNER_EXPECT(kb2_fs_request_encode(input, sizeof(input), sizeof(input), &request), 0);
+	/* Switching after admission could strand a job dispatched without a
+	 * reservation: refused, and the job still completes on a worker. */
+	OWNER_EXPECT(kobox_linux_fs_workers_create(service, &config, &workers), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)1UL), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_owner_executes(workers), -EBUSY);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), -EINVAL);
+	cookies = 0;
+	OWNER_EXPECT(owner_gate_collect(workers, &cookies, false), 0);
+	OWNER_EXPECT(cookies, 1);
+	OWNER_EXPECT(kobox_linux_fs_workers_close(workers), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_destroy(workers), 0);
+	workers = NULL;
+
+	OWNER_EXPECT(kobox_linux_fs_workers_create(service, &config, &workers), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_owner_executes(workers), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 0);
+	/* 1. Lone: no worker takes it however long the owner waits. */
+	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)1UL), 0);
+	schedule_timeout_uninterruptible(HZ / 50 + 1);
+	OWNER_EXPECT(kobox_linux_fs_workers_collect(workers, &work, &cookie,
+		&response, &used, &execution), -EAGAIN);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 1);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 0);
+	cookies = 0;
+	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);
+	OWNER_EXPECT(cookies, 1);
+	/* 2. A burst: the first is held for the owner, the second queued. Short
+	 * jobs need no worker; both complete through the owner's runs. */
+	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)2UL), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)4UL), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 1);
+	cookies = 0;
+	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);
+	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);
+	OWNER_EXPECT(cookies, 6);
+	/* 3. Close drains a reserved job through the owner's run. */
+	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)8UL), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_close(workers), 0);
+	OWNER_EXPECT(kobox_linux_fs_workers_destroy(workers), -EBUSY);
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 1);
+	cookies = 0;
+	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);
+	OWNER_EXPECT(cookies, 8);
+	OWNER_EXPECT(kobox_linux_fs_workers_destroy(workers), 0);
+	workers = NULL;
+out:
+	if (workers) {
+		unsigned long deadline = jiffies + HZ;
+
+		kobox_linux_fs_workers_close(workers);
+		while (kobox_linux_fs_workers_destroy(workers) == -EBUSY &&
+		       time_before(jiffies, deadline)) {
+			if (kobox_linux_fs_workers_run(workers) > 0)
+				continue;
+			if (!kobox_linux_fs_workers_collect(workers, &work, &cookie,
+					&response, &used, &execution))
+				kobox_linux_fs_workers_release(workers, work);
+			else
+				schedule_timeout_uninterruptible(1);
+		}
+	}
+	task_work_run();
+	if (error)
+		pr_info("FS_WORKER_OWNER status=%d line=%d\n", error, line);
+	return error;
+#undef OWNER_EXPECT
+}
+
 int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred)
 {
 	const struct kobox_linux_fs_worker_config config = {
@@ -923,7 +1061,8 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 		&cached_bytes, &reused_buffers, &evicted_buffers), 0);
 	WORKER_EXPECT(reused_buffers > 0, 1);
 	/* An armed allocation fault must not affect recycled storage; the next
-	 * different-size request must consume it, with no admission leaked.
+	 * request of a different lease class (1 KiB more than the recycled
+	 * one) must consume it, with no admission leaked.
 	 */
 	kobox_linux_fs_request_gate_fail_allocation();
 	WORKER_EXPECT(worker_gate_submit(&gate, 17, 2,
@@ -931,7 +1070,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 	WORKER_EXPECT(worker_gate_wait(&gate, BIT(17), BIT(17)), 0);
 	WORKER_EXPECT(worker_gate_submit_capacity(&gate, 18, 2,
 		KB2_FILESYSTEM_OP_STATX, 0,
-		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE + 1), -ENOMEM);
+		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE + 1024), -ENOMEM);
 	WORKER_EXPECT(kobox_linux_fs_workers_client_busy(gate.workers, 2), 0);
 	WORKER_EXPECT(kobox_linux_fs_workers_gate_cached(gate.workers,
 		&cached_works, &cached_clients), 0);
@@ -952,7 +1091,8 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 			&cached_works, &cached_clients), 0);
 		WORKER_EXPECT(kobox_linux_fs_workers_gate_storage(gate.workers,
 			&cached_bytes, &reused_buffers, &evicted_buffers), 0);
-		WORKER_EXPECT(cached_bytes, 192000);
+		/* Each 64000-byte request leases its 65536-byte class. */
+		WORKER_EXPECT(cached_bytes, 3 * 65536);
 		if (pressure)
 			kobox_linux_fs_request_gate_fail_allocation();
 		for (unsigned int slot = 0; slot < 2; slot++)
@@ -1090,6 +1230,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 	WORKER_EXPECT(kobox_linux_fs_workers_destroy(gate.workers), 0);
 	gate.workers = NULL;
 	WORKER_EXPECT(worker_gate_inline(service, root, cred), 0);
+	WORKER_EXPECT(worker_gate_owner(service), 0);
 
 out:
 	kobox_linux_fs_request_destroy(prepared);

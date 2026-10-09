@@ -243,10 +243,14 @@ int kobox_linux_module_probe(const struct kobox_linux_module_test *test,
 		const void *address;
 	} exports[] = {
 		{"kobox_provider_current_task", kobox_provider_current_task},
+#ifndef KOBOX_PERCPU_SEGMENT
 		{"kobox_provider_current_percpu_offset", kobox_provider_current_percpu_offset},
+#endif
 		{"kobox_provider_irq_save_flags", kobox_provider_irq_save_flags},
+#ifndef KOBOX_PERCPU_SEGMENT
 		{"kobox_provider_preempt_save", kobox_provider_preempt_save},
 		{"kobox_provider_preempt_restore", kobox_provider_preempt_restore},
+#endif
 		{"kobox_vm_space_create", kobox_vm_space_create},
 		{"kobox_vm_space_destroy", kobox_vm_space_destroy},
 		{"kobox_vm_resolve_fault", kobox_vm_resolve_fault},

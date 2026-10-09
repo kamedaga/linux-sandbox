@@ -10,10 +10,21 @@ int kobox_linux_runtime_bind(const struct kobox_runtime_host *host)
 {
 	if (!host || host->size != sizeof(*host) || !host->thread_state)
 		return -EINVAL;
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (!host->set_percpu_base)
+		return -EINVAL;
+#endif
 	if (runtime_host.thread_state)
 		return -EBUSY;
 	runtime_host = *host;
 	return 0;
+}
+
+void kobox_runtime_set_percpu_base(unsigned long base)
+{
+	if (!runtime_host.set_percpu_base)
+		__builtin_trap();
+	runtime_host.set_percpu_base(runtime_host.context, base);
 }
 
 struct kobox_runtime_thread_state *kobox_runtime_thread_state(void)

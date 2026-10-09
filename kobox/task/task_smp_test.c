@@ -17,6 +17,9 @@
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <asm/prctl.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
 
 #define TEST_RAM_SIZE (256UL << 20)
 #define TEST_VMEMMAP_SIZE (16UL << 20)
@@ -39,6 +42,14 @@ static struct kobox_runtime_thread_state *thread_state(void *context)
 {
 	(void)context;
 	return &runtime_thread;
+}
+
+/* Linux per-CPU operations may address the thread's GS base. */
+static void set_percpu_base(void *context, unsigned long base)
+{
+	(void)context;
+	if (syscall(SYS_arch_prctl, ARCH_SET_GS, base))
+		abort();
 }
 
 /* The standalone task closure has no boot console. Keep diagnostics at the
@@ -144,6 +155,7 @@ int main(int argument_count, char **arguments)
 	struct kobox_runtime_host runtime = {
 		.size = sizeof(runtime),
 		.thread_state = thread_state,
+		.set_percpu_base = set_percpu_base,
 	};
 	void *direct_address;
 	void *boundary_handle;

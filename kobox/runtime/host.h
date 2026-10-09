@@ -29,9 +29,18 @@ struct kobox_runtime_host {
 	size_t size;
 	void *context;
 	struct kobox_runtime_thread_state *(*thread_state)(void *context);
+	/* Set the calling host thread's GS base. Linux per-CPU operations are
+	 * single %gs-relative instructions, as on native x86: a notification or
+	 * a move to another logical CPU can fall only between instructions, so
+	 * none needs a notification mask. The core calls this only when the
+	 * thread starts running a different logical CPU, outside any per-CPU
+	 * operation, through the FP-preserving host call boundary. Required by
+	 * cores built with KOBOX_PERCPU_SEGMENT; may be NULL for others. */
+	void (*set_percpu_base)(void *context, unsigned long base);
 };
 
 int kobox_linux_runtime_bind(const struct kobox_runtime_host *host);
 struct kobox_runtime_thread_state *kobox_runtime_thread_state(void);
+void kobox_runtime_set_percpu_base(unsigned long base);
 
 #endif

@@ -18,7 +18,11 @@
  */
 EXPORT_SYMBOL_GPL(kobox_provider_current_task);
 EXPORT_SYMBOL_GPL(kobox_task_object_is_on_stack);
+#ifndef KOBOX_PERCPU_SEGMENT
+/* Only masked generic per-CPU code calls these. A segment core's modules are
+ * built with the same %gs-relative operations and reference neither. */
 EXPORT_SYMBOL_GPL(kobox_provider_current_percpu_offset);
+#endif
 /* Loadable drivers use these hosted CPU/IRQ hooks through the same header
  * overlays as the boot core; modpost must see their real core exports. */
 EXPORT_SYMBOL_GPL(kobox_provider_current_cpu_id);
@@ -27,8 +31,10 @@ EXPORT_SYMBOL_GPL(kobox_provider_irq_save);
 EXPORT_SYMBOL_GPL(kobox_provider_irq_restore);
 EXPORT_SYMBOL_GPL(kobox_provider_irq_disable);
 EXPORT_SYMBOL_GPL(kobox_provider_irq_enable);
+#ifndef KOBOX_PERCPU_SEGMENT
 EXPORT_SYMBOL_GPL(kobox_provider_preempt_save);
 EXPORT_SYMBOL_GPL(kobox_provider_preempt_restore);
+#endif
 EXPORT_SYMBOL_GPL(kobox_vm_space_create);
 EXPORT_SYMBOL_GPL(kobox_vm_space_bind);
 EXPORT_SYMBOL_GPL(kobox_vm_space_destroy);

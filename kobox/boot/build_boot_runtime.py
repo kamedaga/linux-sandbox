@@ -518,6 +518,11 @@ def build_inputs(arguments):
         # Comparison control only: the upstream IRQ-disabling this_cpu_*()
         # fallback instead of the notification-masked one in provider_percpu.h.
         arguments.extra_cflags.append("-DKOBOX_PERCPU_GENERIC_IRQ=1")
+    elif arguments.device_profile == "storage":
+        # Upstream x86 %gs-relative per-CPU operations on a host-set GS base
+        # (runtime/host.h). Other profiles keep the masked generic form until
+        # they are validated on their own hardware paths.
+        arguments.extra_cflags.append("-DKOBOX_PERCPU_SEGMENT=1")
 
     print(f"Compiling all {len(objects)} canonical boot objects", flush=True)
     # vmlinux_o is the upstream full-tree target, including lib-y inputs.
@@ -622,6 +627,7 @@ def compile_hosted_modules(arguments):
     # unchanged sources with hosted headers, then invoke upstream modpost with
     # the complete closure and port exports. Missing imports remain fatal.
     base_flags = arguments.extra_cflags
+    segment = "-DKOBOX_PERCPU_SEGMENT=1" in base_flags
     # The in-kernel module loader accepts direct PC-relative relocations, not
     # the large-model GOT entries emitted by the boot-core support build.
     arguments.extra_cflags = [*base_flags, "-fPIE", "-mcmodel=small",
@@ -634,7 +640,10 @@ def compile_hosted_modules(arguments):
         source = arguments.provider_build_dir / name
         if not source.with_suffix(".mod").is_file():
             raise BootBuildError(f"hosted module manifest is missing: {name}")
-        if "%gs:" in task.run([arguments.objdump, "-d", source]):
+        # A masked generic core gives host threads no GS base: any %gs access
+        # is an upstream per-CPU form that escaped the provider headers. A
+        # segment core sets that base, and modules share its operations.
+        if not segment and "%gs:" in task.run([arguments.objdump, "-d", source]):
             raise BootBuildError(f"hosted module still uses host GS: {name}")
     task.run([
         arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
@@ -658,7 +667,7 @@ def compile_hosted_modules(arguments):
         task.run([arguments.ld, "-r", "-T",
                   arguments.provider_build_dir / "scripts/module.lds", "-o",
                   destination, source, metadata, common])
-        if "%gs:" in task.run([arguments.objdump, "-d", destination]):
+        if not segment and "%gs:" in task.run([arguments.objdump, "-d", destination]):
             raise BootBuildError(f"hosted module still uses host GS: {path}")
         record = json.loads(task.run([
             "llvm-readobj" + arguments.llvm, "--elf-output-style=JSON",

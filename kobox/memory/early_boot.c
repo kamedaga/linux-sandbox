@@ -242,12 +242,28 @@ unsigned long kobox_provider_current_percpu_offset(void)
 	return READ_ONCE(kobox_runtime_thread_state()->percpu_offset);
 }
 
+/* Point this host thread's per-CPU accesses at cpu's area. With segment
+ * per-CPU operations the GS base belongs to the host thread, not the Linux
+ * task: a task switch resumes the next task on the same thread, so its base
+ * is already right. Only a thread taking a different logical CPU (a new
+ * task's own thread, or the boot thread after the areas exist) reloads it;
+ * this_cpu_off read through the current base names the area in use, and is
+ * zero in the static template a fresh thread addresses with GS base 0. */
+static void memory_use_percpu(unsigned long offset)
+{
+	kobox_runtime_thread_state()->percpu_offset = offset;
+#ifdef KOBOX_PERCPU_SEGMENT
+	if (raw_cpu_read(this_cpu_off) != offset)
+		kobox_host_call((kobox_runtime_set_percpu_base(offset), 0));
+#endif
+}
+
 #ifdef KOBOX_TASK_PORT_PHASE
 void kobox_linux_memory_set_cpu(unsigned int cpu)
 {
 	if (cpu >= nr_cpu_ids)
 		BUG();
-	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[cpu];
+	memory_use_percpu(__per_cpu_offset[cpu]);
 }
 #endif
 
@@ -867,9 +883,14 @@ void __init setup_per_cpu_areas(void)
 	for_each_possible_cpu(cpu) {
 		__per_cpu_offset[cpu] = delta + pcpu_unit_offsets[cpu];
 		per_cpu(cpu_number, cpu) = cpu;
+#ifdef KOBOX_PERCPU_SEGMENT
+		/* As upstream x86 setup_per_cpu_areas(): the segment form of
+		 * this_cpu_ptr() adds this to a variable's static address. */
+		per_cpu(this_cpu_off, cpu) = __per_cpu_offset[cpu];
+#endif
 	}
 	/* start_kernel() invokes this hook before its boot-CPU setup hook. */
-	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[0];
+	memory_use_percpu(__per_cpu_offset[0]);
 }
 
 static void __init setup_memory_zones(void)
@@ -1072,7 +1093,7 @@ static int prepare_percpu(void)
 	if (nr_cpu_ids != KOBOX_LINUX_MEMORY_LOGICAL_CPUS)
 		return -EINVAL;
 	setup_per_cpu_areas();
-	kobox_runtime_thread_state()->percpu_offset = __per_cpu_offset[0];
+	memory_use_percpu(__per_cpu_offset[0]);
 	return 0;
 }
 #endif

@@ -4,14 +4,21 @@
 
 #include <asm/asm.h>
 
+/* The task port's host notification mask, also usable by kobox code. */
+extern unsigned long kobox_provider_preempt_save(void);
+extern void kobox_provider_preempt_restore(unsigned long flags);
+
+#ifdef KOBOX_PERCPU_SEGMENT
+/* __preempt_count is a per-CPU variable and every count operation below is
+ * one %gs-relative instruction (asm/percpu.h): no host mask is needed. */
+#include_next <asm/preempt.h>
+#else
 /*
  * Keep x86's count/NEED_RESCHED representation and upstream preemption entry.
  * A pthread can migrate between obtaining a per-CPU address and using it.
  * Mask the hosted interrupt during each architecture count operation, just
  * as the native single-instruction per-CPU operation cannot be interrupted.
  */
-extern unsigned long kobox_provider_preempt_save(void);
-extern void kobox_provider_preempt_restore(unsigned long flags);
 
 #define preempt_count kobox_native_preempt_count
 #define preempt_count_set kobox_native_preempt_count_set
@@ -70,4 +77,5 @@ KOBOX_PREEMPT_WRITE(__preempt_count_sub, (int count),
 
 #undef KOBOX_PREEMPT_READ
 #undef KOBOX_PREEMPT_WRITE
+#endif /* KOBOX_PERCPU_SEGMENT */
 #endif

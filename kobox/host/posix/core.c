@@ -12,6 +12,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <asm/prctl.h>
+#include <sys/syscall.h>
 
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0x100000
@@ -26,6 +28,15 @@ struct kobox_posix_core {
 };
 
 static _Thread_local struct kobox_runtime_thread_state runtime_thread;
+
+/* Linux per-CPU operations address the thread's GS base; glibc leaves GS to
+ * the program on x86-64. Called through the core's host call boundary. */
+static void set_percpu_base(void *context, unsigned long base)
+{
+	(void)context;
+	if (syscall(SYS_arch_prctl, ARCH_SET_GS, base))
+		abort();
+}
 
 static int native_protection(unsigned int protection)
 {
@@ -149,6 +160,7 @@ int kobox_posix_core_open(const char *path, struct kobox_posix_core **out)
 		.size = sizeof(runtime),
 		.context = core,
 		.thread_state = thread_state,
+		.set_percpu_base = set_percpu_base,
 	};
 	if (kobox_boot_core_prepare(&core->boot, core, lookup, &runtime) !=
 	    KOBOX_BOOT_CORE_OK) {

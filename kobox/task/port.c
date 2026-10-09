@@ -663,6 +663,10 @@ static void *task_bootstrap(void *argument)
 	kobox_runtime_thread_state()->current_task = port->task;
 	kobox_runtime_thread_state()->cpu = port->resume_cpu;
 	kobox_linux_memory_set_cpu(port->resume_cpu);
+#if defined(KOBOX_RUNTIME_GATES) && defined(KOBOX_PERCPU_SEGMENT)
+	if (raw_cpu_read(current_task) != port->task)
+		BUG();
+#endif
 	if (kobox_host_call(task_host->cpu_enter(port->resume_cpu, port->host_task)))
 		BUG();
 #ifdef KOBOX_BOOT_RUNTIME
@@ -885,6 +889,11 @@ struct task_struct *kobox_task_switch(
 		BUG();
 	kobox_runtime_thread_state()->cpu = previous_port->resume_cpu;
 	kobox_linux_memory_set_cpu(kobox_runtime_thread_state()->cpu);
+#if defined(KOBOX_RUNTIME_GATES) && defined(KOBOX_PERCPU_SEGMENT)
+	/* The per-CPU identity must name the task this host state belongs to. */
+	if (raw_cpu_read(current_task) != kobox_provider_current_task())
+		BUG();
+#endif
 	if (kobox_host_call(task_host->cpu_enter(previous_port->resume_cpu,
 				 previous_port->host_task)))
 		BUG();

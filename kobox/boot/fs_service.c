@@ -490,8 +490,11 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 {
 	const char *path = fs_path(bytes, r->path);
 	const char *second = fs_path(bytes, r->second_path);
-	struct kstat stat = {};
-	struct kstatfs statfs = {};
+	/* Not zeroed for every request: only STATX, DEVICE_ROUTE and STATFS use
+	 * them, and only after vfs_getattr()/statfs_by_dentry() have cleared
+	 * and filled them on success. Unused on failure. */
+	struct kstat stat;
+	struct kstatfs statfs;
 	struct open_how how;
 	struct timespec64 times[2], *time_arg = NULL;
 	s64 result;
@@ -1122,7 +1125,13 @@ size_t kobox_linux_fs_request_recycle(struct kobox_linux_fs_request *job)
 	 */
 	fs_request_release(job);
 	task_work_run();
-	memset(job, 0, sizeof(*job));
+	/* A packed request never uses inline_snapshot (its snapshot follows the
+	 * struct), so clear the metadata only; the inline bytes hold nothing a
+	 * later request can read. Fresh storage was fully zeroed when created. */
+	BUILD_BUG_ON(sizeof(*job) - offsetof(struct kobox_linux_fs_request,
+		     inline_snapshot) - sizeof(job->inline_snapshot) >=
+		     __alignof__(struct kobox_linux_fs_request));
+	memset(job, 0, offsetof(struct kobox_linux_fs_request, inline_snapshot));
 #ifdef KOBOX_FS_RECYCLE_CONTROL
 	if (READ_ONCE(fs_recycle_scrub_control))
 		memset(job + 1, 0, bytes);

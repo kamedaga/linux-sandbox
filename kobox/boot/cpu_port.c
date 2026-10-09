@@ -74,6 +74,25 @@ static void __init hosted_cpu_features(void)
 	cpuid(1, &eax, &ebx, &ecx, &edx);
 	if (ecx & BIT(X86_FEATURE_XMM4_2 % 32))
 		set_cpu_cap(cpu, X86_FEATURE_XMM4_2);
+	/* Fast REP string forms, also general-register only. Without them
+	 * memcpy, copy_page and clear_page take the unrolled fallback, which
+	 * sampling put at about a quarter of a 4 KiB pwrite; native Linux on the
+	 * same host uses rep movsb. REP_GOOD is the kernel's own judgement for
+	 * rep movsq/stosq; vendor setup is not run here, so take ERMS as it. */
+	if (cpuid_eax(0) >= 7) {
+		cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+		if (ebx & BIT(X86_FEATURE_ERMS % 32)) {
+			set_cpu_cap(cpu, X86_FEATURE_ERMS);
+			set_cpu_cap(cpu, X86_FEATURE_REP_GOOD);
+		}
+		if (edx & BIT(X86_FEATURE_FSRM % 32))
+			set_cpu_cap(cpu, X86_FEATURE_FSRM);
+		cpuid_count(7, 1, &eax, &ebx, &ecx, &edx);
+		if (eax & BIT(X86_FEATURE_FSRS % 32))
+			set_cpu_cap(cpu, X86_FEATURE_FSRS);
+		if (eax & BIT(X86_FEATURE_FZRM % 32))
+			set_cpu_cap(cpu, X86_FEATURE_FZRM);
+	}
 	cpu->initialized = true;
 }
 

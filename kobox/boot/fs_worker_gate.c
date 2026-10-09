@@ -202,6 +202,184 @@ static int worker_gate_large_io(struct fs_worker_gate *gate, u64 handle)
 	return result;
 }
 
+static size_t payload_gate_input(u8 *input, kb2_fs_request_t *request,
+	const char *path, const char *second)
+{
+	size_t size = KB2_FILESYSTEM_REQUEST_SIZE;
+
+	request->generation = 1;
+	request->mask = STATX_BASIC_STATS;
+	if (path) {
+		request->path = (kb2_fs_span_t){size, strlen(path) + 1};
+		memcpy(input + size, path, request->path.length);
+		size += request->path.length;
+	}
+	if (second) {
+		request->second_path = (kb2_fs_span_t){size, strlen(second) + 1};
+		memcpy(input + size, second, request->second_path.length);
+		size += request->second_path.length;
+	}
+	return size;
+}
+
+static int payload_gate_direct(struct kobox_linux_fs_service *service,
+	kb2_fs_request_t request, const char *path, const char *second,
+	void *response, size_t capacity, size_t *used)
+{
+	u8 input[KB2_FILESYSTEM_REQUEST_SIZE + 128];
+	size_t size = payload_gate_input(input, &request, path, second);
+	int error = kb2_fs_request_encode(input, size, size, &request);
+
+	return error ?: kobox_linux_fs_service_dispatch(service, request.client,
+		input, size, response, capacity, used);
+}
+
+static int worker_gate_payload(struct kobox_linux_fs_service *service, u64 handle)
+{
+	const size_t bytes = KB2_FILESYSTEM_REQUEST_SIZE + 1024;
+	const struct {
+		u32 opcode;
+		u64 client;
+		const char *path;
+		s64 offset, result;
+		u64 length;
+	} cases[] = {
+		{KB2_FILESYSTEM_OP_STATX, 1, ".", 0, 0, 0},
+		{KB2_FILESYSTEM_OP_PREAD, 2, NULL, 0, 2, 8},
+		{KB2_FILESYSTEM_OP_STATFS, 1, NULL, 0, 0, 0},
+		{KB2_FILESYSTEM_OP_PREAD, 2, NULL, 1, 1, 8},
+		{KB2_FILESYSTEM_OP_PREAD, 2, NULL, 2, 0, 8},
+		{KB2_FILESYSTEM_OP_READLINKAT, 2, "worker-payload-link", 0, 14, 64},
+		{KB2_FILESYSTEM_OP_GETDENTS64, 1, NULL, 0, 0, 512},
+		{KB2_FILESYSTEM_OP_READ, 2, NULL, 0, 2, 8},
+		{KB2_FILESYSTEM_OP_READ, 2, NULL, 2, 0, 8},
+		{KB2_FILESYSTEM_OP_STATX, 1, "worker-payload-missing", 0, -ENOENT, 0},
+		{KB2_FILESYSTEM_OP_PREAD, 2, NULL, -1, -EINVAL, 8},
+		{KB2_FILESYSTEM_OP_READLINKAT, 2, ".", 0, -EINVAL, 64},
+	};
+	struct kobox_linux_fs_request *storage = NULL, *job = NULL, *previous;
+	u8 input[KB2_FILESYSTEM_REQUEST_SIZE + 128];
+	u8 reference[KB2_FILESYSTEM_RESPONSE_SIZE + 1024];
+	kb2_fs_request_t request;
+	kb2_fs_response_t reply;
+	void *response;
+	size_t size, capacity, used, reference_used;
+	u64 directory = 0;
+	bool linked = false;
+	int error = 0, line = 0;
+
+#define PAYLOAD_EXPECT(call, expected) do { \
+	error = (call); \
+	if (error != (expected)) { line = __LINE__; error = error ?: -EINVAL; goto out; } \
+} while (0)
+	request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_OPENAT2,
+		.client = 1, .sequence = 1, .flags = O_RDONLY | O_DIRECTORY};
+	PAYLOAD_EXPECT(payload_gate_direct(service, request, ".", NULL,
+		reference, sizeof(reference), &used), 0);
+	PAYLOAD_EXPECT(kb2_fs_response_decode(reference, used, &reply), 0);
+	PAYLOAD_EXPECT(reply.result, 0);
+	directory = reply.handle;
+	request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_SYMLINKAT,
+		.client = 2, .sequence = 2};
+	PAYLOAD_EXPECT(payload_gate_direct(service, request, "worker-blocked",
+		"worker-payload-link", reference, sizeof(reference), &used), 0);
+	PAYLOAD_EXPECT(kb2_fs_response_decode(reference, used, &reply), 0);
+	PAYLOAD_EXPECT(reply.result, 0);
+	linked = true;
+	for (unsigned int i = 0; i < ARRAY_SIZE(cases); i++) {
+		bool read = cases[i].opcode == KB2_FILESYSTEM_OP_READ;
+		bool dents = cases[i].opcode == KB2_FILESYSTEM_OP_GETDENTS64;
+		u64 operand = cases[i].client == 1 ? directory : handle;
+		kb2_fs_request_t reset = {.opcode = KB2_FILESYSTEM_OP_LSEEK,
+			.client = cases[i].client, .sequence = 3, .handle = operand,
+			.offset = read ? cases[i].offset : 0};
+
+		request = (kb2_fs_request_t){.opcode = cases[i].opcode,
+			.client = cases[i].client, .sequence = 10 + i,
+			.handle = cases[i].path ? 0 : operand,
+			.length = cases[i].length, .offset = cases[i].offset};
+		/* Equal total capacity moves the input/output partition across
+		 * clients. Distinct poison patterns make unwritten published bytes
+		 * differ from a fresh dispatch, rather than pass because both are 0. */
+		if (read || dents)
+			PAYLOAD_EXPECT(payload_gate_direct(service, reset, NULL, NULL,
+				reference, sizeof(reference), &used), 0);
+		memset(reference, 0x3c, sizeof(reference));
+		PAYLOAD_EXPECT(payload_gate_direct(service, request, cases[i].path, NULL,
+			reference, sizeof(reference), &reference_used), 0);
+		PAYLOAD_EXPECT(kb2_fs_response_decode(reference, reference_used, &reply), 0);
+		if (dents)
+			PAYLOAD_EXPECT(reply.result > 0, 1);
+		else
+			PAYLOAD_EXPECT(reply.result, cases[i].result);
+		if (read || dents) {
+			u8 reset_response[KB2_FILESYSTEM_RESPONSE_SIZE];
+			PAYLOAD_EXPECT(payload_gate_direct(service, reset, NULL, NULL,
+				reset_response, sizeof(reset_response), &used), 0);
+		}
+		size = payload_gate_input(input, &request, cases[i].path, NULL);
+		capacity = bytes - size;
+		PAYLOAD_EXPECT(kb2_fs_request_encode(input, size, size, &request), 0);
+		previous = storage;
+		storage = NULL;
+		PAYLOAD_EXPECT(kobox_linux_fs_request_prepare_owned(service, request.client,
+			input, size, capacity, previous, &job, &response), 0);
+		if (previous)
+			PAYLOAD_EXPECT(job == previous, 1);
+		memset(input, 0xff, size);
+		memset(response, 0xa5, capacity);
+		PAYLOAD_EXPECT(kobox_linux_fs_request_execute(job, &used), 0);
+		PAYLOAD_EXPECT(used, reference_used);
+		PAYLOAD_EXPECT(memcmp(response, reference, used), 0);
+		if ((read || cases[i].opcode == KB2_FILESYSTEM_OP_PREAD) && cases[i].result >= 0)
+			PAYLOAD_EXPECT(memchr_inv(response + KB2_FILESYSTEM_RESPONSE_SIZE + cases[i].result,
+				0, cases[i].length - cases[i].result) != NULL, 0);
+		PAYLOAD_EXPECT(kobox_linux_fs_request_recycle(job), bytes);
+		storage = job;
+		job = NULL;
+		PAYLOAD_EXPECT(kobox_linux_fs_request_gate_recycled(storage, bytes), 0);
+	}
+	pr_info("FS_PAYLOAD_INIT cases=%zu cross_client=1 partition_change=1 immutable=1 header=1 stat=1 statfs=1 dirent=1 readlink=1 short_read=1 eof=1 errors=1\n",
+		ARRAY_SIZE(cases));
+out:
+	kobox_linux_fs_request_destroy(job);
+	kobox_linux_fs_request_destroy(storage);
+	request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_LSEEK,
+		.client = 2, .sequence = 99, .handle = handle};
+	{
+		int cleanup = payload_gate_direct(service, request, NULL, NULL,
+			reference, sizeof(reference), &used);
+		if (!cleanup) cleanup = kb2_fs_response_decode(reference, used, &reply);
+		if (!cleanup) cleanup = reply.result;
+		if (!error) error = cleanup;
+	}
+	if (directory) {
+		int cleanup;
+
+		request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_CLOSE,
+			.client = 1, .sequence = 100, .handle = directory};
+		cleanup = payload_gate_direct(service, request, NULL, NULL,
+			reference, sizeof(reference), &used);
+		if (!cleanup) cleanup = kb2_fs_response_decode(reference, used, &reply);
+		if (!cleanup) cleanup = reply.result;
+		if (!error) error = cleanup;
+	}
+	if (linked) {
+		int cleanup;
+
+		request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_UNLINKAT,
+			.client = 2, .sequence = 101};
+		cleanup = payload_gate_direct(service, request, "worker-payload-link", NULL,
+			reference, sizeof(reference), &used);
+		if (!cleanup) cleanup = kb2_fs_response_decode(reference, used, &reply);
+		if (!cleanup) cleanup = reply.result;
+		if (!error) error = cleanup;
+	}
+	if (error) pr_err("FS_PAYLOAD_INIT line=%d error=%d\n", line, error);
+	return error;
+#undef PAYLOAD_EXPECT
+}
+
 /* Submit one request to the pool and copy its whole reply. Immediate reports
  * that the first collect already found it, i.e. no worker was involved. */
 static int inline_gate_call(struct kobox_linux_fs_workers *workers,
@@ -447,7 +625,21 @@ static int worker_gate_inline(struct kobox_linux_fs_service *service,
 		kobox_linux_fs_workers_gate_inline(workers, true, &hits, &punts);
 		INLINE_EXPECT(used == used_second && !memcmp(first, second, used), 1);
 	}
-	pr_info("FS_WORKER_INLINE status=0 cached_stat=1 uncached_punt=1 negative_cached=%d page_punt=1 cached_read=%d closed_release_punt=1 identical=2\n",
+	/* CLOSE runs on a PF_KTHREAD worker. Its final pin must release write
+	 * access before completion, not at the delayed-fput timer's next tick.
+	 * Keeping a dentry pins the inode, not the file's write authority. */
+	INLINE_EXPECT(atomic_read(&d_inode(entry)->i_writecount), 1);
+	request = (kb2_fs_request_t) {
+		.opcode = KB2_FILESYSTEM_OP_CLOSE, .client = 2, .sequence = 211,
+		.handle = handle,
+	};
+	INLINE_EXPECT(inline_gate_call(workers, &request, NULL, first,
+		sizeof(first), &used, &immediate), 0);
+	INLINE_EXPECT(kb2_fs_response_decode(first, used, &reply), 0);
+	INLINE_EXPECT(reply.result, 0);
+	handle = 0;
+	INLINE_EXPECT(atomic_read(&d_inode(entry)->i_writecount), 0);
+	pr_info("FS_WORKER_INLINE status=0 cached_stat=1 uncached_punt=1 negative_cached=%d page_punt=1 cached_read=%d closed_release_punt=1 identical=2 worker_final_put=1\n",
 		negative_cached, cached_read);
 	error = 0;	/* the boolean checks above leave their value in error */
 
@@ -633,6 +825,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 	WORKER_EXPECT(reply.result, 1);
 	WORKER_EXPECT(held_read[KB2_FILESYSTEM_RESPONSE_SIZE], 'B');
 	pr_info("FS_REQUEST_LIFETIME pinned_read=1 pinned_transfer=1 shared_offset=1\n");
+	WORKER_EXPECT(worker_gate_payload(service, other_handle), 0);
 	request = (kb2_fs_request_t) {
 		.opcode = KB2_FILESYSTEM_OP_CLOSE, .client = 1,
 		.sequence = 101, .handle = handle,
@@ -712,7 +905,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 		SIZE_MAX, sizeof(response), NULL), -EOVERFLOW);
 	WORKER_EXPECT(kobox_linux_fs_workers_submit(gate.workers, 1, input,
 		sizeof(input), config.client_bytes + 1, NULL), -ENOMEM);
-	/* Serial jobs must reuse the same cleared storage across client IDs,
+	/* Serial jobs must reuse reset metadata and poisoned private storage across client IDs,
 	 * not keep a stale identity/revoked bit or a previous response lease.
 	 */
 	for (unsigned int client = 1; client <= 2; client++) {
@@ -777,7 +970,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 		WORKER_EXPECT(kobox_linux_fs_workers_gate_cached(gate.workers,
 			&cached_works, &cached_clients), 0);
 	}
-	pr_info("FS_WORKER_STORAGE scrub=1 cross_client=1 reused=%llu eviction=1 allocation_failure=1 pressure_reclaim=1 large_snapshot=65536 eof_zero=1\n",
+	pr_info("FS_WORKER_STORAGE metadata_clear=1 payload_poison=1 cross_client=1 reused=%llu eviction=1 allocation_failure=1 pressure_reclaim=1 large_snapshot=65536 eof_zero=1\n",
 		reused_buffers);
 	gate.seen = 0;
 	/* Block actual do_ftruncate's inode exclusion, not a fabricated sleep in

@@ -117,6 +117,103 @@ static struct kobox_task_port boot_task_port;
 static DEFINE_PER_CPU(u64, port_switch_count);
 static DEFINE_PER_CPU(u64, port_ipi_count);
 
+#ifdef KOBOX_FS_MATCHED_BENCH
+u64 kobox_task_bench_all_switches(void)
+{
+	u64 total = 0;
+	unsigned int cpu;
+	/* Phase-boundary observations include background tasks and idle, unlike
+	 * the pool's owner/worker-only nvcsw counters. No per-op probe is added. */
+	for_each_online_cpu(cpu)
+		total += READ_ONCE(per_cpu(port_switch_count, cpu));
+	return total;
+}
+#endif
+
+#ifdef KOBOX_FS_TAIL_TRACE
+#include "../../kernel/workqueue_internal.h"
+static bool tail_enabled;
+static unsigned int tail_epoch;
+static atomic_t tail_count = ATOMIC_INIT(0);
+static struct tail_record {
+	u64 stamp[5];
+	unsigned int cpu, end_cpu, kind, notification, ready;
+	int pid, next_pid;
+	unsigned long work, last_work;
+	char comm[TASK_COMM_LEN];
+} tail_records[512];
+static DEFINE_PER_CPU(u64, tail_switch_stamp);
+static DEFINE_PER_CPU(unsigned int, tail_switch_epoch);
+
+static u64 tail_ticks(void)
+{
+	u32 lo, hi;
+	asm volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+	return ((u64)hi << 32) | lo;
+}
+
+void kobox_task_tail_window(bool enabled)
+{
+	if (enabled) WRITE_ONCE(tail_epoch, READ_ONCE(tail_epoch) + 1);
+	WRITE_ONCE(tail_enabled, enabled);
+}
+
+static void tail_record(unsigned int kind, unsigned int cpu,
+	unsigned int notification, const u64 stamp[5], struct task_struct *task, int next_pid)
+{
+	unsigned int i = atomic_inc_return(&tail_count) - 1;
+	struct tail_record *r;
+
+	if (i >= ARRAY_SIZE(tail_records)) return;
+	r = &tail_records[i];
+	memcpy(r->stamp, stamp, sizeof(r->stamp));
+	r->kind = kind; r->cpu = cpu; r->end_cpu = raw_smp_processor_id();
+	r->notification = notification; r->pid = task->pid; r->next_pid = next_pid;
+	memcpy(r->comm, task->comm, TASK_COMM_LEN);
+	/* The outgoing worker cannot execute concurrently before cpu_switch.
+	 * Keep both identities: a preempted work and an already completed work
+	 * differ, and the final work alone does not describe the whole interval. */
+	if (kind == 2 && (task->flags & PF_WQ_WORKER)) {
+		struct worker *worker = kthread_data(task);
+		r->work = (unsigned long)READ_ONCE(worker->current_func);
+		r->last_work = (unsigned long)wq_worker_last_func(task);
+	}
+	smp_store_release(&r->ready, 1);
+}
+
+static void tail_switch(struct task_struct *previous, struct task_struct *next)
+{
+	u64 now, before, stamp[5] = {};
+	unsigned int epoch;
+
+	if (!READ_ONCE(tail_enabled)) return;
+	now = tail_ticks();
+	epoch = READ_ONCE(tail_epoch);
+	before = raw_cpu_read(tail_switch_stamp);
+	if (raw_cpu_read(tail_switch_epoch) == epoch && now - before >= 200000) {
+		stamp[0] = before; stamp[4] = now;
+		tail_record(2, raw_smp_processor_id(), 0, stamp, previous, next->pid);
+	}
+	raw_cpu_write(tail_switch_stamp, now);
+	raw_cpu_write(tail_switch_epoch, epoch);
+}
+
+void kobox_task_tail_dump(void)
+{
+	unsigned int n = atomic_read(&tail_count), ready = 0;
+	for (unsigned int i = 0; i < min_t(unsigned int, n, ARRAY_SIZE(tail_records)); i++) {
+		struct tail_record *r = &tail_records[i];
+		if (!smp_load_acquire(&r->ready)) continue;
+		ready++;
+		pr_info("FS_TAIL_TASK kind=%u cpu=%u end_cpu=%u notification=%u pid=%d next=%d comm=%s t0=%llu t1=%llu t2=%llu t3=%llu t4=%llu work=%lu last_work=%lu\n",
+			r->kind, r->cpu, r->end_cpu, r->notification, r->pid, r->next_pid, r->comm,
+			r->stamp[0], r->stamp[1], r->stamp[2], r->stamp[3], r->stamp[4], r->work, r->last_work);
+	}
+	pr_info("FS_TAIL_TASK_DONE count=%u ready=%u\n", n, ready);
+	pr_info("FS_TAIL_ANCHOR address=%lu\n", (unsigned long)kobox_task_tail_dump);
+}
+#endif
+
 static struct kobox_task_port *task_port(const struct task_struct *task)
 {
 	return kobox_arch_task_binding(task);
@@ -478,6 +575,11 @@ void kobox_linux_task_dispatch(
 	struct pt_regs *previous_regs;
 	unsigned int previous_count;
 	bool watching;
+#ifdef KOBOX_FS_TAIL_TRACE
+	bool trace = READ_ONCE(tail_enabled);
+	u64 stamp[5] = {};
+	if (trace) stamp[0] = tail_ticks();
+#endif
 
 	if (!task_host || cpu != port_cpu() || !count)
 		BUG();
@@ -492,6 +594,9 @@ void kobox_linux_task_dispatch(
 	task_report->hardirq_entries[cpu]++;
 	if (!watching)
 		task_report->idle_irq_entries[cpu]++;
+#ifdef KOBOX_FS_TAIL_TRACE
+	if (trace) stamp[1] = tail_ticks();
+#endif
 	switch (notification) {
 	case KOBOX_LINUX_TASK_RESCHEDULE:
 		raw_cpu_add(port_ipi_count, count);
@@ -523,7 +628,13 @@ void kobox_linux_task_dispatch(
 	default:
 		BUG();
 	}
+#ifdef KOBOX_FS_TAIL_TRACE
+	if (trace) stamp[2] = tail_ticks();
+#endif
 	irq_exit();
+#ifdef KOBOX_FS_TAIL_TRACE
+	if (trace) stamp[3] = tail_ticks();
+#endif
 	set_irq_regs(previous_regs);
 	if (preempt_count() != previous_count ||
 	    rcu_is_watching_curr_cpu() != watching)
@@ -531,6 +642,13 @@ void kobox_linux_task_dispatch(
 	/* The architecture interrupt-return boundary; Linux chooses the task. */
 	if (!preempt_count() && need_resched())
 		preempt_schedule_irq();
+#ifdef KOBOX_FS_TAIL_TRACE
+	if (trace) {
+		stamp[4] = tail_ticks();
+		if (stamp[4] - stamp[0] >= 200000)
+			tail_record(1, cpu, notification, stamp, current, 0);
+	}
+#endif
 	/* The host restores the interrupted IRQ state after this return. */
 	if (!irqs_disabled())
 		BUG();
@@ -755,6 +873,9 @@ struct task_struct *kobox_task_switch(
 	kobox_arch_task_stack_current(next);
 #endif
 	raw_cpu_inc(port_switch_count);
+#ifdef KOBOX_FS_TAIL_TRACE
+	tail_switch(previous, next);
+#endif
 	__atomic_fetch_add(&task_report->context_switches, 1,
 			   __ATOMIC_RELAXED);
 	status = kobox_host_call(task_host->cpu_switch(

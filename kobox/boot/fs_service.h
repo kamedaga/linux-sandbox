@@ -94,9 +94,14 @@ int kobox_linux_fs_request_prepare_owned(struct kobox_linux_fs_service *service,
 	struct kobox_linux_fs_request *storage,
 	struct kobox_linux_fs_request **request, void **response);
 /* Completed owned request only, after the caller releases its response lease.
- * Drop refs/task_work and clear metadata plus payload; return its byte capacity.
+ * Drop refs/task_work and clear authority metadata; return its byte capacity.
+ * Payload remains private and unspecified until overwritten; consumers may
+ * publish only the initialized header and returned data_length, never capacity.
  */
 size_t kobox_linux_fs_request_recycle(struct kobox_linux_fs_request *request);
+#ifdef KOBOX_FS_RECYCLE_CONTROL
+void kobox_linux_fs_request_recycle_control(bool scrub);
+#endif
 /* Owner-only admission. Blocking exec/device operations retain the same
  * credential/right pair here, not when the management worker runs. Registry
  * updates are ordered by the queue owner against subsequent client admission.

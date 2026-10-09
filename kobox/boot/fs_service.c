@@ -478,6 +478,11 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 					     count, r->offset);
 		if (result > 0)
 			reply->data_length = result;
+		/* Recycled private storage may contain an older reply. Keep the
+		 * short-read/EOF tail defined without clearing bytes a full read
+		 * just overwrote, or any unrelated response capacity. */
+		if (result >= 0 && result < count)
+			memset(data + result, 0, count - result);
 		return result;
 	case KB2_FILESYSTEM_OP_WRITE:
 	case KB2_FILESYSTEM_OP_PWRITE:
@@ -823,8 +828,8 @@ static void fs_request_release(struct kobox_linux_fs_request *job)
 	job->snapshot = NULL;
 }
 
-/* Publish an executed result: encode, drop request scopes and run the final
- * fput task work before a worker or the owner hands the job back. */
+/* Publish an executed result: encode, synchronously drop admitted file pins
+ * and drain remaining task work before a worker or owner hands the job back. */
 static int fs_request_complete(struct kobox_linux_fs_request *job, size_t *used)
 {
 	kb2_fs_response_t *reply = &job->reply;
@@ -842,9 +847,8 @@ static int fs_request_complete(struct kobox_linux_fs_request *job, size_t *used)
 		*used = KB2_FILESYSTEM_RESPONSE_SIZE + reply->data_length;
 	fs_request_release(job);
 	fs_profile_stamp(&job->profile, 5);
-	/* This task will not return through Linux's userspace exit path. Complete
-	 * final fput here, after dropping request scopes, before publishing a job.
-	 */
+	/* The owner has no Linux userspace-return path. Its remaining task work
+	 * must run here; PF_KTHREAD workers' fput is not queued as task work. */
 	task_work_run();
 	fs_profile_stamp(&job->profile, 6);
 	if (!error)
@@ -1034,17 +1038,35 @@ out_storage:
 	return error;
 }
 
+#ifdef KOBOX_FS_RECYCLE_CONTROL
+static bool fs_recycle_scrub_control;
+
+void kobox_linux_fs_request_recycle_control(bool scrub)
+{
+	/* Isolated single-flight benchmark before READY: every previous response
+	 * lease is released before changing policy, never a live service setting. */
+	WRITE_ONCE(fs_recycle_scrub_control, scrub);
+}
+#endif
+
 size_t kobox_linux_fs_request_recycle(struct kobox_linux_fs_request *job)
 {
 	size_t bytes = job->owned_bytes;
 
-	/* Only the owner after completion lease release. Scrub old payloads and
-	 * all authority pointers before storage can cross client boundaries.
-	 * Deferred final fput must finish before that memory becomes reusable.
+	/* Only after completion lease release. Payload stays Linux-private:
+	 * admission overwrites the entire new snapshot and publication exposes
+	 * only an initialized header plus data_length, never spare capacity.
+	 * Fresh kvmalloc payload is uninitialized too. Keep authority metadata
+	 * cleared and final fput complete, but do not zero every full-read byte
+	 * again merely to retain an inaccessible allocation for the next job.
 	 */
 	fs_request_release(job);
 	task_work_run();
-	memset(job, 0, sizeof(*job) + bytes);
+	memset(job, 0, sizeof(*job));
+#ifdef KOBOX_FS_RECYCLE_CONTROL
+	if (READ_ONCE(fs_recycle_scrub_control))
+		memset(job + 1, 0, bytes);
+#endif
 	job->packed = true;
 	job->recycled = true;
 	job->owned_bytes = bytes;
@@ -1062,8 +1084,13 @@ int kobox_linux_fs_request_gate_recycled(struct kobox_linux_fs_request *job,
 	empty.recycled = true;
 	empty.owned_bytes = bytes;
 
-	return !job || memcmp(job, &empty, sizeof(empty)) ||
-		memchr_inv(job + 1, 0, bytes) ? -EINVAL : 0;
+	if (!job || memcmp(job, &empty, sizeof(empty)))
+		return -EINVAL;
+	/* A zero-filled cache could hide an incomplete reply writer. Poison
+	 * retained payload so subsequent cross-client reuse tests must initialize
+	 * published bytes and any promised EOF tail themselves. */
+	memset(job + 1, 0xa5, bytes);
+	return 0;
 }
 #endif
 

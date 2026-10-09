@@ -472,10 +472,36 @@ def build_inputs(arguments):
             arguments.extra_cflags.append("-DKOBOX_FS_SERVICE_PROFILE=1")
     elif arguments.fs_bench_elapsed_only:
         raise BootBuildError("elapsed-only measurement requires --fs-internal-bench")
+    if arguments.fs_matched_bench:
+        if not arguments.fs_internal_bench or not arguments.fs_inline_disabled or any((
+                arguments.fs_cache_matrix, arguments.fs_handoff_bench_only,
+                arguments.fs_publication_bench, arguments.fs_executor_bench)):
+            raise BootBuildError("matched benchmark requires internal benchmark, disabled inline, and no other workload")
+        arguments.extra_cflags.append("-DKOBOX_FS_MATCHED_BENCH=1")
     if arguments.fs_handoff_bench_only:
         if not arguments.fs_internal_bench or not arguments.fs_bench_elapsed_only:
             raise BootBuildError("handoff-only measurement requires elapsed-only FS benchmark")
         arguments.extra_cflags.append("-DKOBOX_FS_HANDOFF_BENCH_ONLY=1")
+    if arguments.fs_cache_matrix:
+        if not arguments.fs_internal_bench or not arguments.fs_bench_elapsed_only or arguments.fs_handoff_bench_only or arguments.fs_publication_bench:
+            raise BootBuildError("cache matrix requires elapsed-only FS benchmark without other workloads")
+        arguments.extra_cflags.append("-DKOBOX_FS_CACHE_MATRIX=1")
+    if arguments.fs_cache_diagnostic:
+        if not arguments.fs_cache_matrix:
+            raise BootBuildError("cache diagnostics require --fs-cache-matrix")
+        arguments.extra_cflags.append("-DKOBOX_FS_CACHE_DIAGNOSTIC=1")
+    if arguments.fs_cache_stages:
+        if not arguments.fs_cache_matrix or arguments.fs_cache_diagnostic:
+            raise BootBuildError("cache stages require --fs-cache-matrix without I/O diagnostics")
+        arguments.extra_cflags.append("-DKOBOX_FS_CACHE_STAGES=1")
+    if arguments.fs_recycle_control:
+        if not arguments.fs_cache_matrix or arguments.fs_cache_diagnostic or arguments.fs_cache_stages:
+            raise BootBuildError("recycle control requires cache matrix without other probes")
+        arguments.extra_cflags.append("-DKOBOX_FS_RECYCLE_CONTROL=1")
+    if arguments.fs_tail_trace:
+        if not arguments.fs_recycle_control:
+            raise BootBuildError("tail trace requires --fs-recycle-control")
+        arguments.extra_cflags.append("-DKOBOX_FS_TAIL_TRACE=1")
     if arguments.fs_publication_bench:
         if not arguments.fs_internal_bench or not arguments.fs_bench_elapsed_only or arguments.fs_handoff_bench_only:
             raise BootBuildError("publication measurement requires elapsed-only FS benchmark, not handoff-only")
@@ -669,8 +695,20 @@ def parse_arguments():
                         help="comparison control: build upstream's IRQ-disabling this_cpu_*() fallback")
     parser.add_argument("--fs-internal-bench", action="store_true",
                         help="Run IPC-free FS diagnostics before READY; off in production")
+    parser.add_argument("--fs-matched-bench", action="store_true",
+                        help="Match owned buffers/scope/recycle between same-task and forced-worker measurements")
     parser.add_argument("--fs-bench-elapsed-only", action="store_true",
                         help="Keep the FS benchmark workload without hot-path diagnostic probes")
+    parser.add_argument("--fs-cache-matrix", action="store_true",
+                        help="Expanded warm/cold single-flight workload, without IPC/LPR")
+    parser.add_argument("--fs-cache-diagnostic", action="store_true",
+                        help="Log selected per-operation CPU and block-I/O counters outside timing")
+    parser.add_argument("--fs-cache-stages", action="store_true",
+                        help="Diagnostic wrapper timing of encode/submit/wait/inspect/recycle")
+    parser.add_argument("--fs-recycle-control", action="store_true",
+                        help="Diagnostic same-binary alternating private-payload scrub control")
+    parser.add_argument("--fs-tail-trace", action="store_true",
+                        help="Correlate slow warm metadata requests with native adapter traces")
     parser.add_argument("--fs-handoff-bench-only", action="store_true",
                         help="Measure two same-CPU Linux tasks without filesystem operations")
     parser.add_argument("--fs-publication-bench", action="store_true",

@@ -12,6 +12,9 @@
 #include <linux/cred.h>
 #include <linux/completion.h>
 #include <linux/fs.h>
+#ifdef KOBOX_FS_MATCHED_BENCH
+#include <linux/fs_struct.h>
+#endif
 #include <linux/irqflags.h>
 #include <linux/ktime.h>
 #include <linux/kthread.h>
@@ -56,6 +59,11 @@ struct fs_bench {
 	const char *path;
 	size_t input_size;
 	u32 opcode;
+#ifdef KOBOX_FS_MATCHED_BENCH
+	struct kobox_linux_fs_request *same_storage;
+	struct fs_struct *same_scope;
+	size_t same_bytes;
+#endif
 #ifdef KOBOX_FS_PUBLICATION_BENCH
 	struct kobox_linux_fs_workers *owner_workers, *direct_workers;
 	struct fs_bench_publication *tickets;
@@ -187,7 +195,7 @@ static noinline int bench_native_noop(void)
 	return 0;
 }
 
-static int bench_guards(void)
+static int __maybe_unused bench_guards(void)
 {
 	static const char * const names[] = { "preempt", "irq", "clock", "fp" };
 	unsigned int trial, kind, i;
@@ -545,11 +553,39 @@ static int bench_batch(struct fs_bench *bench, unsigned int depth)
 		size_t used;
 
 		error = bench_encode(bench, 0);
+#ifdef KOBOX_FS_MATCHED_BENCH
+		if (!error) {
+			struct kobox_linux_fs_request *job, *storage = bench->same_storage;
+			void *response;
+			size_t bytes = bench->input_size + KB2_FILESYSTEM_RESPONSE_SIZE + 4096;
+
+			/* Both paths own the immutable snapshot and response allocation,
+			 * retain a private fs_struct, and recycle only after inspection.
+			 * Pool admission/scheduling is intentionally absent only at d0. */
+			bench->same_storage = NULL;
+			if (storage && bench->same_bytes != bytes) {
+				kobox_linux_fs_request_destroy(storage);
+				storage = NULL;
+			}
+			error = kobox_linux_fs_request_prepare_owned(bench->service, 1,
+				bench->input, bench->input_size,
+				KB2_FILESYSTEM_RESPONSE_SIZE + 4096, storage, &job, &response);
+			if (error)
+				return error;
+			error = kobox_linux_fs_request_execute_scope(job, bench->same_scope, &used);
+			if (!error)
+				error = bench_check(bench, response, used);
+			bench->same_bytes = kobox_linux_fs_request_recycle(job);
+			bench->same_storage = job;
+		}
+		return error;
+#else
 		if (!error)
 			error = kobox_linux_fs_service_dispatch(bench->service, 1,
 				bench->input, bench->input_size, bench->response,
 				KB2_FILESYSTEM_RESPONSE_SIZE + 4096, &used);
 		return error ?: bench_check(bench, bench->response, used);
+#endif
 	}
 	while (completed < depth) {
 		struct kobox_linux_fs_work *work;
@@ -625,6 +661,9 @@ static int bench_phase(struct fs_bench *bench, const char *fs, u32 opcode,
 	struct kobox_task_bench_counts before, after;
 #endif
 	u64 start, ticks, runtime, switches, elapsed, ops = 0;
+#ifdef KOBOX_FS_MATCHED_BENCH
+	u64 all_switches;
+#endif
 #ifdef KOBOX_FS_PUBLICATION_BENCH
 	u64 wakes, batches, wakes_after, batches_after;
 #endif
@@ -680,6 +719,9 @@ static int bench_phase(struct fs_bench *bench, const char *fs, u32 opcode,
 			kobox_task_bench_trace(current, true);
 	}
 #endif
+#ifdef KOBOX_FS_MATCHED_BENCH
+	all_switches = kobox_task_bench_all_switches();
+#endif
 	start = ktime_get_ns();
 	ticks = bench_ticks();
 	do {
@@ -693,6 +735,9 @@ static int bench_phase(struct fs_bench *bench, const char *fs, u32 opcode,
 		elapsed = ktime_get_ns() - start;
 	} while (elapsed < NSEC_PER_SEC);
 	ticks = bench_ticks() - ticks;
+#ifdef KOBOX_FS_MATCHED_BENCH
+	all_switches = kobox_task_bench_all_switches() - all_switches;
+#endif
 #ifdef KOBOX_FS_BOUNDARY_CALLERS
 	if (trial == 1 && depth <= 1) {
 		char label[32];
@@ -752,6 +797,9 @@ static int bench_phase(struct fs_bench *bench, const char *fs, u32 opcode,
 		fs, opcode, depth, trial, ops, ticks, elapsed, runtime);
 #endif
 	pr_info("FS_INTERNAL_SWITCHES switches=%llu\n", switches);
+#ifdef KOBOX_FS_MATCHED_BENCH
+	pr_info("FS_MATCHED_SWITCHES all=%llu\n", all_switches);
+#endif
 #ifdef KOBOX_FS_INTERNAL_PROFILE
 	pr_info("FS_INTERNAL_BOUNDARIES preempt=%llu irq=%llu clock=%llu handoff=%llu\n",
 		after.calls[KOBOX_TASK_BENCH_PREEMPT] - before.calls[KOBOX_TASK_BENCH_PREEMPT],
@@ -795,6 +843,10 @@ static int bench_file(struct fs_bench *bench, bool open)
 
 #endif /* !KOBOX_FS_HANDOFF_BENCH_ONLY */
 
+#ifdef KOBOX_FS_CACHE_MATRIX
+#include "fs_cache_matrix.inc"
+#endif
+
 int kobox_linux_fs_benchmark(struct vfsmount *root)
 {
 #ifdef KOBOX_FS_HANDOFF_BENCH_ONLY
@@ -824,16 +876,29 @@ int kobox_linux_fs_benchmark(struct vfsmount *root)
 	int error = -ENOMEM, cleanup;
 	bool created = false;
 
-#ifndef KOBOX_FS_PUBLICATION_BENCH
+#if !defined(KOBOX_FS_PUBLICATION_BENCH) && !defined(KOBOX_FS_CACHE_MATRIX)
 	error = bench_guards();
 	if (error)
 		goto out;
 #endif
 	error = -ENOMEM;
+#ifdef KOBOX_FS_CACHE_MATRIX
+	bench.input = kmalloc(KB2_FILESYSTEM_REQUEST_SIZE + 1048576, GFP_KERNEL);
+	bench.response = kmalloc(KB2_FILESYSTEM_RESPONSE_SIZE + 1048576, GFP_KERNEL);
+	config.client_bytes = 4 << 20;
+	config.total_bytes = 8 << 20;
+#else
 	bench.input = kmalloc(KB2_FILESYSTEM_REQUEST_SIZE + 4096, GFP_KERNEL);
 	bench.response = kmalloc(KB2_FILESYSTEM_RESPONSE_SIZE + 4096, GFP_KERNEL);
+#endif
 	if (!bench.input || !bench.response)
 		goto out;
+#ifdef KOBOX_FS_MATCHED_BENCH
+	bench.same_scope = copy_fs_struct(current->fs ?: init_task.fs);
+	if (!bench.same_scope)
+		goto out;
+	pr_info("FS_MATCHED_BENCH owned=1 scope=1 recycle=1 inline=0\n");
+#endif
 #ifdef KOBOX_FS_PUBLICATION_BENCH
 	bench.tickets = kcalloc(8, sizeof(*bench.tickets), GFP_KERNEL);
 	if (!bench.tickets)
@@ -857,6 +922,10 @@ int kobox_linux_fs_benchmark(struct vfsmount *root)
 	error = kobox_linux_fs_workers_create(bench.service, &config, &bench.workers);
 	if (error)
 		goto out;
+#ifdef KOBOX_FS_CACHE_MATRIX
+	error = matrix_sandbox(&bench, root);
+	goto out;
+#endif
 #ifdef KOBOX_FS_PUBLICATION_BENCH
 	bench.owner_workers = bench.workers;
 	config.publish = bench_publish;
@@ -978,6 +1047,11 @@ out:
 #endif
 	if (created)
 		bench_file(&bench, false);
+#ifdef KOBOX_FS_MATCHED_BENCH
+	kobox_linux_fs_request_destroy(bench.same_storage);
+	if (bench.same_scope)
+		free_fs_struct(bench.same_scope);
+#endif
 	kobox_linux_fs_service_destroy(bench.service);
 	task_work_run();
 	kfree(bench.response);

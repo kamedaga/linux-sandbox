@@ -21,6 +21,7 @@
 #include <linux/sched/signal.h>
 #include <asm/syscall.h>
 #include <asm/unistd.h>
+#include "fs_handle_cache.h"
 
 /* The pinned VFS owns openat2 validation; do not duplicate its flag rules. */
 #include "../../fs/internal.h"
@@ -30,6 +31,7 @@ struct kobox_linux_fs_table {
 	struct kobox_linux_fs_port owner;
 	struct path root;
 	struct xarray files;
+	struct kobox_fs_handle_cache latest;
 	struct mutex lock;
 	unsigned long next;
 };
@@ -84,6 +86,8 @@ void kobox_linux_fs_destroy(struct kobox_linux_fs_port *port)
 	 */
 	xa_for_each(&table->files, index, file)
 		filp_close(file, NULL);
+	if (table->latest.file)
+		filp_close(table->latest.file, NULL);
 	xa_destroy(&table->files);
 	path_put(&table->root);
 	kfree(table);
@@ -100,7 +104,7 @@ static struct file *fs_file(struct kobox_linux_fs_port *port, u64 handle)
 		if (port->handles[i] == handle)
 			return get_file(port->pinned[i]);
 	mutex_lock(&port->table->lock);
-	file = xa_load(&port->table->files, handle);
+	file = kobox_fs_handle_load(&port->table->latest, &port->table->files, handle);
 	if (file)
 		get_file(file);
 	mutex_unlock(&port->table->lock);
@@ -111,9 +115,14 @@ void kobox_linux_fs_port_release(struct kobox_linux_fs_port *view)
 {
 	unsigned int i;
 
+	/* Request scopes are gone and no table/pool lock is held here. A worker
+	 * is PF_KTHREAD: fput would defer the final close to global delayed work,
+	 * outside both task_work_run and the completion's lifetime guarantee.
+	 * Only these admitted file pins are synchronous; inline completion uses
+	 * release_nonfinal instead, so it never performs a blocking final put. */
 	for (i = 0; i < ARRAY_SIZE(view->pinned); i++)
 		if (view->pinned[i])
-			fput(view->pinned[i]);
+			__fput_sync(view->pinned[i]);
 	memset(view, 0, sizeof(*view));
 }
 
@@ -155,7 +164,8 @@ static int fs_install(struct kobox_linux_fs_port *port, struct file *file,
 		error = -EOVERFLOW;
 		goto out_unlock;
 	}
-	error = xa_insert(&port->table->files, port->table->next, file, GFP_KERNEL);
+	error = kobox_fs_handle_insert(&port->table->latest, &port->table->files,
+				       port->table->next, file);
 	if (!error)
 		*handle = port->table->next++;
 out_unlock:
@@ -381,7 +391,7 @@ int kobox_linux_fs_close(struct kobox_linux_fs_port *port,
 	if (!port || !handle || handle > ULONG_MAX)
 		return -EBADF;
 	mutex_lock(&port->table->lock);
-	file = xa_erase(&port->table->files, handle);
+	file = kobox_fs_handle_erase(&port->table->latest, &port->table->files, handle);
 	mutex_unlock(&port->table->lock);
 	if (!file)
 		return -EBADF;
@@ -480,7 +490,8 @@ bool kobox_linux_fs_port_release_nonfinal(struct kobox_linux_fs_port *view)
 		return false;
 	for (i = 0; i < ARRAY_SIZE(view->pinned); i++) {
 		if (view->pinned[i] &&
-		    xa_load(&view->table->files, view->handles[i]) != view->pinned[i]) {
+		    kobox_fs_handle_load(&view->table->latest, &view->table->files,
+					 view->handles[i]) != view->pinned[i]) {
 			mutex_unlock(&view->table->lock);
 			return false;
 		}

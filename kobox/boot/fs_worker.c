@@ -325,7 +325,8 @@ static void fs_worker_work_free(struct kobox_linux_fs_workers *pool,
 		return;
 	}
 	/* No request, cookie, response pointer or collected state may survive
-	 * into another job. Only scrubbed storage and its capacity survive.
+	 * into another job. Only reset metadata and private byte storage with its
+	 * capacity survive; unused payload must never be published.
 	 */
 	memset(work, 0, sizeof(*work));
 	work->storage = storage;

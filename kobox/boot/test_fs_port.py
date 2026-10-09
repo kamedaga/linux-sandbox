@@ -142,7 +142,7 @@ def main():
     sources = args.out / "sources"
     sources.mkdir()
     script = Path(__file__).resolve().parent
-    for name in ("fs_port.c", "fs_port.h", "fs_port_internal.h", "fs_service.c", "fs_service.h",
+    for name in ("fs_port.c", "fs_port.h", "fs_port_internal.h", "fs_handle_cache.h", "fs_service.c", "fs_service.h",
                  "fs_worker.c", "fs_worker.h", "fs_worker_gate.c", "fs_worker_gate.h",
                  "fs_bench.c", "fs_bench.h",
                  "fs_exec.c", "fs_exec.h",

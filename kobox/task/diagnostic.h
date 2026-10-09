@@ -4,6 +4,15 @@
 
 #include <linux/types.h>
 
+#ifdef KOBOX_FS_MATCHED_BENCH
+u64 kobox_task_bench_all_switches(void);
+#endif
+
+#ifdef KOBOX_FS_TAIL_TRACE
+void kobox_task_tail_window(bool enabled);
+void kobox_task_tail_dump(void);
+#endif
+
 #if defined(KOBOX_FS_BENCH_ELAPSED_ONLY) && \
     (defined(KOBOX_FS_SERVICE_PROFILE) || defined(KOBOX_FS_BOUNDARY_CALLERS))
 #error "elapsed-only benchmark cannot contain detailed probes"

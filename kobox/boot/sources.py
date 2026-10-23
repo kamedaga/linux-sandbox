@@ -46,6 +46,7 @@ BLOCK_SOURCES = (
 
 FS_SOURCES = (
     "kobox/boot/fs_port.c",
+    "kobox/boot/fs_shared.c",
     "kobox/boot/fs_service.c",
     "kobox/boot/fs_worker.c",
     "kobox/boot/fs_executor.c",
@@ -112,6 +113,7 @@ def support_sources(with_gates, device_profile="gpu"):
                       if source != "kobox/boot/virtio_gate.c")
     if with_gates and device_profile == "storage":
         fs_sources += ("kobox/boot/fs_port_gate.c", "kobox/boot/fs_workload.c",
+                       "kobox/boot/fs_shared_gate.c",
                        "kobox/boot/fs_worker_gate.c", "kobox/boot/lifecycle_gate.c")
     return (COMMON_SOURCES + ARCH_SOURCES + device_sources + fs_sources +
             (gates if with_gates else ()))

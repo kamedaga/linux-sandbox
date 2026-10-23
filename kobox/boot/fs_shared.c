@@ -1,0 +1,728 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#include "fs_shared.h"
+#include <linux/file.h>
+#include <linux/fs.h>
+#include <linux/list.h>
+#include <linux/mman.h>
+#include <linux/mm.h>
+#include <linux/memfd.h>
+#include <linux/mount.h>
+#include <linux/pagemap.h>
+#include <linux/pagevec.h>
+#include <linux/shmem_fs.h>
+#include <linux/security.h>
+#include <linux/slab.h>
+#include <linux/workqueue.h>
+#include <linux/swap.h>
+#include <linux/sort.h>
+#include <linux/sched/signal.h>
+#include <linux/rwsem.h>
+
+struct fs_shared_export {
+	struct list_head link;
+	struct file *file;
+	struct vm_area_struct *vma;
+	struct folio **folios;
+	u64 *pages;
+	u64 id, offset, flags, charged;
+	size_t count;
+	bool writable;
+	bool restore_evictable;
+};
+struct kobox_linux_fs_shared {
+	struct rw_semaphore lock;
+	struct list_head exports;
+	struct delayed_work maintenance;
+	struct kobox_linux_fs_shared_ops ops;
+	u64 bytes;
+	bool bound, closing;
+};
+
+/* This detached VMA describes filesystem callbacks, not Linux CPU aliases.
+ * The actual aliases and their TLB retirement belong to the native VM. Use
+ * the VFS compatibility entry so both mmap and mmap_prepare are honoured.
+ */
+static int fs_shared_prepare(struct fs_shared_export *view, vm_flags_t flags)
+{
+	struct vm_area_struct *vma = vm_area_alloc(&init_mm);
+	int error;
+	if (!vma)
+		return -ENOMEM;
+	vma->vm_start = PAGE_SIZE;
+	vma->vm_end = PAGE_SIZE + (view->count << PAGE_SHIFT);
+	vma->vm_pgoff = view->offset >> PAGE_SHIFT;
+	vma->vm_file = get_file(view->file);
+	vm_flags_init(vma, flags);
+	vma->vm_page_prot = vm_get_page_prot(flags);
+	mmap_write_lock(&init_mm);
+	error = vfs_mmap(view->file, vma);
+	mmap_write_unlock(&init_mm);
+	view->vma = vma;
+	if (error)
+		return error;
+	/* Device, DAX and remapped/stacked files need their own export protocol;
+	 * they must never be mistaken for this file's ordinary page cache.
+	 */
+	if (vma->vm_file != view->file ||
+	    (vma->vm_flags & (VM_PFNMAP | VM_MIXEDMAP | VM_IO)) ||
+	    !vma->vm_ops || (view->writable && !shmem_file(view->file) &&
+		!vma->vm_ops->page_mkwrite))
+		return -EOPNOTSUPP;
+	return 0;
+}
+
+static void fs_shared_unprepare(struct fs_shared_export *view)
+{
+	struct vm_area_struct *vma = view->vma;
+	if (!vma)
+		return;
+	mmap_write_lock(&init_mm);
+	if (vma->vm_ops && vma->vm_ops->close)
+		vma->vm_ops->close(vma);
+	mmap_write_unlock(&init_mm);
+	fput(vma->vm_file);
+	vm_area_free(vma);
+}
+
+static int fs_shared_mkwrite(struct fs_shared_export *view, struct folio *folio,
+	pgoff_t index)
+{
+	struct vm_area_struct *vma = view->vma;
+	vm_fault_t result;
+	struct vm_fault vmf = {
+		.vma = vma,
+		.gfp_mask = mapping_gfp_mask(view->file->f_mapping),
+		.pgoff = index,
+		.address = vma->vm_start + ((index - vma->vm_pgoff) << PAGE_SHIFT),
+		.flags = FAULT_FLAG_WRITE | FAULT_FLAG_MKWRITE,
+		.page = folio_page(folio, index - folio->index),
+	};
+	if (!view->writable || !vma->vm_ops->page_mkwrite)
+		return 0;
+	/* In particular ext4 must reserve/allocate blocks before native writes;
+	 * merely dirtying read_mapping_folio() would lose writes into file holes.
+	 * The service registry excludes truncate while this callback runs.
+	 */
+	mmap_read_lock(&init_mm);
+	result = vma->vm_ops->page_mkwrite(&vmf);
+	if (result & VM_FAULT_LOCKED)
+		folio_unlock(folio);
+	mmap_read_unlock(&init_mm);
+	if (result & VM_FAULT_OOM)
+		return -ENOMEM;
+	if (result & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY))
+		return -EIO;
+	return 0;
+}
+
+static void fs_shared_put_pages(struct folio **folios, size_t count)
+{
+	size_t i;
+	struct folio_batch batch;
+	folio_batch_init(&batch);
+	if (folios) {
+		for (i = 0; i < count; i++)
+			if (folios[i] && !folio_batch_add(&batch, folios[i])) {
+				check_move_unevictable_folios(&batch);
+				__folio_batch_release(&batch);
+			}
+		if (batch.nr) {
+			check_move_unevictable_folios(&batch);
+			__folio_batch_release(&batch);
+		}
+	}
+	kvfree(folios);
+}
+
+static void fs_shared_restore_eviction(struct kobox_linux_fs_shared *shared,
+	struct fs_shared_export *view)
+{
+	struct fs_shared_export *other;
+	if (!view->restore_evictable)
+		return;
+	list_for_each_entry(other, &shared->exports, link)
+		if (other != view && other->file->f_mapping == view->file->f_mapping)
+			return;
+	mapping_clear_unevictable(view->file->f_mapping);
+}
+
+/* Each populated slot owns a folio ref even when several slots name a large
+ * folio. Pins prohibit allocator reuse; a parent RAM VMO reference does not.
+ * Keep both old and new arrays alive until native TLB retirement succeeds.
+ */
+static int fs_shared_pages(struct fs_shared_export *view,
+	struct folio ***out_folios, u64 **out_pages)
+{
+	struct address_space *mapping = view->file->f_mapping;
+	struct folio **folios;
+	u64 *pages;
+	loff_t size = i_size_read(file_inode(view->file));
+	size_t i;
+	int error = -ENOMEM;
+
+	folios = kvcalloc(view->count, sizeof(*folios), GFP_KERNEL);
+	pages = kvmalloc_array(view->count, sizeof(*pages), GFP_KERNEL);
+	if (!folios || !pages)
+		goto fail;
+	for (i = 0; i < view->count; i++) {
+		pgoff_t index = (view->offset >> PAGE_SHIFT) + i;
+		struct folio *folio;
+
+		pages[i] = U64_MAX;
+		if (size <= 0 || index > ((u64)(size - 1) >> PAGE_SHIFT))
+			continue;
+		folio = shmem_file(view->file) ? shmem_read_folio(mapping, index) :
+			read_mapping_folio(mapping, index, view->file);
+		if (IS_ERR(folio)) {
+			error = PTR_ERR(folio);
+			goto fail;
+		}
+		folios[i] = folio;
+		error = fs_shared_mkwrite(view, folio, index);
+		if (error)
+			goto fail;
+		pages[i] = page_to_pfn(folio_page(folio, index - folio->index));
+	}
+	*out_folios = folios;
+	*out_pages = pages;
+	return 0;
+fail:
+	fs_shared_put_pages(folios, view->count);
+	kvfree(pages);
+	return error;
+}
+
+static void fs_shared_dirty(struct fs_shared_export *view)
+{
+	size_t i;
+	if (!view->writable)
+		return;
+	/* Native PTEs do not participate in Linux's page_mkclean dirty tracking.
+	 * Conservatively dirty writable exports before sync and periodically;
+	 * never acknowledge writeback of a private pread copy as MAP_SHARED.
+	 */
+	for (i = 0; i < view->count; i++)
+		if (view->folios[i])
+			folio_mark_dirty(view->folios[i]);
+}
+
+static void fs_shared_drop(struct kobox_linux_fs_shared *shared,
+	struct fs_shared_export *view)
+{
+	fs_shared_dirty(view);
+	list_del(&view->link);
+	fs_shared_restore_eviction(shared, view);
+	shared->bytes -= view->charged;
+	if (view->writable)
+		mapping_unmap_writable(view->file->f_mapping);
+	fs_shared_put_pages(view->folios, view->count);
+	kvfree(view->pages);
+	fs_shared_unprepare(view);
+	fput(view->file);
+	kfree(view);
+}
+
+static void fs_shared_maintenance(struct work_struct *work)
+{
+	struct kobox_linux_fs_shared *shared = container_of(to_delayed_work(work),
+		struct kobox_linux_fs_shared, maintenance);
+	struct fs_shared_export *view, *next;
+
+	/* An idle timer must not queue a writer behind an inode-blocked reader:
+	 * rwsem writer preference would then block unrelated empty-list readers.
+	 * Only a nonempty inventory needs exclusive dirty/reap work. */
+	down_read(&shared->lock);
+	if (list_empty(&shared->exports)) {
+		if (!shared->closing)
+			schedule_delayed_work(&shared->maintenance, msecs_to_jiffies(100));
+		up_read(&shared->lock);
+		return;
+	}
+	up_read(&shared->lock);
+	down_write(&shared->lock);
+	list_for_each_entry_safe(view, next, &shared->exports, link) {
+		fs_shared_dirty(view);
+		if (shared->ops.retire(shared->ops.context, view->id, 0) == 1)
+			fs_shared_drop(shared, view);
+	}
+	if (!shared->closing)
+		schedule_delayed_work(&shared->maintenance, msecs_to_jiffies(100));
+	up_write(&shared->lock);
+}
+
+struct kobox_linux_fs_shared *kobox_linux_fs_shared_create(void)
+{
+	struct kobox_linux_fs_shared *shared = kzalloc(sizeof(*shared), GFP_KERNEL);
+	if (!shared)
+		return ERR_PTR(-ENOMEM);
+	init_rwsem(&shared->lock);
+	INIT_LIST_HEAD(&shared->exports);
+	INIT_DELAYED_WORK(&shared->maintenance, fs_shared_maintenance);
+	return shared;
+}
+
+int kobox_linux_fs_shared_bind(struct kobox_linux_fs_shared *shared,
+	const struct kobox_linux_fs_shared_ops *ops)
+{
+	if (!shared || !ops || !ops->create || !ops->refresh || !ops->retire ||
+	    !ops->budget_bytes)
+		return -EINVAL;
+	down_write(&shared->lock);
+	if (shared->bound || shared->closing) {
+		up_write(&shared->lock);
+		return -EBUSY;
+	}
+	shared->ops = *ops;
+	shared->bound = true;
+	schedule_delayed_work(&shared->maintenance, msecs_to_jiffies(100));
+	up_write(&shared->lock);
+	return 0;
+}
+
+int kobox_linux_fs_shared_close(struct kobox_linux_fs_shared *shared)
+{
+	struct fs_shared_export *view, *next;
+	int error = 0;
+	if (!shared)
+		return 0;
+	down_write(&shared->lock);
+	shared->closing = true;
+	up_write(&shared->lock);
+	cancel_delayed_work_sync(&shared->maintenance);
+	down_write(&shared->lock);
+	list_for_each_entry_safe(view, next, &shared->exports, link) {
+		int retired = shared->ops.retire(shared->ops.context, view->id, 1);
+		if (retired == 1)
+			fs_shared_drop(shared, view);
+		else
+			error = retired < 0 ? retired : -EBUSY;
+	}
+	up_write(&shared->lock);
+	return error;
+}
+
+void kobox_linux_fs_shared_destroy(struct kobox_linux_fs_shared *shared)
+{
+	if (!shared)
+		return;
+	/* Service close must succeed before mount teardown can release this
+	 * registry. Failed revocation is retained ownership, not a safe unpin.
+	 */
+	BUG_ON(kobox_linux_fs_shared_close(shared));
+	kfree(shared);
+}
+
+int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowait,
+	bool publishing, struct kobox_linux_fs_shared_guard *guard)
+{
+	struct fs_shared_export *view, *next;
+	guard->mode = KOBOX_FS_SHARED_NONE;
+	if (!shared)
+		return 0;
+	/* Publication can allocate, run VFS mmap callbacks and enter native IPC;
+	 * it belongs on a worker, never the nonblocking owner/inline lane. */
+	if (publishing && nowait)
+		return -EAGAIN;
+	if (!publishing) {
+		if (nowait) {
+			if (!down_read_trylock(&shared->lock))
+				return -EAGAIN;
+		} else {
+			down_read(&shared->lock);
+		}
+		if (shared->closing) {
+			up_read(&shared->lock);
+			return -ESHUTDOWN;
+		}
+		/* No native aliases exist. Keep read admission through VFS so writes
+		 * may run concurrently, while a new export (always write admission)
+		 * cannot publish stale PFNs halfway through an in-flight mutation.
+		 */
+		if (list_empty(&shared->exports)) {
+			guard->mode = KOBOX_FS_SHARED_READ;
+			return 0;
+		}
+		up_read(&shared->lock);
+		if (nowait)
+			return -EAGAIN;
+	}
+	/* Never upgrade while holding read admission. Recheck closing/exports
+	 * under write exclusion; maintenance may have retired them in between. */
+	down_write(&shared->lock);
+	if (shared->closing) {
+		up_write(&shared->lock);
+		return -ESHUTDOWN;
+	}
+	guard->mode = KOBOX_FS_SHARED_WRITE;
+	// Reap before VFS observes mmap-writer counters: after the last native
+	// munmap, F_ADD_SEALS must not see a fictitious writer until the timer fires.
+	list_for_each_entry_safe(view, next, &shared->exports, link)
+		if (shared->ops.retire(shared->ops.context, view->id, 0) == 1)
+			fs_shared_drop(shared, view);
+	list_for_each_entry(view, &shared->exports, link)
+		fs_shared_dirty(view);
+	return 0;
+}
+
+/* Buffered reads consume the same folios as a native shared alias, so they
+ * need only keep publication/revocation out while VFS runs. O_DIRECT may
+ * invalidate or write back those folios; inspect f_flags under the read
+ * guard, which also excludes the service's F_SETFL write guard. Reuse the
+ * full path for direct I/O, including its nowait punt on an exported file.
+ */
+int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *shared,
+	bool nowait, struct file *file, struct kobox_linux_fs_shared_guard *guard)
+{
+	bool direct;
+
+	guard->mode = KOBOX_FS_SHARED_NONE;
+	if (!shared)
+		return 0;
+	if (nowait) {
+		if (!down_read_trylock(&shared->lock))
+			return -EAGAIN;
+	} else {
+		down_read(&shared->lock);
+	}
+	if (shared->closing) {
+		up_read(&shared->lock);
+		return -ESHUTDOWN;
+	}
+	direct = file && (READ_ONCE(file->f_flags) & O_DIRECT) &&
+		!list_empty(&shared->exports);
+	if (direct) {
+		up_read(&shared->lock);
+		return kobox_linux_fs_shared_enter(shared, nowait, false, guard);
+	}
+	guard->mode = KOBOX_FS_SHARED_READ;
+	return 0;
+}
+
+int kobox_linux_fs_shared_leave(struct kobox_linux_fs_shared *shared, bool refresh,
+	struct kobox_linux_fs_shared_guard *guard)
+{
+	struct fs_shared_export *view;
+	int error = 0;
+	if (!shared)
+		return 0;
+	if (guard->mode == KOBOX_FS_SHARED_NONE)
+		return -EINVAL;
+	if (guard->mode == KOBOX_FS_SHARED_READ) {
+		/* Publishers, F_SETFL and maintenance need write admission. An
+		 * existing export is safe with buffered reads of its pinned folios. */
+		up_read(&shared->lock);
+		guard->mode = KOBOX_FS_SHARED_NONE;
+		return 0;
+	}
+	if (refresh)
+		list_for_each_entry(view, &shared->exports, link) {
+			struct folio **folios = NULL;
+			u64 *pages = NULL;
+			int status = fs_shared_pages(view, &folios, &pages);
+			if (!status && memcmp(pages, view->pages, view->count * sizeof(*pages)))
+				status = shared->ops.refresh(shared->ops.context, view->id,
+					pages, view->count);
+			if (!status) {
+				fs_shared_put_pages(view->folios, view->count);
+				kvfree(view->pages);
+				view->folios = folios;
+				view->pages = pages;
+			} else {
+				// A Linux mutation may already have completed. Keep its old
+				// pins on native failure; never recycle still-aliased pages.
+				fs_shared_put_pages(folios, view->count);
+				kvfree(pages);
+				error = status;
+			}
+		}
+	up_write(&shared->lock);
+	guard->mode = KOBOX_FS_SHARED_NONE;
+	return error;
+}
+
+static int fs_shared_folio_order(const void *left, const void *right)
+{
+	unsigned long a = folio_pfn(*(struct folio * const *)left);
+	unsigned long b = folio_pfn(*(struct folio * const *)right);
+	return (a > b) - (a < b);
+}
+
+static size_t fs_shared_owned_refs(struct folio **pins, size_t count,
+	struct folio *folio)
+{
+	size_t low = 0, high = count, first;
+	unsigned long pfn = folio_pfn(folio);
+	while (low < high) {
+		size_t mid = low + (high - low) / 2;
+		if (folio_pfn(pins[mid]) < pfn)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	first = low;
+	high = count;
+	while (low < high) {
+		size_t mid = low + (high - low) / 2;
+		if (folio_pfn(pins[mid]) <= pfn)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	return low - first;
+}
+
+static bool fs_shared_has_other_pins(struct address_space *mapping,
+	struct folio **pins, size_t count)
+{
+	XA_STATE(xas, &mapping->i_pages, 0);
+	struct folio *folio;
+	unsigned int latency = 0;
+	bool busy = false;
+
+	xas_lock_irq(&xas);
+	xas_for_each(&xas, folio, ULONG_MAX) {
+		if (!xa_is_value(folio)) {
+			size_t expected;
+			int baseline = folio_expected_ref_count(folio);
+			if (baseline < 0 || check_add_overflow((size_t)baseline,
+				fs_shared_owned_refs(pins, count, folio), &expected) ||
+			    expected > INT_MAX || folio_ref_count(folio) != expected) {
+				busy = true;
+				break;
+			}
+		}
+		if (++latency < XA_CHECK_SCHED)
+			continue;
+		latency = 0;
+		xas_pause(&xas);
+		xas_unlock_irq(&xas);
+		cond_resched();
+		xas_lock_irq(&xas);
+	}
+	xas_unlock_irq(&xas);
+	return busy;
+}
+
+bool kobox_linux_fs_shared_add_seals(struct kobox_linux_fs_shared *shared,
+	struct file *file, unsigned long argument, long *result)
+{
+	const unsigned int all_seals = F_SEAL_SEAL | F_SEAL_EXEC | F_SEAL_SHRINK |
+		F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+	struct fs_shared_export *view;
+	struct inode *inode = file_inode(file);
+	struct address_space *mapping = file->f_mapping;
+	struct folio **pins = NULL;
+	size_t capacity = 0, count = 0, i;
+	unsigned int seals = (unsigned int)argument, *current_seals;
+	int error, scan;
+
+	if (!shared || !shmem_file(file) ||
+	    !(seals & (F_SEAL_WRITE | F_SEAL_EXEC)))
+		return false;
+	lockdep_assert_held(&shared->lock);
+	if (list_empty(&shared->exports))
+		return false;
+	lockdep_assert_held_write(&shared->lock);
+	list_for_each_entry(view, &shared->exports, link) {
+		if (view->file->f_mapping != mapping)
+			continue;
+		/* Current PROT_READ is not sufficient: mprotect may restore WRITE.
+		 * Any writable lifetime ceiling must use Linux's normal rejection.
+		 */
+		if (view->writable)
+			return false;
+		for (i = 0; i < view->count; i++)
+			if (view->folios[i] && check_add_overflow(capacity,
+				(size_t)1, &capacity)) {
+				*result = -ENOMEM;
+				return true;
+			}
+	}
+	if (!capacity)
+		return false;
+
+	/* Mirror the real fcntl admission under the caller's credential scope.
+	 * Linux's private memfd pin scanner cannot distinguish native RO aliases
+	 * from writable GUP. This bridge changes ONLY that refcount comparison;
+	 * it neither drops physical pins nor fabricates Linux PTE/mapcount state.
+	 * Keep admission in sync with fs/fcntl.c and mm/memfd.c; unrelated fcntl
+	 * operations and files still go through the unmodified Linux syscall.
+	 */
+	error = -EBADF;
+	if (file->f_mode & FMODE_PATH)
+		goto done;
+	error = security_file_fcntl(file, F_ADD_SEALS, argument);
+	if (error)
+		goto done;
+	error = -EPERM;
+	if (!(file->f_mode & FMODE_WRITE))
+		goto done;
+	error = -EINVAL;
+	if (seals & ~all_seals)
+		goto done;
+	/* Lock order stays registry -> inode -> xarray; no folio lock is held
+	 * across inode acquisition. Registry ownership keeps every counted pin
+	 * alive throughout retries, including duplicate slots in large folios.
+	 * Orphan folios remain pinned but cannot match a different cache folio.
+	 */
+	inode_lock(inode);
+	current_seals = &SHMEM_I(inode)->seals;
+	error = -EPERM;
+	if (*current_seals & F_SEAL_SEAL)
+		goto unlock;
+	if ((seals & F_SEAL_EXEC) && (inode->i_mode & 0111))
+		seals |= F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+	if ((seals & F_SEAL_WRITE) && !(*current_seals & F_SEAL_WRITE)) {
+		error = mapping_deny_writable(mapping);
+		if (error)
+			goto unlock;
+		pins = kvmalloc_array(capacity, sizeof(*pins), GFP_KERNEL);
+		if (!pins) {
+			error = -ENOMEM;
+			goto allow_writable;
+		}
+		list_for_each_entry(view, &shared->exports, link)
+			if (view->file->f_mapping == mapping)
+				for (i = 0; i < view->count; i++)
+					if (view->folios[i])
+						pins[count++] = view->folios[i];
+		sort(pins, count, sizeof(*pins), fs_shared_folio_order, NULL);
+		lru_add_drain();
+		for (scan = 0; scan <= 4; scan++) {
+			if (!fs_shared_has_other_pins(mapping, pins, count))
+				break;
+			if (scan == 4) {
+				error = -EBUSY;
+				goto allow_writable;
+			}
+			if (!scan)
+				lru_add_drain_all();
+			else if (schedule_timeout_killable((HZ << scan) / 200)) {
+				if (fs_shared_has_other_pins(mapping, pins, count)) {
+					error = -EBUSY;
+					goto allow_writable;
+				}
+				break;
+			}
+		}
+	}
+	*current_seals |= seals;
+	error = 0;
+	goto unlock;
+allow_writable:
+	mapping_allow_writable(mapping);
+unlock:
+	inode_unlock(inode);
+	kvfree(pins);
+done:
+	*result = error;
+	return true;
+}
+
+int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
+	struct file *file, u64 client, u64 sequence, u64 offset, u64 length,
+	u64 flags, u32 prot, u64 *id, u64 *file_size)
+{
+	struct fs_shared_export *view;
+	struct fs_shared_export *other;
+	u64 count, charged;
+	vm_flags_t vm_flags;
+	int error;
+
+	/* Caller owns registry write admission, a retained authenticated file and the
+	 * request credential scope. Only regular page-cache/shmem mappings enter.
+	 */
+	if (!shared || !shared->bound)
+		return -EOPNOTSUPP;
+	lockdep_assert_held_write(&shared->lock);
+	if (flags & ~3ULL || prot & ~7U || !length || (offset | length) & (PAGE_SIZE - 1) ||
+	    offset > S64_MAX || length > S64_MAX - offset)
+		return -EINVAL;
+	if (!S_ISREG(file_inode(file)->i_mode))
+		return -ENODEV;
+	if (!can_mmap_file(file) || IS_DAX(file_inode(file)) ||
+	    (!shmem_file(file) && !file->f_mapping->a_ops->read_folio))
+		return -ENODEV;
+	if (!(file->f_mode & FMODE_READ))
+		return -EACCES;
+	if ((prot & 2) && (!(file->f_mode & FMODE_WRITE) || !(flags & 1)))
+		return -EACCES;
+	if ((prot & 4) && (!(flags & 2) || path_noexec(&file->f_path)))
+		return -EACCES;
+	vm_flags = VM_SHARED | VM_MAYREAD |
+		((flags & 1) && (file->f_mode & FMODE_WRITE) ? VM_MAYWRITE : 0) |
+		((flags & 2) && !path_noexec(&file->f_path) ? VM_MAYEXEC : 0) |
+		((prot & 1) ? VM_READ : 0) | ((prot & 2) ? VM_WRITE : 0) |
+		((prot & 4) ? VM_EXEC : 0);
+	error = memfd_check_seals_mmap(file, &vm_flags);
+	if (error)
+		return error;
+	error = security_mmap_file(file, prot, MAP_SHARED);
+	if (error)
+		return error;
+	/* Seals/noexec can attenuate future mprotect without rejecting a valid
+	 * initially read-only mapping. Publish the actual lifetime ceiling. */
+	flags = ((vm_flags & VM_MAYWRITE) ? 1 : 0) | ((vm_flags & VM_MAYEXEC) ? 2 : 0);
+	count = length >> PAGE_SHIFT;
+	if (count > (U64_MAX - sizeof(*view)) / (2 * (sizeof(u64) + sizeof(void *))))
+		return -ENOMEM;
+	charged = sizeof(*view) + count * 2 * (sizeof(u64) + sizeof(void *));
+	if (charged > shared->ops.budget_bytes || shared->bytes > shared->ops.budget_bytes - charged)
+		return -ENOMEM;
+	view = kzalloc(sizeof(*view), GFP_KERNEL);
+	if (!view)
+		return -ENOMEM;
+	view->file = get_file(file);
+	view->offset = offset;
+	view->count = count;
+	view->flags = flags;
+	view->charged = charged;
+	view->writable = flags & 1;
+	error = fs_shared_prepare(view, vm_flags);
+	if (error)
+		goto fail;
+	view->restore_evictable = !mapping_unevictable(file->f_mapping);
+	list_for_each_entry(other, &shared->exports, link)
+		if (other->file->f_mapping == file->f_mapping) {
+			view->restore_evictable = other->restore_evictable;
+			break;
+		}
+	/* Like Linux GEM's shmem pinning, a folio reference alone is not enough:
+	 * swapout must not replace the cache entry underneath native CPU aliases.
+	 * The service owns all filesystem/shmem mutation in this sandbox. Restore
+	 * only our own unevictable grant, after the last export of this inode.
+	 */
+	mapping_set_unevictable(file->f_mapping);
+	if (view->writable) {
+		/* This is the same write/seal admission counter used by Linux mmap.
+		 * It must stay elevated until all native aliases have retired.
+		 */
+		error = mapping_map_writable(file->f_mapping);
+		if (error)
+			goto fail;
+	}
+	error = fs_shared_pages(view, &view->folios, &view->pages);
+	if (!error)
+		error = shared->ops.create(shared->ops.context, client, sequence,
+			view->pages, view->count, flags, &view->id);
+	if (error) {
+		if (view->writable)
+			mapping_unmap_writable(file->f_mapping);
+		goto fail;
+	}
+	shared->bytes += charged;
+	list_add_tail(&view->link, &shared->exports);
+	fs_shared_dirty(view);
+	*id = view->id;
+	*file_size = i_size_read(file_inode(file));
+	file_accessed(file);
+	return 0;
+fail:
+	fs_shared_restore_eviction(shared, view);
+	fs_shared_put_pages(view->folios, view->count);
+	kvfree(view->pages);
+	fs_shared_unprepare(view);
+	fput(view->file);
+	kfree(view);
+	return error;
+}

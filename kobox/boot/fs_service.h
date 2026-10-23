@@ -11,6 +11,12 @@
 
 struct kobox_linux_fs_service;
 struct kobox_linux_fs_request;
+struct kobox_linux_fs_shared_ops;
+int kobox_linux_fs_service_shared_bind(struct kobox_linux_fs_service *,
+	const struct kobox_linux_fs_shared_ops *);
+/* May fail while a native alias is pinned. Failure retains the service and
+ * mount; callers must not proceed to destroy/unmount or release Linux RAM. */
+int kobox_linux_fs_service_shared_close(struct kobox_linux_fs_service *);
 
 #ifdef __KERNEL__
 struct vfsmount;

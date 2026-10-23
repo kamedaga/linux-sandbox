@@ -27,8 +27,19 @@ struct kobox_linux_fs_mount {
 	unsigned int submounts;
 };
 
-static const char * const fs_tmpfs_paths[] = {
-	"/tmp", "/run", "/dev/shm",
+static const struct {
+	const char *path;
+	const char *options;
+} fs_tmpfs_paths[] = {
+	{ "/tmp", NULL }, { "/run", NULL }, { "/dev/shm", NULL },
+	/* Discovery indexes and DRM nodes describe live device grants. Keeping
+	 * them on ext4 strands a dead publisher after a host stop/crash, and the
+	 * next legitimate publisher must reject those preexisting entries. Hide
+	 * the persistent backing with fresh namespaces; inputd/gpud republish the
+	 * actual devices without replacing another live owner's metadata. */
+	{ "/sys/dev/char", "mode=0755" },
+	{ "/sys/class/drm", "mode=0755" },
+	{ "/dev/dri", "mode=0755" },
 };
 
 static bool fs_disk_allowed(struct gendisk *disk,
@@ -233,18 +244,33 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 	}
 	/* Runtime tmpfs semantics and accounting belong to upstream. The root
 	 * image only supplies the namespace directories, never copied contents. */
-	result = fs_make_node("/dev", S_IFDIR | 0755, 0);
-	if (result == -EEXIST)
-		result = 0;
+	const char * const parents[] = { "/dev", "/sys", "/sys/dev", "/sys/class" };
+	for (i = 0; !result && i < ARRAY_SIZE(parents); i++) {
+		result = fs_make_node(parents[i], S_IFDIR | 0755, 0);
+		if (result == -EEXIST)
+			result = 0;
+	}
 	for (i = 0; !result && i < ARRAY_SIZE(fs_tmpfs_paths); i++) {
-		result = fs_make_node(fs_tmpfs_paths[i], S_IFDIR | 01777, 0);
+		char *options;
+
+		result = fs_make_node(fs_tmpfs_paths[i].path, S_IFDIR | 01777, 0);
 		if (result == -EEXIST)
 			result = 0;
 		if (!result)
-			result = kern_path(fs_tmpfs_paths[i], LOOKUP_DIRECTORY, &point);
+			result = kern_path(fs_tmpfs_paths[i].path, LOOKUP_DIRECTORY, &point);
 		if (result)
 			break;
-		result = path_mount(NULL, &point, "tmpfs", MS_NOSUID | MS_NODEV, NULL);
+		/* Monolithic mount parsers may consume their writable option text. */
+		options = fs_tmpfs_paths[i].options ?
+			kstrdup(fs_tmpfs_paths[i].options, GFP_KERNEL) : NULL;
+		if (fs_tmpfs_paths[i].options && !options) {
+			path_put(&point);
+			result = -ENOMEM;
+			break;
+		}
+		result = path_mount(NULL, &point, "tmpfs", MS_NOSUID | MS_NODEV,
+				    options);
+		kfree(options);
 		path_put(&point);
 		if (!result)
 			mount->submounts++;
@@ -295,6 +321,9 @@ int kobox_linux_fs_mount_close(struct kobox_linux_fs_mount *mount)
 	if (!mount)
 		return 0;
 	if (mount->service) {
+		result = kobox_linux_fs_service_shared_close(mount->service);
+		if (result)
+			return result;
 		kobox_linux_fs_service_destroy(mount->service);
 		mount->service = NULL;
 	}
@@ -308,7 +337,7 @@ int kobox_linux_fs_mount_close(struct kobox_linux_fs_mount *mount)
 		if (IS_ERR(old))
 			return PTR_ERR(old);
 		while (mount->submounts) {
-			result = fs_unmount_path(fs_tmpfs_paths[mount->submounts - 1]);
+			result = fs_unmount_path(fs_tmpfs_paths[mount->submounts - 1].path);
 			if (result) {
 				fs_leave_root(old);
 				return result;

@@ -1122,12 +1122,19 @@ static void fs_worker_unhold(struct kobox_linux_fs_workers *pool)
 	}
 }
 
+/* Whether the owner has another job to run: held, or queued for the fair
+ * take. Queued work a worker takes meanwhile only costs one empty run. */
+static bool fs_worker_owner_more(const struct kobox_linux_fs_workers *pool)
+{
+	return !list_empty(&pool->owner_held) || READ_ONCE(pool->queued);
+}
+
 int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *pool)
 {
 	struct kobox_linux_fs_work *work;
 	struct task_struct *wake[4];
 	unsigned int count;
-	bool behind, slow;
+	bool behind, slow, more;
 	u64 start = 0;
 
 	if (!fs_worker_owner(pool) || !pool->owner_executes)
@@ -1161,7 +1168,8 @@ int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *pool)
 #endif
 	if (work->held && !slow && !pool->owner_slow) {
 		list_add_tail(&work->link, &pool->owner_done);
-		return 1;
+		/* The lifecycle sleeps after a 1 unless its recheck accepts more. */
+		return fs_worker_owner_more(pool) ? 2 : 1;
 	}
 	spin_lock(&pool->lock);
 	pool->owner_slow = slow;
@@ -1178,10 +1186,11 @@ int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *pool)
 		 * job this made runnable is the owner's next run before it waits. */
 		list_add_tail(&work->link, &pool->completed);
 	}
+	more = fs_worker_owner_more(pool);
 	spin_unlock(&pool->lock);
 	while (count)
 		wake_up_process(wake[--count]);
-	return 1;
+	return more ? 2 : 1;
 }
 
 static int fs_worker_serve_run(void *context)

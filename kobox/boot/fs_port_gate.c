@@ -5,6 +5,7 @@
 #include "fs_exec.h"
 #include "fs_port_gate.h"
 #include "fs_worker_gate.h"
+#include "fs_shared_gate.h"
 #include "lifecycle_gate.h"
 #include <kobox2/filesystem.h>
 #include <linux/blkdev.h>
@@ -747,6 +748,34 @@ static int gate_device_route(struct fs_gate *gate)
 		S_IFCHR | 0600, new_encode_dev(MKDEV(250, 0)), 0), 0);
 	ROUTE_EXPECT(kobox_linux_fs_service_register(gate->service, 13, 1,
 		gate->creds[FS_ROOT], KB2_FILESYSTEM_RIGHTS_VALID_MASK), 0);
+	/* OPEN metadata must describe the retained inode, work for O_PATH,
+	 * and obey STAT authority even when opening itself is permitted. */
+	request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_OPENAT2,
+		.client = 13, .flags = O_PATH, .mask = STATX_BASIC_STATS,
+		.path = {KB2_FILESYSTEM_REQUEST_SIZE, sizeof(device)}};
+	ROUTE_EXPECT(gate_authority_call(gate, false, 13, request, device,
+		sizeof(device), &reply, stat, sizeof(stat) - 1), -EMSGSIZE);
+	ROUTE_EXPECT(gate_authority_call(gate, false, 13, request, device,
+		sizeof(device), &reply, stat, sizeof(stat)), 0);
+	if (reply.data_length != sizeof(stat) ||
+	    (stat[KB2_FILESYSTEM_STATX_MODE_OFFSET + 1] & 0xf0) != (S_IFCHR >> 8) ||
+	    stat[KB2_FILESYSTEM_STATX_RDEV_MAJOR_OFFSET] != 250)
+		return -EINVAL;
+	ROUTE_EXPECT(gate_authority_call(gate, false, 13,
+		(kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_CLOSE, .handle = reply.handle},
+		NULL, 0, &reply, NULL, 0), 0);
+	ROUTE_EXPECT(kobox_linux_fs_service_register(gate->service, 14, 1,
+		gate->creds[FS_ROOT], KB2_FILESYSTEM_RIGHT_LOOKUP), 0);
+	request.client = 14;
+	memset(stat, 0xa5, sizeof(stat));
+	ROUTE_EXPECT(gate_authority_call(gate, false, 14, request, device,
+		sizeof(device), &reply, stat, sizeof(stat)), 0);
+	if (reply.data_length != sizeof(stat) || memchr_inv(stat, 0, sizeof(stat)))
+		return -EINVAL;
+	ROUTE_EXPECT(gate_authority_call(gate, false, 14,
+		(kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_CLOSE, .handle = reply.handle},
+		NULL, 0, &reply, NULL, 0), 0);
+	ROUTE_EXPECT(kobox_linux_fs_service_unregister(gate->service, 14), 0);
 	request = (kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_DEVICE_ROUTE,
 		.client = 13, .credential_generation = 1, .flags = O_RDONLY,
 		.path = {KB2_FILESYSTEM_REQUEST_SIZE, sizeof(device)}};
@@ -800,6 +829,27 @@ static int gate_device_route(struct fs_gate *gate)
 	ROUTE_EXPECT(gate_wire_call(gate, FS_ROOT, (kb2_fs_request_t){
 		.opcode = KB2_FILESYSTEM_OP_WRITE, .handle = handle, .length = sizeof(contents)},
 		NULL, NULL, contents, sizeof(contents), NULL, 0, NULL), sizeof(contents));
+	{
+		kb2_fs_request_t open = {.opcode = KB2_FILESYSTEM_OP_OPENAT2,
+			.client = 13, .flags = O_TRUNC | O_RDWR, .mask = STATX_BASIC_STATS,
+			.path = {KB2_FILESYSTEM_REQUEST_SIZE, sizeof(regular)}};
+
+		ROUTE_EXPECT(gate_authority_call(gate, false, 13, open, regular,
+			sizeof(regular), &reply, stat, sizeof(stat) - 1), -EMSGSIZE);
+		open.mask = 0x80000000u;
+		ROUTE_EXPECT(gate_authority_call(gate, false, 13, open, regular,
+			sizeof(regular), &reply, stat, sizeof(stat)), -EINVAL);
+		open.mask = STATX_BASIC_STATS;
+		open.flags = O_RDONLY;
+		ROUTE_EXPECT(gate_authority_call(gate, false, 13, open, regular,
+			sizeof(regular), &reply, stat, sizeof(stat)), 0);
+		if (reply.data_length != sizeof(stat) ||
+		    (stat[KB2_FILESYSTEM_STATX_MODE_OFFSET + 1] & 0xf0) != (S_IFREG >> 8))
+			return -EINVAL;
+		ROUTE_EXPECT(gate_authority_call(gate, false, 13,
+			(kb2_fs_request_t){.opcode = KB2_FILESYSTEM_OP_CLOSE, .handle = reply.handle},
+			NULL, 0, &reply, NULL, 0), 0);
+	}
 	request.flags = O_CREAT | O_TRUNC | O_RDWR;
 	request.mode = 0600;
 	request.path.length = sizeof(regular);
@@ -1425,6 +1475,8 @@ static int gate_filesystem(struct fs_gate *gate, struct vfsmount *mnt,
 		error = gate_global_sync(gate);
 	if (!error)
 		error = gate_exec(gate, mnt);
+	if (!error)
+		error = kobox_linux_fs_shared_verify();
 	if (!error)
 		error = kobox_linux_fs_workers_verify(mnt, gate->creds[FS_ROOT]);
 	kobox_linux_fs_service_destroy(gate->service);

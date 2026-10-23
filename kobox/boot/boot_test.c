@@ -77,6 +77,7 @@ static struct kobox_posix_vm_service *exec_vm_service;
 static int (*verify_vfs)(struct kobox_linux_vfs_report *report);
 static int (*verify_fs_port)(const struct kobox_fs_image *,
 			     struct kobox_fs_port_report *);
+static int (*verify_fs_shared)(void);
 static struct kobox_fs_image fs_image;
 static int (*verify_shmem)(struct kobox_linux_shmem_report *report);
 static int (*verify_pressure)(struct kobox_linux_pressure_report *report);
@@ -456,6 +457,19 @@ static void kernel_main(void *argument)
 			fs.ext4.line, (long long)fs.ext4.actual, (long long)fs.ext4.expected,
 			fs.tmpfs.checks, (unsigned long long)fs.tmpfs.digest,
 			fs.tmpfs.line, (long long)fs.tmpfs.actual, (long long)fs.tmpfs.expected);
+		if (length > 0 && (size_t)length < sizeof(message))
+			(void)write(STDERR_FILENO, message, length);
+		if (kobox_posix_notifications_restore(notification_mask))
+			__builtin_trap();
+	}
+	if (!status && verify_fs_shared) {
+		/* Keep the shared registry gate reachable when an unrelated VFS
+		 * policy gate fails earlier in the full fs-port workload. */
+		status = verify_fs_shared();
+		if (kobox_posix_notifications_save(&notification_mask))
+			__builtin_trap();
+		length = snprintf(message, sizeof(message),
+			"FS_SHARED_GATE status=%d\n", status);
 		if (length > 0 && (size_t)length < sizeof(message))
 			(void)write(STDERR_FILENO, message, length);
 		if (kobox_posix_notifications_restore(notification_mask))
@@ -876,7 +890,8 @@ int kobox_boot_test_run(int argc, char **argv,
 					!strcmp(argv[2], "--vm-probe-lifetime") ||
 					!strcmp(argv[2], "--vm-probe-death") ||
 					!strcmp(argv[2], "--vm-probe-rollback"))) ||
-	      (argc == 3 && (!strcmp(argv[2], "--timed-wait") ||
+	      (argc == 3 && (!strcmp(argv[2], "--fs-shared") ||
+				!strcmp(argv[2], "--timed-wait") ||
 					!strcmp(argv[2], "--dma-xarray") ||
 					!strcmp(argv[2], "--rcu") ||
 					!strcmp(argv[2], "--workqueue") ||
@@ -917,6 +932,11 @@ int kobox_boot_test_run(int argc, char **argv,
 		address = core->lookup(core->loader, "kobox_linux_fs_port_verify");
 		CHECK(address);
 		memcpy(&verify_fs_port, &address, sizeof(verify_fs_port));
+	}
+	if (argc == 3 && !strcmp(argv[2], "--fs-shared")) {
+		address = core->lookup(core->loader, "kobox_linux_fs_shared_verify");
+		CHECK(address);
+		memcpy(&verify_fs_shared, &address, sizeof(verify_fs_shared));
 	}
 	if (resources && resources->pci) {
 		CHECK(argc == 2);

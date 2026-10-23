@@ -7,9 +7,9 @@
   "config_sha256": "863ee0a959f1ad40ce7ec62317458bd0fa0026b3c0367c9ec808164609338c3f",
   "toolchain": {
     "compiler": "clang",
-    "compiler_version": "18.1.3",
+    "compiler_version": "18.1.8",
     "linker": "lld",
-    "linker_version": "18.1.3"
+    "linker_version": "18.1.8"
   },
   "kernel_runtime": {
     "name": "linux-runtime",

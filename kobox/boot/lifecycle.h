@@ -60,10 +60,13 @@ int kobox_linux_lifecycle_serve(const struct kobox_linux_lifecycle *host,
 			       void *service);
 void kobox_linux_lifecycle_interrupt(void);
 /* Optional executor for an asynchronous lifecycle, registered by start() on
- * the opening task. When advance() is idle the opening task calls run before
- * it sleeps; run executes at most one accepted item through
- * kobox_linux_lifecycle_execute and returns 1, or 0 with nothing to run.
- * Its completion must be collected by a later advance(), not by run.
+ * the opening task. After each advance() the opening task calls run; run
+ * executes at most one accepted item through kobox_linux_lifecycle_execute
+ * and returns 1, or 2 when more accepted items wait for it, or 0 with nothing
+ * to run. A return of 1 lets the task go to its pre-sleep recheck directly,
+ * so it must not leave runnable items behind. Its completion must be
+ * collected by a later advance(), not by run. Requires CONFIG_BLOCK for the
+ * pre-sleep plug hook; other profiles return -EOPNOTSUPP at registration.
  */
 int kobox_linux_lifecycle_executor(int (*run)(void *context), void *context);
 /* Execute work that may sleep. On the opening task of an executing lifecycle

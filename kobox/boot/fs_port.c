@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "fs_port_internal.h"
+#include <kobox2/filesystem.h>
+#include "fs_shared.h"
 
 #include <linux/dirent.h>
 #include <linux/file.h>
@@ -111,6 +113,23 @@ static struct file *fs_file(struct kobox_linux_fs_port *port, u64 handle)
 	return file ?: ERR_PTR(-EBADF);
 }
 
+int kobox_linux_fs_port_shared_export(struct kobox_linux_fs_port *port,
+	const struct cred *cred, u64 handle, u64 client, u64 sequence, u64 offset,
+	u64 length, u64 flags, u32 prot, u64 *id, u64 *size)
+{
+	struct file *file = fs_file(port, handle);
+	const struct cred *saved;
+	int error;
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+	saved = override_creds(cred);
+	error = kobox_linux_fs_shared_export(port->shared, file, client, sequence,
+		offset, length, flags, prot, id, size);
+	revert_creds(saved);
+	fput(file);
+	return error;
+}
+
 void kobox_linux_fs_port_release(struct kobox_linux_fs_port *view)
 {
 	unsigned int i;
@@ -133,7 +152,7 @@ int kobox_linux_fs_port_snapshot(struct kobox_linux_fs_port *port,
 	unsigned int i;
 	int error;
 
-	*view = (struct kobox_linux_fs_port) { .table = port->table };
+	*view = (struct kobox_linux_fs_port) { .table = port->table, .shared = port->shared };
 	for (i = 0; i < ARRAY_SIZE(handles); i++) {
 		struct file *file;
 
@@ -927,6 +946,56 @@ int kobox_linux_fs_fgetattr(struct kobox_linux_fs_port *port,
 	return error;
 }
 
+/* Query the real inode, never derive freshness from timestamps. Writable
+ * descriptions also retain i_writecount through the native shared-export
+ * lifetime. Their CPU writes need not increment i_version on every store,
+ * so they are deliberately uncacheable, including after their FD is closed.
+ * Query before testing writers: a completed write followed by its last fput
+ * must be visible to the next query. The caller validates a copied image
+ * against another such sample before publishing it to the cache.
+ */
+int kobox_linux_fs_snapshot_stat(struct kobox_linux_fs_port *port,
+    const struct cred *cred, u64 handle, struct kstat *stat,
+    struct kobox_linux_fs_snapshot *snapshot)
+{
+    struct file *file=fs_file(port,handle);
+    struct inode *inode;
+    const struct cred *saved;
+    int error;
+
+    memset(snapshot,0,sizeof(*snapshot));
+    if (IS_ERR(file))
+        return PTR_ERR(file);
+    if (!(file->f_mode & FMODE_READ)) {
+        fput(file);
+        return -EBADF;
+    }
+    inode=file_inode(file);
+    saved=override_creds(cred);
+    error=fs_stat_path(&file->f_path,0,STATX_BASIC_STATS|STATX_CHANGE_COOKIE,stat);
+    if (!error) {
+        const u32 required=STATX_TYPE|STATX_INO|STATX_SIZE|STATX_NLINK;
+        snapshot->inode_generation=inode->i_generation;
+        snapshot->change_cookie=stat->change_cookie;
+        /* Offline-populated ext4 images legitimately contain generation 0.
+         * Compare the actual value as identity, rather than treating zero as
+         * absence of a cookie. Only vfs_getattr's result mask grants validity. */
+        /* Self-managed remote attributes may remain cached at getattr.
+         * Admit the VFS-managed i_version contract only; all other mounts
+         * keep the preexisting uncached snapshot path. */
+        if (S_ISREG(inode->i_mode) && IS_I_VERSION(inode) &&
+            (stat->result_mask & required)==required &&
+            (stat->result_mask & STATX_CHANGE_COOKIE) &&
+            atomic_read(&inode->i_writecount)<=0 &&
+            !mapping_writably_mapped(file->f_mapping) && stat->nlink)
+            snapshot->flags=KB2_FILESYSTEM_SNAPSHOT_VALID;
+        stat->result_mask &= ~STATX_CHANGE_COOKIE;
+    }
+    revert_creds(saved);
+    fput(file);
+    return error;
+}
+
 static int fs_parent_lookup(const char *name, struct fs_parent *parent)
 {
 	int error;
@@ -1513,7 +1582,17 @@ long kobox_linux_fs_fcntl(struct kobox_linux_fs_port *port,
 		regs.di = fd;
 		regs.si = command;
 		regs.dx = argument;
-		result = x64_sys_call(&regs, __NR_fcntl);
+		if (command == F_ADD_SEALS) {
+			struct file *file = fget(fd);
+			bool handled = file && kobox_linux_fs_shared_add_seals(
+				port->shared, file, argument, &result);
+			if (file)
+				fput(file);
+			if (!handled)
+				result = x64_sys_call(&regs, __NR_fcntl);
+		} else {
+			result = x64_sys_call(&regs, __NR_fcntl);
+		}
 		revert_creds(saved);
 	}
 	fs_fd_scope_end(&scope);

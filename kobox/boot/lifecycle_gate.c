@@ -114,9 +114,12 @@ static int async_gate_run(void *context)
 		kobox_linux_lifecycle_execute(async_gate_event, NULL);
 	if (!kobox_linux_lifecycle_receiving(gate.owner))
 		return -EINVAL;
-	if (gate.phase == EXEC_EVENT)
+	if (gate.phase == EXEC_EVENT) {
 		gate.phase = EXEC_DONE;
-	return 1;
+		return 1;
+	}
+	/* The event item still waits: a 1 would let the task sleep first. */
+	return 2;
 }
 
 /* An advance() by the deputy while the opening task executes. */

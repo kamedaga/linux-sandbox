@@ -2,6 +2,7 @@
 #include "fs_service.h"
 #include "fs_port_internal.h"
 #include "fs_exec.h"
+#include "fs_shared.h"
 
 #include <kobox2/filesystem.h>
 #include <linux/kdev_t.h>
@@ -58,6 +59,7 @@ struct kobox_linux_fs_service {
 	struct xarray clients;
 	struct mutex lock;
 	struct kobox_linux_exec_table *exec;
+	struct kobox_linux_fs_shared *shared;
 	u64 generation, last_client;
 #ifdef KOBOX_FS_SERVICE_PROFILE
 	struct fs_profile_row profile[3];
@@ -79,7 +81,7 @@ struct kobox_linux_fs_request {
 	kb2_fs_response_t reply;
 	struct fs_profile_call profile;
 	size_t owned_bytes;
-	bool executed, control, packed, recycled;
+	bool executed, control, packed, recycled, open_stat_allowed;
 	/* This is a small-request fast path, not a path/payload limit. Larger
 	 * borrowed-buffer calls still allocate their complete immutable snapshot.
 	 */
@@ -272,7 +274,26 @@ kobox_linux_fs_service_create(struct vfsmount *root, u64 generation)
 	}
 	xa_init(&service->clients);
 	mutex_init(&service->lock);
+	service->shared = kobox_linux_fs_shared_create();
+	if (IS_ERR(service->shared)) {
+		int error = PTR_ERR(service->shared);
+		kobox_linux_exec_destroy(service->exec);
+		mntput(service->root);
+		kfree(service);
+		return ERR_PTR(error);
+	}
 	return service;
+}
+
+int kobox_linux_fs_service_shared_bind(struct kobox_linux_fs_service *service,
+	const struct kobox_linux_fs_shared_ops *ops)
+{
+	return service ? kobox_linux_fs_shared_bind(service->shared, ops) : -EINVAL;
+}
+
+int kobox_linux_fs_service_shared_close(struct kobox_linux_fs_service *service)
+{
+	return service ? kobox_linux_fs_shared_close(service->shared) : 0;
 }
 
 void kobox_linux_fs_service_destroy(struct kobox_linux_fs_service *service)
@@ -283,6 +304,7 @@ void kobox_linux_fs_service_destroy(struct kobox_linux_fs_service *service)
 	if (!service)
 		return;
 	fs_profile_dump(service);
+	kobox_linux_fs_shared_destroy(service->shared);
 	xa_for_each(&service->clients, id, client)
 		fs_client_put(client);
 	xa_destroy(&service->clients);
@@ -318,6 +340,7 @@ int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
 		return error;
 	}
 	RCU_INIT_POINTER(client->authority, authority);
+	client->port->shared = service->shared;
 	refcount_set(&client->references, 1);
 	mutex_lock(&service->lock);
 	/* Reusing an ID would let a queued request from a dead client act on
@@ -425,7 +448,7 @@ static void fs_statx_encode(u8 *bytes, const struct kstat *stat)
 	put_unaligned_le32(value, bytes + KB2_FILESYSTEM_STATX_##field##_OFFSET)
 #define STAT64(field, value) \
 	put_unaligned_le64(value, bytes + KB2_FILESYSTEM_STATX_##field##_OFFSET)
-	STAT32(MASK, stat->result_mask);
+	STAT32(MASK, stat->result_mask & ~STATX_CHANGE_COOKIE);
 	STAT32(BLKSIZE, stat->blksize);
 	STAT64(ATTRIBUTES, stat->attributes);
 	STAT32(NLINK, stat->nlink);
@@ -484,9 +507,10 @@ static const char *fs_path(const u8 *bytes, kb2_fs_span_t span)
 	return span.length ? (const char *)bytes + span.offset : NULL;
 }
 
-static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
+static s64 fs_execute_locked(struct kobox_linux_fs_port *port, const struct cred *cred,
 		      const kb2_fs_request_t *r, const u8 *bytes,
-		      u8 *data, size_t capacity, kb2_fs_response_t *reply)
+		      u8 *data, size_t capacity, kb2_fs_response_t *reply,
+		      bool open_stat_allowed)
 {
 	const char *path = fs_path(bytes, r->path);
 	const char *second = fs_path(bytes, r->second_path);
@@ -494,6 +518,7 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 	 * them, and only after vfs_getattr()/statfs_by_dentry() have cleared
 	 * and filled them on success. Unused on failure. */
 	struct kstat stat;
+	struct kobox_linux_fs_snapshot snapshot;
 	struct kstatfs statfs;
 	struct open_how how;
 	struct timespec64 times[2], *time_arg = NULL;
@@ -503,6 +528,13 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 	switch (r->opcode) {
 	case KB2_FILESYSTEM_OP_EXEC_OPEN:
 		return -EPERM;
+	case KB2_FILESYSTEM_OP_SHARED_FILE_VMO: {
+		u64 size;
+		int error = kobox_linux_fs_port_shared_export(port, cred, r->handle,
+			r->client, r->sequence, r->offset, r->length, r->flags, r->mask,
+			&reply->handle, &size);
+		return error ? error : (s64)size;
+	}
 	case KB2_FILESYSTEM_OP_DEVICE_ROUTE:
 		if (capacity < KB2_FILESYSTEM_STATX_SIZE)
 			return -EMSGSIZE;
@@ -517,17 +549,39 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 		}
 		return result;
 	case KB2_FILESYSTEM_OP_OPENAT2:
+		/* OPEN's mask requests a best-effort statx of the opened handle,
+		 * avoiding a second client round trip just to classify a device.
+		 * Check capacity before open can create or truncate anything. */
+		if (r->mask & ~STATX_BASIC_STATS)
+			return -EINVAL;
+		if (r->mask && capacity < KB2_FILESYSTEM_STATX_SIZE)
+			return -EMSGSIZE;
 		how = (struct open_how) {
 			.flags = r->flags, .mode = r->mode, .resolve = r->resolve,
 		};
-		return kobox_linux_fs_openat(port, cred, r->handle, path, &how,
-					     r->umask, &reply->handle);
+		result = kobox_linux_fs_openat(port, cred, r->handle, path, &how,
+					      r->umask, &reply->handle);
+		if (!result && r->mask) {
+			/* A failed or unauthorized getattr must neither fail a
+			 * successful open nor expose recycled response bytes. A zero
+			 * statx mask means no attributes, as with a failed follow-up
+			 * fstat. Authority is captured alongside the opening creds. */
+			memset(data, 0, KB2_FILESYSTEM_STATX_SIZE);
+			if (open_stat_allowed &&
+			    !kobox_linux_fs_fgetattr(port, cred, reply->handle,
+						    0, r->mask, &stat))
+				fs_statx_encode(data, &stat);
+			reply->data_length = KB2_FILESYSTEM_STATX_SIZE;
+		}
+		return result;
 	case KB2_FILESYSTEM_OP_CLOSE:
 		return kobox_linux_fs_close(port, cred, r->handle);
 	case KB2_FILESYSTEM_OP_DUP:
 		return kobox_linux_fs_dup(port, cred, r->handle, &reply->handle);
 	case KB2_FILESYSTEM_OP_READ:
 	case KB2_FILESYSTEM_OP_PREAD:
+        if (r->mode && (r->opcode!=KB2_FILESYSTEM_OP_PREAD ||
+            r->mode!=KB2_FILESYSTEM_SNAPSHOT_QUERY)) return -EINVAL;
 		if (r->length > capacity)
 			return -EMSGSIZE;
 		count = r->length;
@@ -542,6 +596,17 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 		 * just overwrote, or any unrelated response capacity. */
 		if (result >= 0 && result < count)
 			memset(data + result, 0, count - result);
+
+        if (result>=0 && r->opcode==KB2_FILESYSTEM_OP_PREAD &&
+            r->mode==KB2_FILESYSTEM_SNAPSHOT_QUERY) {
+            int sampled=kobox_linux_fs_snapshot_stat(port,cred,r->handle,&stat,&snapshot);
+            /* Sampling failure must not replace the completed read's result.
+             * A zero service disables caching without hiding successful I/O. */
+            if (!sampled && snapshot.flags & KB2_FILESYSTEM_SNAPSHOT_VALID) {
+                reply->handle=snapshot.change_cookie;
+                reply->service=snapshot.flags;
+            }
+        }
 		return result;
 	case KB2_FILESYSTEM_OP_WRITE:
 	case KB2_FILESYSTEM_OP_PWRITE:
@@ -568,12 +633,29 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 			reply->data_length = result;
 		return result;
 	case KB2_FILESYSTEM_OP_STATX:
+        if (r->mode && r->mode!=KB2_FILESYSTEM_SNAPSHOT_QUERY) return -EINVAL;
+        if (r->mode==KB2_FILESYSTEM_SNAPSHOT_QUERY) {
+            if (capacity<KB2_FILESYSTEM_SNAPSHOT_STAT_SIZE)
+                return -EMSGSIZE;
+            if (r->flags!=AT_EMPTY_PATH || !r->handle || path)
+                return -EINVAL;
+            result=kobox_linux_fs_snapshot_stat(port,cred,r->handle,&stat,&snapshot);
+            if (!result) {
+                memset(data,0,KB2_FILESYSTEM_SNAPSHOT_METADATA_SIZE);
+                put_unaligned_le32(snapshot.inode_generation,data);
+                put_unaligned_le32(snapshot.flags,data+4);
+                put_unaligned_le64(snapshot.change_cookie,data+8);
+                fs_statx_encode(data+KB2_FILESYSTEM_SNAPSHOT_STAT_STATX_OFFSET,&stat);
+                reply->data_length=KB2_FILESYSTEM_SNAPSHOT_STAT_SIZE;
+            }
+            return result;
+        }
 		if (capacity < KB2_FILESYSTEM_STATX_SIZE)
 			return -EMSGSIZE;
 		if (r->flags > UINT_MAX)
 			return -EINVAL;
 		result = kobox_linux_fs_statat(port, cred, r->handle, path,
-					       r->flags, r->mask, &stat);
+					       r->flags, r->mask & ~STATX_CHANGE_COOKIE, &stat);
 		if (!result) {
 			fs_statx_encode(data, &stat);
 			reply->data_length = KB2_FILESYSTEM_STATX_SIZE;
@@ -693,6 +775,60 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 	}
 }
 
+static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
+	const kb2_fs_request_t *r, const u8 *bytes, u8 *data, size_t capacity,
+	kb2_fs_response_t *reply, bool open_stat_allowed)
+{
+	s64 result;
+	int error;
+	struct kobox_linux_fs_shared_guard guard;
+	bool changes_backing = (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 &&
+		((r->flags & (O_CREAT | O_TRUNC)) ||
+		 (r->flags & O_TMPFILE) == O_TMPFILE ||
+		 (!(r->flags & O_PATH) && (r->flags & O_ACCMODE) != O_RDONLY))) ||
+		r->opcode == KB2_FILESYSTEM_OP_WRITE ||
+		r->opcode == KB2_FILESYSTEM_OP_PWRITE ||
+		r->opcode == KB2_FILESYSTEM_OP_FTRUNCATE;
+	bool serializes_shared = changes_backing ||
+		r->opcode == KB2_FILESYSTEM_OP_READ ||
+		r->opcode == KB2_FILESYSTEM_OP_PREAD ||
+		r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO ||
+		r->opcode == KB2_FILESYSTEM_OP_FCNTL ||
+		r->opcode == KB2_FILESYSTEM_OP_FSYNC ||
+		r->opcode == KB2_FILESYSTEM_OP_SYNC ||
+		r->opcode == KB2_FILESYSTEM_OP_SYNCFS;
+	/* Serialize page replacement, seal admission and dirty-before-writeback,
+	 * not unrelated namespace/metadata. Ordinary buffered reads use the
+	 * shared read guard; O_DIRECT can flush cache using Linux dirty bits,
+	 * which native writes do not set, and takes the full write guard.
+	 * A truncate sleeping on an inode must
+	 * not block another client's stat or consume its reserved control lane.
+	 * Exports retain their own file/folio refs, so close/unlink/read do not
+	 * remove their physical ownership. Linux still sees transient read pins.
+	 */
+	if (!serializes_shared)
+		return fs_execute_locked(port, cred, r, bytes, data, capacity, reply,
+			open_stat_allowed);
+	if ((r->opcode == KB2_FILESYSTEM_OP_READ ||
+	     r->opcode == KB2_FILESYSTEM_OP_PREAD) ||
+	    (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 && !changes_backing))
+		error = kobox_linux_fs_shared_enter_read(port->shared,
+			port->nowait, r->opcode == KB2_FILESYSTEM_OP_OPENAT2 ?
+			NULL : port->pinned[0], &guard);
+	else
+		error = kobox_linux_fs_shared_enter(port->shared, port->nowait,
+			r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO, &guard);
+	if (error)
+		return error;
+	result = fs_execute_locked(port, cred, r, bytes, data, capacity, reply,
+		open_stat_allowed);
+	/* Linux owns mutation and may have changed i_size even on an error.
+	 * Refresh against its actual resulting cache, not a guessed new length.
+	 */
+	error = kobox_linux_fs_shared_leave(port->shared, changes_backing, &guard);
+	return error ? error : result;
+}
+
 static u64 fs_request_directory(u64 handle, const char *name)
 {
 	return name && *name == '/' ? 0 : handle;
@@ -711,6 +847,7 @@ static int fs_request_bind_files(struct kobox_linux_fs_request *job)
 	 */
 	switch (r->opcode) {
 	case KB2_FILESYSTEM_OP_CLOSE:
+	case KB2_FILESYSTEM_OP_SHARED_FILE_VMO:
 	case KB2_FILESYSTEM_OP_DUP:
 	case KB2_FILESYSTEM_OP_READ:
 	case KB2_FILESYSTEM_OP_PREAD:
@@ -845,6 +982,7 @@ static int fs_request_prepare(struct kobox_linux_fs_request *job,
 		if (!IS_ERR(client)) {
 			job->client = client;
 			job->cred = cred;
+			job->open_stat_allowed = (rights & KB2_FILESYSTEM_RIGHT_STAT) != 0;
 			/* The pair was retained under the owner-update lock. Neither
 			 * claimed capability bits nor a concurrent credential update
 			 * can change the authority between this check and execution.
@@ -936,7 +1074,8 @@ int kobox_linux_fs_request_execute(struct kobox_linux_fs_request *job,
 	else if (job->client && !reply->result)
 		reply->result = fs_execute(&job->files, job->cred, &job->decoded,
 			job->snapshot, job->response + KB2_FILESYSTEM_RESPONSE_SIZE,
-			job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, reply);
+			job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, reply,
+			job->open_stat_allowed);
 	return fs_request_complete(job, used);
 }
 
@@ -973,7 +1112,8 @@ int kobox_linux_fs_request_try_nowait(struct kobox_linux_fs_request *job,
 	job->files.nowait = true;
 	result = fs_execute(&job->files, job->cred, &job->decoded, job->snapshot,
 		job->response + KB2_FILESYSTEM_RESPONSE_SIZE,
-		job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, &job->reply);
+		job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, &job->reply,
+		job->open_stat_allowed);
 	job->files.nowait = false;
 	/* Keeping a result also means releasing the request's file pins here;
 	 * if that could be a final fput (a concurrent close), give the request
@@ -1333,7 +1473,7 @@ static s64 fs_exec_control(struct kobox_linux_fs_request *job)
 		} else {
 			result = capacity < KB2_FILESYSTEM_STATX_SIZE ? -EMSGSIZE :
 				r->flags > INT_MAX ? -EINVAL :
-				kobox_linux_exec_stat(file, cred, r->flags, r->mask, &stat);
+				kobox_linux_exec_stat(file, cred, r->flags, r->mask & ~STATX_CHANGE_COOKIE, &stat);
 			if (!result) {
 				fs_statx_encode(data, &stat);
 				reply->data_length = KB2_FILESYSTEM_STATX_SIZE;
@@ -1402,13 +1542,15 @@ static int fs_control_prepare(struct kobox_linux_fs_request *job,
 		fallthrough;
 	case KB2_FILESYSTEM_OP_DEVICE_ROUTE:
 	case KB2_FILESYSTEM_OP_TRANSFER_DUP:
+	case KB2_FILESYSTEM_OP_SHARED_FILE_VMO:
 		client = fs_client_get(service, r->client, r->credential_generation,
 			&cred, &rights);
 		job->reply.result = PTR_ERR_OR_ZERO(client);
 		if (!IS_ERR(client)) {
 			job->client = client;
 			job->cred = cred;
-			if (r->opcode == KB2_FILESYSTEM_OP_DEVICE_ROUTE) {
+			if (r->opcode == KB2_FILESYSTEM_OP_DEVICE_ROUTE ||
+			    r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO) {
 				kb2_fs_request_policy(r, &required);
 				if (required & ~rights)
 					job->reply.result = -EACCES;
@@ -1416,6 +1558,7 @@ static int fs_control_prepare(struct kobox_linux_fs_request *job,
 			if (!job->reply.result &&
 			    (r->opcode == KB2_FILESYSTEM_OP_EXEC_OPEN ||
 			     r->opcode == KB2_FILESYSTEM_OP_DEVICE_ROUTE ||
+			     r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO ||
 			     r->opcode == KB2_FILESYSTEM_OP_TRANSFER_DUP))
 				job->reply.result = fs_request_bind_files(job);
 			if (!job->reply.result &&
@@ -1484,9 +1627,10 @@ static s64 fs_control_execute(struct kobox_linux_fs_request *job)
 	case KB2_FILESYSTEM_OP_HELLO:
 		return 0;
 	case KB2_FILESYSTEM_OP_DEVICE_ROUTE:
+	case KB2_FILESYSTEM_OP_SHARED_FILE_VMO:
 		return fs_execute(&job->files, job->cred, r, job->snapshot,
 			job->response + KB2_FILESYSTEM_RESPONSE_SIZE,
-			job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, &job->reply);
+			job->response_capacity - KB2_FILESYSTEM_RESPONSE_SIZE, &job->reply, false);
 	case KB2_FILESYSTEM_OP_EXEC_OPEN:
 	case KB2_FILESYSTEM_OP_PREAD:
 	case KB2_FILESYSTEM_OP_STATX:

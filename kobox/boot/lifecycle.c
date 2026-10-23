@@ -123,6 +123,11 @@ int kobox_linux_lifecycle_executor(int (*run)(void *context), void *context)
 	if (!run || current != opening_task || smp_load_acquire(&armed) ||
 	    !lifecycle.advance || executor_run)
 		return -EINVAL;
+#ifndef CONFIG_BLOCK
+	/* The executor lends on Linux's plug flush before schedule(). Profiles
+	 * without block support have no such hook and must keep worker execution. */
+	return -EOPNOTSUPP;
+#endif
 	executor_run = run;
 	executor_context = context;
 	return 0;
@@ -150,6 +155,7 @@ void kobox_linux_lifecycle_wake(struct task_struct *owner)
 		wake_up_process(owner);
 }
 
+#ifdef CONFIG_BLOCK
 /* Called by Linux from schedule() before the task sleeps with this plug
  * installed (sched_submit_work), and by a plug flush without a sleep (bio
  * polling), which is treated the same: either way it is no longer certain to
@@ -174,8 +180,14 @@ static void lifecycle_execution_unplug(struct blk_plug_cb *hook, bool from_sched
 		wake_up_process(deputy_task);
 }
 
+#endif
+
 void kobox_linux_lifecycle_execute(void (*work)(void *argument), void *argument)
 {
+#ifndef CONFIG_BLOCK
+	/* No executor can be registered here, so no receiving right can be lent. */
+	work(argument);
+#else
 	struct lifecycle_execution execution = { .flushed = false };
 	bool receiver = deputy_task && current == opening_task;
 	int state;
@@ -216,6 +228,7 @@ void kobox_linux_lifecycle_execute(void (*work)(void *argument), void *argument)
 		schedule();
 	}
 	__set_current_state(TASK_RUNNING);
+#endif
 }
 
 /* One deputy advance() while the right is lent. Returns its result, or
@@ -277,7 +290,8 @@ static void lifecycle_deputy_stop(void)
 
 static int lifecycle_async_serve(void *service)
 {
-	int result, advanced, finished;
+	int result, advanced = 0, ran, finished;
+	bool advance_due = true;
 
 	for (;;) {
 		result = kobox_host_call(lifecycle.pending(lifecycle.context));
@@ -287,30 +301,40 @@ static int lifecycle_async_serve(void *service)
 			result = -EPROTO;
 			break;
 		}
-		advanced = kobox_host_call(lifecycle.advance(lifecycle.context, service));
-		if (advanced < 0 || (advanced != 0 && advanced != 2)) {
-			result = advanced < 0 ? advanced : -EPROTO;
-			break;
+		if (advance_due) {
+			advanced = kobox_host_call(lifecycle.advance(lifecycle.context, service));
+			if (advanced < 0 || (advanced != 0 && advanced != 2)) {
+				result = advanced < 0 ? advanced : -EPROTO;
+				break;
+			}
 		}
-		if (advanced) {
+		advance_due = true;
+		ran = 0;
+		if (executor_run) {
+			/* Accepted work runs right after the advance() that accepted
+			 * it, here instead of on a woken worker, which would cost two
+			 * task switches; while it sleeps the deputy receives. Another
+			 * advance() first would only find the ring empty again: each
+			 * such pass costs native receive syscalls that serialize with
+			 * the client's SEND on the kernel lock, before the reply. Its
+			 * result is collected by the next advance(). */
+			ran = executor_run(executor_context);
+			result = atomic_read(&deputy_error);
+			if (ran < 0 || ran > 2 || result) {
+				result = ran < 0 ? ran : result ? result : -EPROTO;
+				break;
+			}
+		}
+		/* More accepted work, or progress with nothing to run (control,
+		 * retirement, or work given to workers): look again before sleeping.
+		 * After a lone executed item the recheck below is the next pass: its
+		 * advance() collects that item and accepts whatever arrived since. */
+		if (ran == 2 || (!ran && advanced)) {
 			cond_resched();
 			continue;
 		}
-		if (executor_run) {
-			/* Accepted work runs here instead of on a woken worker, which
-			 * would cost two task switches; while it sleeps the deputy
-			 * receives. Its result is collected by the next advance(). */
-			advanced = executor_run(executor_context);
-			result = atomic_read(&deputy_error);
-			if (advanced < 0 || result) {
-				result = advanced < 0 ? advanced : result;
-				break;
-			}
-			if (advanced) {
-				cond_resched();
-				continue;
-			}
-		}
+		if (ran)
+			cond_resched();
 		/* A worker wake is not a native control-event completion. Arm the
 		 * actual task state, then recheck both authoritative sources before
 		 * scheduling. A wake between recheck and schedule leaves us runnable.
@@ -326,6 +350,8 @@ static int lifecycle_async_serve(void *service)
 			result = advanced < 0 ? advanced : -EPROTO;
 			break;
 		}
+		/* What this recheck accepted runs next, without another pass. */
+		advance_due = !advanced;
 	}
 	/* The right is the opening task's here; the deputy is idle or about to
 	 * observe that and must be gone before finish() destroys its service. */

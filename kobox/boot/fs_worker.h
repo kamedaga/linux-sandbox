@@ -64,7 +64,8 @@ int kobox_linux_fs_workers_submit_control(struct kobox_linux_fs_workers *workers
  */
 int kobox_linux_fs_workers_owner_executes(struct kobox_linux_fs_workers *workers);
 /* Owner only. Execute one runnable job on the calling owner, as a worker
- * would, and queue its completion for collect. 1: executed, 0: none runnable.
+ * would, and queue its completion for collect. 1: executed, 2: executed and
+ * another job is held or queued, 0: none runnable.
  * The job may block in VFS; without serve the owner receives nothing then.
  */
 int kobox_linux_fs_workers_run(struct kobox_linux_fs_workers *workers);

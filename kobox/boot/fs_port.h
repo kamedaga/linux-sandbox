@@ -8,6 +8,9 @@
 #include <uapi/linux/openat2.h>
 
 struct kobox_linux_fs_port;
+struct kobox_linux_fs_snapshot { u32 inode_generation, flags;u64 change_cookie; };
+int kobox_linux_fs_snapshot_stat(struct kobox_linux_fs_port *, const struct cred *,
+    u64 handle, struct kstat *, struct kobox_linux_fs_snapshot *);
 /* Owner-loader only. The returned open_exec file must be paired with
  * exe_file_allow_write_access before its final fput; never install it into
  * an ordinary client handle table. */

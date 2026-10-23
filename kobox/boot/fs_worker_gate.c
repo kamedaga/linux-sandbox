@@ -26,7 +26,9 @@ static int worker_gate_encode(u8 *input, size_t size, kb2_fs_request_t *request,
 	const char *path)
 {
 	request->generation = 1;
-	request->mask = STATX_BASIC_STATS;
+	/* Only STATX requires this mask. Setting it on every OPEN implicitly
+	 * requests an appended stat payload, including header-only test replies. */
+	request->mask = request->opcode == KB2_FILESYSTEM_OP_STATX ? STATX_BASIC_STATS : 0;
 	if (path) {
 		request->path = (kb2_fs_span_t) {
 			KB2_FILESYSTEM_REQUEST_SIZE, strlen(path) + 1,
@@ -780,7 +782,8 @@ static int worker_gate_owner(struct kobox_linux_fs_service *service)
 		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)2UL), 0);
 	OWNER_EXPECT(kobox_linux_fs_workers_submit(workers, 2, input, sizeof(input),
 		KB2_FILESYSTEM_RESPONSE_SIZE + KB2_FILESYSTEM_STATX_SIZE, (void *)4UL), 0);
-	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 1);
+	/* 2: the queued second job is the owner's next run before it sleeps. */
+	OWNER_EXPECT(kobox_linux_fs_workers_run(workers), 2);
 	cookies = 0;
 	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);
 	OWNER_EXPECT(owner_gate_collect(workers, &cookies, true), 0);

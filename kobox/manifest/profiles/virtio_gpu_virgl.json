@@ -4,12 +4,12 @@
   "linux_tag": "v6.18.48",
   "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
   "kernel_release": "6.18.48+",
-  "config_sha256": "96ef6cd7abc68550cb43f00ab36845d6ccc5a11ec5dde58f0d3b5abbfb101fc5",
+  "config_sha256": "901332351b41e24931aa83ca8e5a0725b4d85a3dfcfc226e64a0e7d2883cc200",
   "toolchain": {
     "compiler": "clang",
-    "compiler_version": "18.1.3",
+    "compiler_version": "18.1.8",
     "linker": "lld",
-    "linker_version": "18.1.3"
+    "linker_version": "18.1.8"
   },
   "kernel_runtime": {
     "name": "linux-runtime",
@@ -107,7 +107,7 @@
   ],
   "required_config": {
     "CONFIG_CC_IS_CLANG": "y",
-    "CONFIG_CLANG_VERSION": "180103",
+    "CONFIG_CLANG_VERSION": "180108",
     "CONFIG_DMA_SHARED_BUFFER": "y",
     "CONFIG_DEBUG_FS": "n",
     "CONFIG_DRM": "m",
@@ -120,7 +120,7 @@
     "CONFIG_DRM_VIRTIO_GPU_KMS": "y",
     "CONFIG_I2C": "m",
     "CONFIG_LD_IS_LLD": "y",
-    "CONFIG_LLD_VERSION": "180103",
+    "CONFIG_LLD_VERSION": "180108",
     "CONFIG_MODULES": "y",
     "CONFIG_MODULE_UNLOAD": "y",
     "CONFIG_NR_CPUS": "2",

@@ -1,0 +1,60 @@
+{
+  "format": "kobox-linux-runtime-profile-dev",
+  "name": "ps2",
+  "linux_tag": "v6.18.48",
+  "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
+  "kernel_release": "6.18.48+",
+  "config_sha256": "df18b21dbd53a5c4edf0ef0293ebe10a7ee71120914fb619dad2950034195bc4",
+  "toolchain": {
+    "compiler": "clang", "compiler_version": "18.1.8",
+    "linker": "lld", "linker_version": "18.1.8"
+  },
+  "kernel_runtime": {
+    "name": "linux-runtime", "artifact": "vmlinux",
+    "root_symbol": "start_kernel", "root_source": "init/main.o",
+    "linker_script": "arch/x86/kernel/vmlinux.lds.S",
+    "driver_closure": "modules-only", "process_lifecycle": "one-boot",
+    "shutdown": "quiesce-modules-then-exit", "upper_api_overrides": [],
+    "required_sections": [
+      ".text", ".rodata", ".data", ".init.text", ".init.data", ".data..percpu", ".bss"
+    ],
+    "required_boundaries": [
+      ["__init_begin", "__init_end"], ["__initcall_start", "__initcall_end"],
+      ["__per_cpu_start", "__per_cpu_end"],
+      ["__sched_class_highest", "__sched_class_lowest"],
+      ["__start___param", "__stop___param"], ["__setup_start", "__setup_end"]
+    ],
+    "required_initcall_order": [
+      "__initcall_start", "__initcall0_start", "__initcall1_start",
+      "__initcall2_start", "__initcall3_start", "__initcall4_start",
+      "__initcall5_start", "__initcallrootfs_start", "__initcall6_start",
+      "__initcall7_start", "__initcall_end"
+    ],
+    "required_scheduler_classes": [
+      "stop_sched_class", "dl_sched_class", "rt_sched_class", "fair_sched_class", "idle_sched_class"
+    ]
+  },
+  "roots": [
+    "drivers/input/serio/i8042.ko", "drivers/input/keyboard/atkbd.ko", "drivers/input/evdev.ko"
+  ],
+  "explicit_dependencies": [],
+  "resource_slots": [
+    {
+      "slot_id": 1, "name": "platform-controller", "schema": "kobox2.platform-device",
+      "resource_type": "device", "required_rights": 7,
+      "minimum_count": 1, "maximum_count": 1, "reset_required": true,
+      "consumers": ["linux-runtime"]
+    }
+  ],
+  "required_config": {
+    "CONFIG_64BIT": "y", "CONFIG_KOBOX_HOSTED": "y", "CONFIG_INPUT": "y",
+    "CONFIG_INPUT_EVDEV": "m", "CONFIG_INPUT_KEYBOARD": "y",
+    "CONFIG_KEYBOARD_ATKBD": "m", "CONFIG_SERIO": "m",
+    "CONFIG_SERIO_I8042": "m", "CONFIG_SERIO_LIBPS2": "m",
+    "CONFIG_MODULES": "y", "CONFIG_MODULE_UNLOAD": "y", "CONFIG_PRINTK": "y",
+    "CONFIG_SYSFS": "y", "CONFIG_PCI": "y", "CONFIG_PCI_MSI": "y",
+    "CONFIG_VMAP_STACK": "n", "CONFIG_X86_KERNEL_IBT": "n",
+    "CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS": "n",
+    "CONFIG_X86_VSYSCALL_EMULATION": "n", "CONFIG_ISA_DMA_API": "n"
+  }
+}

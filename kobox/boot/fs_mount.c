@@ -210,27 +210,45 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 	unsigned int i;
 
 	if (!out || !config || config->size != sizeof(*config) ||
-	    !config->generation || !devices || !device_count ||
-	    !memchr_inv(config->root_uuid, 0, 16))
+	    !config->generation || config->root_kind > KOBOX_FS_ROOT_TMPFS ||
+	    (config->root_kind == KOBOX_FS_ROOT_EXT4 ?
+	     (!devices || !device_count || !memchr_inv(config->root_uuid, 0, 16)) :
+	     (devices || device_count || memchr_inv(config->root_uuid, 0, 16))))
 		return -EINVAL;
 	for (size_t j = 0; j < device_count; j++)
 		if (!devices[j])
 			return -EINVAL;
 	*out = NULL;
-	result = fs_select_root(devices, device_count, config->root_uuid, &selected);
+	selected = 0;
+	result = config->root_kind == KOBOX_FS_ROOT_EXT4 ?
+		fs_select_root(devices, device_count, config->root_uuid, &selected) : 0;
 	if (result)
 		return result;
 	mount = kzalloc(sizeof(*mount), GFP_KERNEL);
 	if (!mount)
 		return -ENOMEM;
-	result = fs_make_node(FS_ROOT_NODE, S_IFBLK | 0600, selected);
+	result = config->root_kind == KOBOX_FS_ROOT_EXT4 ?
+		fs_make_node(FS_ROOT_NODE, S_IFBLK | 0600, selected) : 0;
 	if (!result)
 		result = fs_make_node(FS_ROOT_PATH, S_IFDIR | 0700, 0);
 	if (!result)
 		result = kern_path(FS_ROOT_PATH, LOOKUP_DIRECTORY, &point);
 	if (result)
 		goto free_mount;
-	result = path_mount(FS_ROOT_NODE, &point, "ext4", MS_NOATIME, NULL);
+	if (config->root_kind == KOBOX_FS_ROOT_TMPFS) {
+		/* The installer imports a verified archive and stages its selected
+		 * payload here. A RAM root has no PCI authority and no persistent
+		 * namespace requiring additional tmpfs mounts. */
+		char *options = (char *)get_zeroed_page(GFP_KERNEL);
+		if (!options)
+			result = -ENOMEM;
+		else {
+			strscpy(options, "size=75%,mode=0755", PAGE_SIZE);
+			result = path_mount(NULL, &point, "tmpfs", MS_NOSUID | MS_NODEV, options);
+			free_page((unsigned long)options);
+		}
+	} else
+		result = path_mount(FS_ROOT_NODE, &point, "ext4", MS_NOATIME, NULL);
 	path_put(&point);
 	if (result)
 		goto free_mount;
@@ -250,7 +268,8 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 		if (result == -EEXIST)
 			result = 0;
 	}
-	for (i = 0; !result && i < ARRAY_SIZE(fs_tmpfs_paths); i++) {
+	for (i = 0; !result && config->root_kind == KOBOX_FS_ROOT_EXT4 &&
+	     i < ARRAY_SIZE(fs_tmpfs_paths); i++) {
 		char *options;
 
 		result = fs_make_node(fs_tmpfs_paths[i].path, S_IFDIR | 01777, 0);
@@ -260,17 +279,22 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 			result = kern_path(fs_tmpfs_paths[i].path, LOOKUP_DIRECTORY, &point);
 		if (result)
 			break;
-		/* Monolithic mount parsers may consume their writable option text. */
+		/* path_mount always terminates data_page[PAGE_SIZE - 1], even for
+		 * a short option string. Supply its full writable page, as the
+		 * upstream mount syscall does; kstrdup would corrupt another slab. */
 		options = fs_tmpfs_paths[i].options ?
-			kstrdup(fs_tmpfs_paths[i].options, GFP_KERNEL) : NULL;
+			(char *)get_zeroed_page(GFP_KERNEL) : NULL;
 		if (fs_tmpfs_paths[i].options && !options) {
 			path_put(&point);
 			result = -ENOMEM;
 			break;
 		}
+		if (options)
+			strscpy(options, fs_tmpfs_paths[i].options, PAGE_SIZE);
 		result = path_mount(NULL, &point, "tmpfs", MS_NOSUID | MS_NODEV,
 				    options);
-		kfree(options);
+		if (options)
+			free_page((unsigned long)options);
 		path_put(&point);
 		if (!result)
 			mount->submounts++;

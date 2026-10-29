@@ -273,6 +273,7 @@ def compile_linker_script(arguments):
     output = arguments.output_dir / "runtime.lds"
     task.run([
         arguments.cc, "-E", "-P", "-x", "assembler-with-cpp", "-nostdinc",
+        "-MD", "-MF", str(output) + ".d",
         "-D__ASSEMBLY__", "-D__ASSEMBLER__", "-DLINKER_SCRIPT",
         *provider.provider_include_flags(
             arguments.source_tree, arguments.provider_build_dir
@@ -318,7 +319,7 @@ def compile_module_exports(arguments, source_names, support):
                             "kobox/memory/mmio.c",
                             "kobox/mm/port.c", "kobox/mm/uaccess.c",
                             "kobox/boot/module_exports.c",
-                            "kobox/boot/resource_port.c")]
+                            "kobox/boot/resource_port.c", "kobox/boot/ps2_port.c")]
     task.run([arguments.ld, "-r", "-o", root / "vmlinux.o", *selected])
     task.run([arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
               "-o", "core-module.symvers", "vmlinux.o"], cwd=root)
@@ -456,9 +457,12 @@ def build_inputs(arguments):
     arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1",
                               f"-DKOBOX_BOOT_GPU={int(arguments.device_profile in ('gpu', 'amdgpu'))}",
                               f"-DKOBOX_BOOT_VIRTIO_GPU={int(arguments.device_profile == 'gpu')}",
-                              f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network'))}",
-                              f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile in ('usb-hid', 'usb-storage'))}",
+                              f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network', 'wifi'))}",
+                              f"-DKOBOX_BOOT_WIFI={int(arguments.device_profile == 'wifi')}",
+                              f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile in ('usb-hid', 'usb-storage', 'ps2'))}",
+                              f"-DKOBOX_BOOT_PS2={int(arguments.device_profile == 'ps2')}",
                               f"-DKOBOX_BOOT_BLOCK={int(arguments.device_profile in ('usb-storage', 'nvme'))}",
+                              f"-DKOBOX_BOOT_AUDIO={int(arguments.device_profile == 'virtio-sound')}",
                               f"-DKOBOX_BOOT_FS={int(arguments.device_profile == 'storage')}"]
     if arguments.with_gates:
         arguments.extra_cflags.append("-DKOBOX_RUNTIME_GATES=1")
@@ -601,7 +605,8 @@ def compile_hosted_modules(arguments):
     inventory = json.loads(arguments.module_inventory.read_text(encoding="utf-8"))
     expected = {"usb-hid": "usb-hid-xhci", "usb-storage": "usb-storage-xhci",
                 "nvme": "nvme", "virtio-net": "virtio-net",
-                "network": "network", "amdgpu": "amdgpu", "storage": "storage"}
+                "network": "network", "wifi": "wifi", "amdgpu": "amdgpu", "storage": "storage",
+                "virtio-sound": "virtio-sound", "ps2": "ps2"}
     if inventory.get("format") != "kobox-linux-driver-closure-inventory-dev" or \
             inventory.get("profile") != expected.get(arguments.device_profile):
         raise BootBuildError("hosted module inventory does not match the runtime profile")
@@ -634,8 +639,26 @@ def compile_hosted_modules(arguments):
                               "-fdirect-access-external-data", "-fno-jump-tables",
                               "-include", str(arguments.source_tree /
                                   "kobox/boot/include/kobox/module_visibility.h")]
-    memory.compile_linux_objects(arguments, module_objects,
-                                 build_targets=[*module_objects, "modules_prepare"])
+    if arguments.device_profile == "ps2":
+        module_base_flags = list(arguments.extra_cflags)
+        module_jobs = arguments.jobs
+        # Single-object goals under input/serio match both drivers/input/
+        # and drivers/input/serio/ in upstream drivers/Makefile. Parallel
+        # recursive makes otherwise race on the same .o/.d; compile each
+        # unchanged module serially, keeping the boot-core build parallel.
+        arguments.jobs = 1
+        for module_object in module_objects:
+            arguments.extra_cflags = list(module_base_flags)
+            if module_object == "drivers/input/serio/i8042.o":
+                arguments.extra_cflags.extend(["-include", str(arguments.source_tree /
+                    "kobox/boot/include/kobox/ps2_io_compile.h")])
+            memory.compile_linux_objects(arguments, [module_object])
+        arguments.extra_cflags = module_base_flags
+        memory.compile_linux_objects(arguments, [], build_targets=["modules_prepare"])
+        arguments.jobs = module_jobs
+    else:
+        memory.compile_linux_objects(arguments, module_objects,
+                                     build_targets=[*module_objects, "modules_prepare"])
     for name in module_objects:
         source = arguments.provider_build_dir / name
         if not source.with_suffix(".mod").is_file():
@@ -725,7 +748,7 @@ def parse_arguments():
     parser.add_argument("--fs-executor-bench", action="store_true",
                         help="Compare private executor intake/recycle against worker-only submit/collect")
     parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "usb-storage", "nvme",
-                                                     "virtio-net", "network", "amdgpu", "storage"),
+                                                     "virtio-net", "network", "wifi", "amdgpu", "storage", "virtio-sound", "ps2"),
                         default="gpu", help="Select a hosted device profile")
     parser.add_argument("--drm-exec-profile", action="store_true",
                         help="Opt-in bounded EXECBUFFER stage timing in the owned DRM bridge")

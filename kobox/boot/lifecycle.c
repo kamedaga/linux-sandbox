@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "lifecycle.h"
+#include "receive_return.h"
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/atomic.h>
@@ -34,13 +35,6 @@ static struct task_struct *opening_task;
  * So exactly one task is inside advance() at a time, and native/pool state
  * owned by the receiver is handed over only between advance() calls.
  */
-enum {
-	RECEIVE_OWNER,
-	RECEIVE_EXECUTING,
-	RECEIVE_LENT_IDLE,
-	RECEIVE_LENT_ADVANCING,
-	RECEIVE_RETURNING,
-};
 static atomic_t receive_state = ATOMIC_INIT(RECEIVE_OWNER);
 static struct task_struct *deputy_task;
 static int (*executor_run)(void *context);
@@ -190,7 +184,7 @@ void kobox_linux_lifecycle_execute(void (*work)(void *argument), void *argument)
 #else
 	struct lifecycle_execution execution = { .flushed = false };
 	bool receiver = deputy_task && current == opening_task;
-	int state;
+	enum kobox_receive_return_result result;
 
 	if (receiver)
 		WARN_ON_ONCE(atomic_xchg(&receive_state, RECEIVE_EXECUTING) !=
@@ -208,16 +202,11 @@ void kobox_linux_lifecycle_execute(void (*work)(void *argument), void *argument)
 	blk_finish_plug(&execution.plug);
 	if (!receiver)
 		return;
-	state = atomic_cmpxchg(&receive_state, RECEIVE_EXECUTING, RECEIVE_OWNER);
-	if (state == RECEIVE_EXECUTING)
+	result = kobox_receive_reclaim(&receive_state);
+	if (result == KOBOX_RECEIVE_OWNED)
 		return;
-	/* Lent: an idle deputy is not inside advance(), take the right back now.
-	 * Otherwise let its advance() finish; it hands the right back. */
-	if (atomic_cmpxchg(&receive_state, RECEIVE_LENT_IDLE, RECEIVE_OWNER) ==
-	    RECEIVE_LENT_IDLE)
+	if (WARN_ON_ONCE(result != KOBOX_RECEIVE_WAIT))
 		return;
-	WARN_ON_ONCE(atomic_cmpxchg(&receive_state, RECEIVE_LENT_ADVANCING,
-				    RECEIVE_RETURNING) != RECEIVE_LENT_ADVANCING);
 #ifdef KOBOX_RUNTIME_GATES
 	gate_returns++;
 #endif

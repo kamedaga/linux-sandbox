@@ -241,6 +241,9 @@ def compile_support(arguments, source_name):
         # Match Kbuild: generated vector copies must not clobber task FP.
         "-mgeneral-regs-only",
         "-mstackrealign",
+        "-MD",
+        "-MF",
+        str(output) + ".d",
         "-c",
         source,
         "-o",
@@ -416,6 +419,7 @@ def build_boundary(arguments, definitions):
     run([
         arguments.cc, "-shared", "-mstackrealign", "-Wl,-z,defs", "-Wl,--build-id=none",
         "-Wl,-soname,linux-task-smp-boundary.so", assembly, guard,
+        "-MD", "-MF", str(output) + ".d",
         "-o", output,
     ])
     return output

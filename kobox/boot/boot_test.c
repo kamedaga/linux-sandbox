@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #define _GNU_SOURCE
+#include <stdlib.h>
 
 #include "host.h"
 #include "boot_test.h"
@@ -47,7 +48,7 @@
 #include <unistd.h>
 
 #define TEST_RAM_SIZE (256UL << 20)
-#define TEST_VMEMMAP_SIZE (16UL << 20)
+#define TEST_VMEMMAP_SIZE KOBOX_CORE_VMEMMAP_SIZE
 #define TEST_VMALLOC_SIZE KOBOX_CORE_VMALLOC_SIZE
 #define TEST_IMAGE_PHYSICAL_BASE (16UL << 20)
 
@@ -947,7 +948,8 @@ int kobox_boot_test_run(int argc, char **argv,
 	}
 	if (resources && resources->dma) {
 		CHECK(resources->pci && resources->prepare_dma);
-		address = core->lookup(core->loader, "kobox_linux_dma_verify");
+		address = core->lookup(core->loader, getenv("KOBOX_DMA_AGGREGATE_ONLY") ?
+			"kobox_linux_dma_aggregate_verify" : "kobox_linux_dma_verify");
 		CHECK(address);
 		memcpy(&verify_dma, &address, sizeof(verify_dma));
 	}

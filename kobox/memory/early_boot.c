@@ -962,6 +962,8 @@ static int validate_layout(const struct kobox_linux_memory_layout *layout)
 	    !layout->vmalloc_window || !layout->direct_map ||
 	    !layout->vmemmap_base || !layout->vmalloc_base ||
 	    layout->ram_size < KOBOX_MEMORY_MINIMUM_RAM_SIZE ||
+	    DIV_ROUND_UP(layout->ram_size, 1UL << SECTION_SIZE_BITS) >
+		layout->vmemmap_size / (PAGES_PER_SECTION * sizeof(struct page)) ||
 	    !PAGE_ALIGNED(layout->ram_size) ||
 	    !PAGE_ALIGNED((unsigned long)layout->direct_map) ||
 	    !PAGE_ALIGNED((unsigned long)layout->vmemmap_base) ||

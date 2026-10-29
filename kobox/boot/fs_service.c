@@ -673,6 +673,13 @@ static s64 fs_execute_locked(struct kobox_linux_fs_port *port, const struct cred
 	case KB2_FILESYSTEM_OP_FCNTL:
 		if (r->flags > UINT_MAX)
 			return -EINVAL;
+		/* F_SETLK carries absolute ranges in existing scalar fields; native
+		 * pointers and a Linux worker's files_struct never cross this boundary. */
+		if (r->flags==F_SETLK) {
+			if (r->mode>UINT_MAX || r->mask || r->data.length) return -EINVAL;
+			return kobox_linux_fs_setlk(port,cred,r->handle,r->mode,
+				r->offset,(s64)r->length);
+		}
 		return kobox_linux_fs_fcntl(port, cred, r->handle,
 					    r->flags, r->length);
 	case KB2_FILESYSTEM_OP_FSYNC:
@@ -793,7 +800,7 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 		r->opcode == KB2_FILESYSTEM_OP_READ ||
 		r->opcode == KB2_FILESYSTEM_OP_PREAD ||
 		r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO ||
-		r->opcode == KB2_FILESYSTEM_OP_FCNTL ||
+		(r->opcode == KB2_FILESYSTEM_OP_FCNTL && r->flags!=F_SETLK) ||
 		r->opcode == KB2_FILESYSTEM_OP_FSYNC ||
 		r->opcode == KB2_FILESYSTEM_OP_SYNC ||
 		r->opcode == KB2_FILESYSTEM_OP_SYNCFS;
@@ -815,9 +822,15 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 		error = kobox_linux_fs_shared_enter_read(port->shared,
 			port->nowait, r->opcode == KB2_FILESYSTEM_OP_OPENAT2 ?
 			NULL : port->pinned[0], &guard);
-	else
+	else if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 ||
+		 r->opcode == KB2_FILESYSTEM_OP_SYNC ||
+		 r->opcode == KB2_FILESYSTEM_OP_SYNCFS)
 		error = kobox_linux_fs_shared_enter(port->shared, port->nowait,
-			r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO, &guard);
+			false, &guard);
+	else
+		error = kobox_linux_fs_shared_enter_file(port->shared, port->nowait,
+			r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO,
+			port->pinned[0], &guard);
 	if (error)
 		return error;
 	result = fs_execute_locked(port, cred, r, bytes, data, capacity, reply,

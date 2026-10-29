@@ -10,6 +10,7 @@
 #include "block_port.h"
 #include "firmware_files.h"
 #include "fs_mount.h"
+#include "user_process.h"
 #include <kobox2/module_progress.h>
 
 /* Borrowed immutable package data, local to one sandbox process. One launch
@@ -39,6 +40,9 @@ struct kobox_linux_module_launch {
 	uint32_t capture_input;
 	/* Ethernet-frame service for the single PCI NIC in this generation. */
 	uint32_t capture_network;
+	/* WiFi-only supplicant inputs; argv is constructed from the actual netdev
+	 * name, not a guessed wlan index. Copied by the production process API. */
+	const struct kobox_linux_user_process_config *wireless;
 	/* Block I/O shares the same PCI ownership as input for USB storage.
 	 * Write access is an explicit launch-time policy, never inferred from
 	 * whether Linux registered a writable disk. */

@@ -1,0 +1,87 @@
+{
+  "format": "kobox-linux-runtime-profile-dev",
+  "name": "wifi",
+  "linux_tag": "v6.18.48",
+  "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
+  "kernel_release": "6.18.48+",
+  "config_sha256": "95da28c98abf98f7ffc1cb1aeb2b3623bef7af2b65a88732f3b0d24e9c6d47da",
+  "toolchain": {
+    "compiler": "clang", "compiler_version": "18.1.8",
+    "linker": "lld", "linker_version": "18.1.8"
+  },
+  "kernel_runtime": {
+    "name": "linux-runtime", "artifact": "vmlinux",
+    "root_symbol": "start_kernel", "root_source": "init/main.o",
+    "linker_script": "arch/x86/kernel/vmlinux.lds.S",
+    "driver_closure": "modules-only", "process_lifecycle": "one-boot",
+    "shutdown": "quiesce-modules-then-exit", "upper_api_overrides": [],
+    "required_sections": [
+      ".text", ".rodata", ".data", ".init.text", ".init.data", ".data..percpu", ".bss"
+    ],
+    "required_boundaries": [
+      ["__init_begin", "__init_end"], ["__initcall_start", "__initcall_end"],
+      ["__per_cpu_start", "__per_cpu_end"],
+      ["__sched_class_highest", "__sched_class_lowest"],
+      ["__start___param", "__stop___param"], ["__setup_start", "__setup_end"]
+    ],
+    "required_initcall_order": [
+      "__initcall_start", "__initcall0_start", "__initcall1_start",
+      "__initcall2_start", "__initcall3_start", "__initcall4_start",
+      "__initcall5_start", "__initcallrootfs_start", "__initcall6_start",
+      "__initcall7_start", "__initcall_end"
+    ],
+    "required_scheduler_classes": [
+      "stop_sched_class", "dl_sched_class", "rt_sched_class", "fair_sched_class", "idle_sched_class"
+    ]
+  },
+  "roots": ["drivers/net/wireless/intel/iwlwifi/mvm/iwlmvm.ko"],
+  "explicit_dependencies": [],
+  "resource_slots": [
+    {
+      "slot_id": 1, "name": "pci-function", "schema": "kobox2.pci-function",
+      "resource_type": "device", "required_rights": 7,
+      "minimum_count": 1, "maximum_count": 1, "reset_required": true,
+      "consumers": ["linux-runtime"]
+    },
+    {
+      "slot_id": 2, "name": "dma-domain", "schema": "kobox2.dma-domain",
+      "resource_type": "device", "required_rights": 5,
+      "minimum_count": 1, "maximum_count": 1, "reset_required": false,
+      "consumers": ["linux-runtime"]
+    },
+    {
+      "slot_id": 3, "name": "irq-endpoint", "schema": "kobox2.irq-endpoint",
+      "resource_type": "notification", "required_rights": 1,
+      "minimum_count": 1, "maximum_count": 2048, "reset_required": false,
+      "consumers": ["linux-runtime"]
+    }
+  ],
+  "required_config": {
+    "CONFIG_64BIT": "y", "CONFIG_KOBOX_HOSTED": "y",
+    "CONFIG_MODULES": "y", "CONFIG_MODULE_UNLOAD": "y",
+    "CONFIG_NAMESPACES": "y",
+    "CONFIG_UTS_NS": "n", "CONFIG_TIME_NS": "n", "CONFIG_USER_NS": "n",
+    "CONFIG_PID_NS": "n", "CONFIG_NET_NS": "n",
+    "CONFIG_PCI": "y", "CONFIG_PCI_MSI": "y",
+    "CONFIG_NET": "y", "CONFIG_INET": "y", "CONFIG_IP_PNP": "n", "CONFIG_IPV6": "n",
+    "CONFIG_PACKET": "y", "CONFIG_UNIX": "y",
+    "CONFIG_WIRELESS": "y", "CONFIG_WLAN": "y", "CONFIG_WLAN_VENDOR_INTEL": "y",
+    "CONFIG_CFG80211": "m", "CONFIG_MAC80211": "m",
+    "CONFIG_IWLWIFI": "m", "CONFIG_IWLMVM": "m",
+    "CONFIG_IWLDVM": "n", "CONFIG_IWLMLD": "n", "CONFIG_IWLMEI": "n",
+    "CONFIG_MAC80211_HWSIM": "n", "CONFIG_RFKILL": "m", "CONFIG_FW_LOADER": "m",
+    "CONFIG_FW_LOADER_USER_HELPER": "n", "CONFIG_FW_LOADER_COMPRESS": "n",
+    "CONFIG_CFG80211_REQUIRE_SIGNED_REGDB": "y", "CONFIG_CFG80211_USE_KERNEL_REGDB_KEYS": "y",
+    "CONFIG_KEYS": "y", "CONFIG_SYSTEM_DATA_VERIFICATION": "y",
+    "CONFIG_CRYPTO": "y", "CONFIG_CRYPTO_AES": "y",
+    "CONFIG_CRYPTO_CCM": "y", "CONFIG_CRYPTO_GCM": "y", "CONFIG_CRYPTO_CMAC": "y",
+    "CONFIG_CRYPTO_HMAC": "y", "CONFIG_CRYPTO_SHA256": "y",
+    "CONFIG_CRYPTO_SHA512": "y", "CONFIG_CRYPTO_RSA": "y",
+    "CONFIG_EPOLL": "y", "CONFIG_EVENTFD": "y", "CONFIG_SIGNALFD": "y", "CONFIG_TIMERFD": "y",
+    "CONFIG_POSIX_TIMERS": "y",
+    "CONFIG_VIRTIO_NET": "n", "CONFIG_R8169": "n",
+    "CONFIG_VMAP_STACK": "n", "CONFIG_X86_KERNEL_IBT": "n",
+    "CONFIG_X86_INTEL_MEMORY_PROTECTION_KEYS": "n",
+    "CONFIG_X86_VSYSCALL_EMULATION": "n", "CONFIG_ISA_DMA_API": "n"
+  }
+}

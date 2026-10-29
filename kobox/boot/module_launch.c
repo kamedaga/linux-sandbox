@@ -1,14 +1,30 @@
+#include "audio_port.h"
+#ifndef KOBOX_BOOT_AUDIO
+#define KOBOX_BOOT_AUDIO 0
+#endif
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "module_launch.h"
 #include "diagnostic.h"
 #include "../arch/x86_64/host_call.h"
+#ifndef KOBOX_BOOT_PS2
+#define KOBOX_BOOT_PS2 0
+#endif
+#if KOBOX_BOOT_PS2
+#include "ps2_port.h"
+#endif
 
 #ifndef KOBOX_BOOT_GPU
 #define KOBOX_BOOT_GPU 1
 #endif
 #ifndef KOBOX_BOOT_NET
 #define KOBOX_BOOT_NET 0
+#endif
+#ifndef KOBOX_BOOT_WIFI
+#define KOBOX_BOOT_WIFI 0
+#endif
+#if KOBOX_BOOT_WIFI
+#include "wifi_service.h"
 #endif
 #ifndef KOBOX_BOOT_BLOCK
 #define KOBOX_BOOT_BLOCK 0
@@ -78,6 +94,14 @@ static int admit_module(struct notifier_block *notifier,
 		return notifier_from_errno(-EPERM);
 	if (strcmp(module->name, expected))
 		return notifier_from_errno(-EKEYREJECTED);
+#if KOBOX_BOOT_WIFI
+	/* COMING runs after relocation and before init. Retain actual runtime
+	 * text ranges so a hardware-only probe fault can be symbolized without
+	 * guessing vmalloc placement or changing the upstream module loader. */
+	kobox_linux_boot_diagnostic("iwlwifi module layout %s text=%px size=0x%x init=%px init_size=0x%x\n",
+		module->name, module->mem[MOD_TEXT].base, module->mem[MOD_TEXT].size,
+		module->mem[MOD_INIT_TEXT].base, module->mem[MOD_INIT_TEXT].size);
+#endif
 	return NOTIFY_OK;
 }
 
@@ -96,6 +120,12 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 #endif
 #elif KOBOX_BOOT_NET
 	struct kobox_linux_net_port *net_port = NULL;
+#if KOBOX_BOOT_WIFI
+	struct kobox_linux_wifi_service *wireless = NULL;
+	struct kobox_linux_lifecycle wireless_lifecycle;
+#endif
+#elif KOBOX_BOOT_AUDIO
+	struct kobox_linux_audio_port *audio_port = NULL;
 #elif KOBOX_BOOT_INPUT
 	struct kobox_linux_input_port *input_port = NULL;
 #endif
@@ -123,8 +153,16 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	    (launch->device && launch->pci_device_count) ||
 	    (!!launch->pci_devices != !!launch->pci_device_count) ||
 	    (!KOBOX_BOOT_GPU && launch->device) ||
-	    (launch->capture_input && launch->pci_device_count != 1) ||
+	    (KOBOX_BOOT_AUDIO && (launch->pci_device_count != 1 ||
+	        launch->capture_input || launch->capture_network || launch->capture_block ||
+	        launch->filesystem)) ||
+	    (launch->capture_input && launch->pci_device_count != (KOBOX_BOOT_PS2 ? 0 : 1)) ||
 	    (launch->capture_network && launch->pci_device_count != 1) ||
+	    (launch->wireless && (!KOBOX_BOOT_WIFI || !launch->capture_network ||
+		!launch->lifecycle->abort || launch->lifecycle->monitor ||
+		launch->lifecycle->monitor_context || launch->lifecycle->start ||
+		launch->lifecycle->advance || launch->lifecycle->finish)) ||
+	    (KOBOX_BOOT_WIFI && launch->capture_network && !launch->wireless) ||
 	    (launch->capture_block && launch->pci_device_count != 1) ||
 	    (launch->block_write && !launch->capture_block) ||
 	    (launch->block_write && !launch->block_write_key.diskseq) ||
@@ -139,7 +177,9 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	    (!KOBOX_BOOT_INPUT && launch->capture_input) ||
 	    (!KOBOX_BOOT_NET && launch->capture_network) ||
 	    (!KOBOX_BOOT_BLOCK && launch->capture_block) ||
-	    (launch->filesystem && (!KOBOX_BOOT_FS || !launch->pci_device_count ||
+	    (launch->filesystem && (!KOBOX_BOOT_FS ||
+		(launch->filesystem->root_kind == KOBOX_FS_ROOT_EXT4 && !launch->pci_device_count) ||
+		(launch->filesystem->root_kind == KOBOX_FS_ROOT_TMPFS && launch->pci_device_count) ||
 		launch->capture_block || launch->capture_input || launch->capture_network)))
 		return -EINVAL;
 	if ((!launch->firmware && launch->firmware_count) ||
@@ -191,6 +231,16 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 			goto finish_device;
 		report_progress(launch, KOBOX_MODULE_PROGRESS_PCI_READY, index, 0);
 	}
+#if KOBOX_BOOT_PS2
+	result = kobox_linux_ps2_irq_prepare();
+	if (result)
+		goto finish_device;
+	if (launch->capture_input) {
+		result = kobox_linux_input_port_open(&input_port);
+		if (result)
+			goto finish_device;
+	}
+#endif
 	result = register_module_notifier(&session.notifier);
 	if (result)
 		goto finish_device;
@@ -212,7 +262,7 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		report->loaded++;
 #if KOBOX_BOOT_INPUT
 		/* USB enumeration is asynchronous, so register before xHCI probes. */
-		if (launch->capture_input && !strcmp(module->name, "usbcore")) {
+		if (launch->capture_input && !input_port && !strcmp(module->name, "usbcore")) {
 			result = kobox_linux_input_port_open(&input_port);
 			if (result)
 				break;
@@ -273,17 +323,27 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 		result = kobox_linux_net_port_open(&net_port,
 				kobox_linux_device_port_pci(pci_devices[0]),
 				launch->progress, launch->progress_context);
+#if KOBOX_BOOT_WIFI
+		if (!result && launch->wireless)
+			result = kobox_linux_wifi_service_open(&wireless, net_port, launch->wireless);
+#endif
 		if (!result)
 			report_progress(launch, KOBOX_MODULE_PROGRESS_NET_READY, 0, 0);
 	}
 	if (!result)
 		service = net_port;
 #endif
+#if KOBOX_BOOT_AUDIO
+	if (!result)
+		result = kobox_linux_audio_port_open(&audio_port);
+	if (!result)
+		service = audio_port;
+#endif
 #if KOBOX_BOOT_FS
 	if (!result && launch->filesystem) {
-		filesystem_devices = kcalloc(launch->pci_device_count,
-					      sizeof(*filesystem_devices), GFP_KERNEL);
-		if (!filesystem_devices)
+		filesystem_devices = launch->pci_device_count ?
+			kcalloc(launch->pci_device_count, sizeof(*filesystem_devices), GFP_KERNEL) : NULL;
+		if (launch->pci_device_count && !filesystem_devices)
 			result = -ENOMEM;
 		else {
 			for (index = 0; index < launch->pci_device_count; index++)
@@ -303,6 +363,16 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (!result) {
 		const struct kobox_linux_lifecycle *lifecycle = launch->lifecycle;
 
+#if KOBOX_BOOT_WIFI
+		if (wireless) {
+			/* Validation rejected an existing monitor/asynchronous owner.
+			 * Borrow the host's abort callback, preserving every other hook. */
+			wireless_lifecycle = *launch->lifecycle;
+			wireless_lifecycle.monitor = kobox_linux_wifi_service_monitor;
+			wireless_lifecycle.monitor_context = wireless;
+			lifecycle = &wireless_lifecycle;
+		}
+#endif
 #if KOBOX_BOOT_GPU && !KOBOX_BOOT_VIRTIO_GPU
 		/* The normal device lifecycle remains unchanged. Only the one-shot
 		 * physical-GPU inspection has an owner-task sensor/time monitor.
@@ -320,8 +390,10 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	}
 #if KOBOX_BOOT_INPUT
 	/* The handler must be gone before HID/USB modules can be unloaded. */
-	if (input_port)
+	if (input_port) {
 		kobox_linux_input_port_close(input_port);
+		input_port = NULL;
+	}
 #endif
 #if KOBOX_BOOT_BLOCK
 	if (block_port)
@@ -331,7 +403,19 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	if (filesystem)
 		report->cleanup_result = kobox_linux_fs_mount_close(filesystem);
 #endif
+#if KOBOX_BOOT_AUDIO
+	if (audio_port)
+		kobox_linux_audio_port_close(audio_port);
+#endif
 #if KOBOX_BOOT_NET
+#if KOBOX_BOOT_WIFI
+	if (wireless) {
+		report->cleanup_result = kobox_linux_wifi_service_close(wireless);
+		if (report->cleanup_result)
+			goto unregister_notifier;
+		wireless = NULL;
+	}
+#endif
 	if (net_port)
 		kobox_linux_net_port_close(net_port);
 #endif
@@ -375,6 +459,11 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 unregister_notifier:
 	unregister_module_notifier(&session.notifier);
 finish_device:
+#if KOBOX_BOOT_PS2
+	if (input_port)
+		kobox_linux_input_port_close(input_port);
+	kobox_linux_ps2_irq_finish();
+#endif
 	/* Failed unload still owns ports and backing. The host must retire this
 	 * process and revoke its device; it cannot reuse a partial generation.
 	 */

@@ -22,6 +22,16 @@ LOAD_SPEC.loader.exec_module(boot_load)
 
 
 class BootBuildTest(unittest.TestCase):
+    def test_wifi_supplicant_service_is_profile_local(self):
+        wifi = boot.sources.support_sources(False, "wifi")
+        required = {"kobox/boot/wifi_service.c", "kobox/boot/wifi_control.c",
+                    "kobox/boot/user_process.c", "kobox/boot/entropy_port.c"}
+        self.assertTrue(required.issubset(set(wifi)))
+        self.assertEqual(len(wifi), len(set(wifi)))
+        for profile in ("network", "virtio-net", "gpu", "amdgpu", "storage", "ps2"):
+            with self.subTest(profile=profile):
+                self.assertFalse(required.intersection(boot.sources.support_sources(False, profile)))
+
     def test_nofault_filter_replaces_only_architecture_address_classification(self):
         symbol = "copy_from_kernel_nofault_allowed"
         definitions = {symbol: [
@@ -141,7 +151,7 @@ class BootBuildTest(unittest.TestCase):
     def test_new_provider_overlay_invalidates_existing_kbuild_objects(self):
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory)
-            arguments = types.SimpleNamespace(source_tree=source)
+            arguments = types.SimpleNamespace(source_tree=source, output_dir=source / "build")
             before = boot.memory.include_overlay_identity(arguments)
             header = source / "kobox/provider/include/asm/pgtable.h"
             header.parent.mkdir(parents=True)

@@ -118,6 +118,72 @@ static int gate_exported_read(struct kobox_linux_fs_shared *shared,
 	return error;
 }
 
+static int gate_scoped_mutation(struct kobox_linux_fs_shared *shared,
+	struct file *exported)
+{
+	struct file *other;
+	struct publication_gate gate = {.shared = shared};
+	struct kobox_linux_fs_shared_guard first, second, target;
+	struct task_struct *task;
+	long result;
+	int error;
+
+	other = shmem_file_setup("unrelated-native-export-gate", PAGE_SIZE, VM_NORESERVE);
+	if (IS_ERR(other))
+		return PTR_ERR(other);
+	error = kobox_linux_fs_shared_enter_file(shared, false, false, other, &first);
+	if (error)
+		goto out_file;
+	/* Exports of another inode must not force this mutation onto a worker
+	 * or traverse their folios. Read admission still excludes publication. */
+	if (first.mode != KOBOX_FS_SHARED_READ || first.mapping != other->f_mapping) {
+		error = -EINVAL;
+		goto out_first;
+	}
+	error = kobox_linux_fs_shared_enter_file(shared, true, false, other, &second);
+	if (error)
+		goto out_first;
+	if (second.mode != KOBOX_FS_SHARED_READ)
+		error = -EINVAL;
+	kobox_linux_fs_shared_leave(shared, true, &second);
+	if (error)
+		goto out_first;
+	if (kobox_linux_fs_shared_enter_file(shared, true, false, exported, &target) != -EAGAIN ||
+	    target.mode != KOBOX_FS_SHARED_NONE ||
+	    kobox_linux_fs_shared_add_seals(shared, other, F_SEAL_WRITE, &result)) {
+		error = -EINVAL;
+		goto out_first;
+	}
+	init_completion(&gate.started);
+	init_completion(&gate.done);
+	task = kthread_run(gate_publish, &gate, "fs-scoped-publish-gate");
+	if (IS_ERR(task)) {
+		error = PTR_ERR(task);
+		goto out_first;
+	}
+	wait_for_completion(&gate.started);
+	schedule_timeout_uninterruptible(2);
+	if (completion_done(&gate.done))
+		error = -EINVAL;
+	kobox_linux_fs_shared_leave(shared, true, &first);
+	wait_for_completion(&gate.done);
+	error = error ?: gate.error;
+	goto out_file;
+out_first:
+	kobox_linux_fs_shared_leave(shared, false, &first);
+out_file:
+	fput(other);
+	return error;
+}
+
+static int gate_collect_dirty(void *context, u64 id, u64 *bitmap, size_t words)
+{
+	(void)context;
+	(void)id;
+	memset(bitmap, 0, words * sizeof(*bitmap));
+	return 0;
+}
+
 int kobox_linux_fs_shared_verify(void)
 {
 	struct kobox_linux_fs_shared *shared;
@@ -127,7 +193,8 @@ int kobox_linux_fs_shared_verify(void)
 	u64 next_id = 0, id, size;
 	struct kobox_linux_fs_shared_ops ops = {
 		.context = &next_id, .budget_bytes = 1 << 20,
-		.create = gate_create, .refresh = gate_refresh, .retire = gate_retire,
+		.create = gate_create, .refresh = gate_refresh,
+		.collect_dirty = gate_collect_dirty, .retire = gate_retire,
 	};
 	long result;
 	int error;
@@ -206,6 +273,8 @@ out_locked:
 	kobox_linux_fs_shared_leave(shared, false, &guard);
 	if (!error)
 		error = gate_exported_read(shared, file);
+	if (!error)
+		error = gate_scoped_mutation(shared, file);
 out_shared:
 	kobox_linux_fs_shared_destroy(shared);
 out_file:
@@ -216,5 +285,7 @@ out_file:
 		pr_info("FS_SHARED_ADMISSION concurrent_empty=PASS publication_waits=PASS nowait_no_side_effect=PASS\n");
 	if (!error)
 		pr_info("FS_SHARED_READ exported_buffered=PASS direct_punt=PASS\n");
+	if (!error)
+		pr_info("FS_SHARED_SCOPED unrelated_mutations=PASS target_punt=PASS publication_waits=PASS\n");
 	return error;
 }

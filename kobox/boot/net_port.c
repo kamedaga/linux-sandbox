@@ -2,6 +2,14 @@
 #include "net_port.h"
 #include "module_launch.h"
 #include "dma_host.h"
+#ifndef KOBOX_BOOT_WIFI
+#define KOBOX_BOOT_WIFI 0
+#endif
+#if KOBOX_BOOT_WIFI
+#include "wifi_service.h"
+#include <linux/jiffies.h>
+#include <linux/sched.h>
+#endif
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/errno.h>
@@ -26,6 +34,11 @@ struct kobox_linux_net_port {
 	struct kobox_linux_net_frame *rx;
 	uint32_t head, count;
 	uint64_t sequence, drops;
+#if KOBOX_BOOT_WIFI
+	struct kobox_linux_wifi_service *wifi;
+	u64 association_sequence;
+	bool wireless, authorized;
+#endif
 };
 
 static bool belongs_to_pci_function(const struct net_device *net,
@@ -57,6 +70,13 @@ static int receive_packet(struct sk_buff *skb, struct net_device *device,
 		goto drop;
 	length = ETH_HLEN + skb->len;
 	spin_lock_irqsave(&port->rx_lock, flags);
+#if KOBOX_BOOT_WIFI
+	if (port->wireless && (!port->authorized || skb->protocol == cpu_to_be16(ETH_P_PAE))) {
+		port->drops++;
+		spin_unlock_irqrestore(&port->rx_lock, flags);
+		goto release;
+	}
+#endif
 	if (port->count == KOBOX_NET_RX_CAPACITY) {
 		port->drops++;
 		spin_unlock_irqrestore(&port->rx_lock, flags);
@@ -70,6 +90,13 @@ static int receive_packet(struct sk_buff *skb, struct net_device *device,
 		goto release;
 	}
 	slot->length = length;
+#if KOBOX_BOOT_WIFI
+	if (port->wireless && !kobox_wifi_data_frame_allowed(slot->bytes, length)) {
+		port->drops++;
+		spin_unlock_irqrestore(&port->rx_lock, flags);
+		goto release;
+	}
+#endif
 	port->count++;
 	port->sequence++;
 	spin_unlock_irqrestore(&port->rx_lock, flags);
@@ -113,6 +140,9 @@ int kobox_linux_net_port_open(struct kobox_linux_net_port **out,
 	struct sysinfo memory_before, memory_after;
 	bool have_dma_snapshot;
 	int result = -ENODEV;
+#if KOBOX_BOOT_WIFI
+	unsigned long deadline = jiffies + 30 * HZ;
+#endif
 
 	if (!out || !pci)
 		return -EINVAL;
@@ -130,6 +160,9 @@ int kobox_linux_net_port_open(struct kobox_linux_net_port **out,
 			     KOBOX_MODULE_PROGRESS_NET_ALLOCATED, 0);
 	report_open_progress(progress, progress_context,
 			     KOBOX_MODULE_PROGRESS_NET_RTNL_WAIT, 0);
+#if KOBOX_BOOT_WIFI
+retry_device:
+#endif
 	rtnl_lock();
 	report_open_progress(progress, progress_context,
 			     KOBOX_MODULE_PROGRESS_NET_RTNL_HELD, 0);
@@ -141,6 +174,9 @@ int kobox_linux_net_port_open(struct kobox_linux_net_port **out,
 			continue;
 		dev_hold(device);
 		port->device = device;
+#if KOBOX_BOOT_WIFI
+		port->wireless = device->ieee80211_ptr != NULL;
+#endif
 		report_open_progress(progress, progress_context,
 				     KOBOX_MODULE_PROGRESS_NET_DEVICE_FOUND, 0);
 		report_open_progress(progress, progress_context,
@@ -180,6 +216,14 @@ int kobox_linux_net_port_open(struct kobox_linux_net_port **out,
 		break;
 	}
 	rtnl_unlock();
+#if KOBOX_BOOT_WIFI
+	/* iwlwifi firmware completion can register the netdev after PCI probe
+	 * returned. Wait for that actual object; never substitute a dummy NIC. */
+	if (!port->device && time_before(jiffies, deadline)) {
+		schedule_timeout_uninterruptible(1);
+		goto retry_device;
+	}
+#endif
 	if (result)
 		goto put_device;
 	port->packets.type = cpu_to_be16(ETH_P_ALL);
@@ -221,13 +265,28 @@ int kobox_linux_net_port_info(struct kobox_linux_net_port *port,
 	if (!port || !info)
 		return -EINVAL;
 	memset(info, 0, sizeof(*info));
+#if KOBOX_BOOT_WIFI
+	if (port->wifi) {
+		int error = kobox_linux_wifi_service_poll_events(port->wifi);
+
+		if (error)
+			return error;
+	}
+#endif
 	spin_lock_irqsave(&port->rx_lock, flags);
 	info->sequence = port->sequence;
 	info->rx_drops = port->drops;
+#if KOBOX_BOOT_WIFI
+	info->association_sequence = port->association_sequence;
+#endif
 	spin_unlock_irqrestore(&port->rx_lock, flags);
 	info->mtu = READ_ONCE(port->device->mtu);
 	memcpy(info->mac, port->device->dev_addr, ETH_ALEN);
 	info->carrier = netif_carrier_ok(port->device);
+#if KOBOX_BOOT_WIFI
+	if (port->wireless && !READ_ONCE(port->authorized))
+		info->carrier = 0;
+#endif
 	return 0;
 }
 
@@ -269,6 +328,14 @@ int kobox_linux_net_port_write(struct kobox_linux_net_port *port,
 		return -EMSGSIZE;
 	if (!netif_running(port->device) || !netif_carrier_ok(port->device))
 		return -ENETDOWN;
+#if KOBOX_BOOT_WIFI
+	if (port->wireless) {
+		if (!READ_ONCE(port->authorized))
+			return -ENETDOWN;
+		if (!kobox_wifi_data_frame_allowed(frame, length))
+			return -EPERM;
+	}
+#endif
 	headroom = LL_RESERVED_SPACE(port->device);
 	skb = alloc_skb(headroom + length, GFP_KERNEL);
 	if (!skb)
@@ -284,4 +351,99 @@ int kobox_linux_net_port_write(struct kobox_linux_net_port *port,
 	skb->ip_summed = CHECKSUM_NONE;
 	result = dev_queue_xmit(skb);
 	return result == NET_XMIT_SUCCESS || result == NET_XMIT_CN ? 0 : -ENOBUFS;
+}
+
+int kobox_linux_net_port_name(struct kobox_linux_net_port *port, char *name, size_t capacity)
+{
+	if (!port || !name || capacity < IFNAMSIZ)
+		return -EINVAL;
+	rtnl_lock();
+	strscpy(name, port->device->name, capacity);
+	rtnl_unlock();
+	return 0;
+}
+
+int kobox_linux_net_port_wifi_bind(struct kobox_linux_net_port *port,
+	struct kobox_linux_wifi_service *service)
+{
+#if KOBOX_BOOT_WIFI
+	if (!port || !port->wireless)
+		return -EOPNOTSUPP;
+	if (service && port->wifi)
+		return -EBUSY;
+	port->wifi = service;
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+#if KOBOX_BOOT_WIFI
+static void update_authorization(struct kobox_linux_net_port *port,
+	bool authorized, bool new_association)
+{
+	unsigned long flags;
+
+	if (!port || !port->wireless)
+		return;
+	spin_lock_irqsave(&port->rx_lock, flags);
+	if (port->authorized != authorized || new_association) {
+		WRITE_ONCE(port->authorized, authorized);
+		port->association_sequence++;
+		/* No frame accepted under an old authentication state may survive
+		 * disconnect/reconfigure and leak into a later connection. */
+		port->drops += port->count;
+		port->head = port->count = 0;
+		port->sequence++;
+	}
+	spin_unlock_irqrestore(&port->rx_lock, flags);
+}
+#endif
+
+void kobox_linux_net_port_wifi_authorize(struct kobox_linux_net_port *port, bool authorized)
+{
+#if KOBOX_BOOT_WIFI
+	update_authorization(port, authorized, false);
+#endif
+}
+
+void kobox_linux_net_port_wifi_association(struct kobox_linux_net_port *port)
+{
+#if KOBOX_BOOT_WIFI
+	/* CONNECTED while already authorized is still a new association. Close
+	 * and flush before an asynchronous STATUS can prove the new state. */
+	update_authorization(port, false, true);
+#endif
+}
+
+__attribute__((visibility("default")))
+int kobox_linux_net_wifi_request(struct kobox_linux_net_port *port,
+	const void *request, size_t length, void *reply, size_t capacity, size_t *received)
+{
+#if KOBOX_BOOT_WIFI
+	if (port && port->wifi)
+		return kobox_linux_wifi_service_request(port->wifi, request, length, reply, capacity, received);
+#endif
+	return -EOPNOTSUPP;
+}
+
+__attribute__((visibility("default")))
+int kobox_linux_net_wifi_configure(struct kobox_linux_net_port *port,
+	const void *config, size_t length)
+{
+#if KOBOX_BOOT_WIFI
+	if (port && port->wifi)
+		return kobox_linux_wifi_service_configure(port->wifi, config, length);
+#endif
+	return -EOPNOTSUPP;
+}
+
+__attribute__((visibility("default")))
+int kobox_linux_net_wifi_events(struct kobox_linux_net_port *port, u32 *events)
+{
+#if KOBOX_BOOT_WIFI
+	if (port && port->wifi)
+		return kobox_linux_wifi_service_events(port->wifi, events);
+#endif
+	return -EOPNOTSUPP;
 }

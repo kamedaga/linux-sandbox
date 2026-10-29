@@ -6,6 +6,7 @@
 
 #include <linux/dirent.h>
 #include <linux/file.h>
+#include <linux/filelock.h>
 #include <linux/fdtable.h>
 #include <linux/fs_struct.h>
 #include <linux/mount.h>
@@ -87,9 +88,9 @@ void kobox_linux_fs_destroy(struct kobox_linux_fs_port *port)
 	 * caller-quiesced, so neither belongs inside the table lock.
 	 */
 	xa_for_each(&table->files, index, file)
-		filp_close(file, NULL);
+		filp_close(file, table);
 	if (table->latest.file)
-		filp_close(table->latest.file, NULL);
+		filp_close(table->latest.file, table);
 	xa_destroy(&table->files);
 	path_put(&table->root);
 	kfree(table);
@@ -415,7 +416,7 @@ int kobox_linux_fs_close(struct kobox_linux_fs_port *port,
 	if (!file)
 		return -EBADF;
 	saved = override_creds(cred);
-	error = filp_close(file, NULL);
+	error = filp_close(file, port->table);
 	revert_creds(saved);
 	return error;
 }
@@ -1551,6 +1552,54 @@ static int fs_borrow_fd(struct kobox_linux_fs_port *port, u64 handle)
 	else
 		fd_install(fd, file);
 	return fd;
+}
+
+int kobox_linux_fs_setlk(struct kobox_linux_fs_port *port,const struct cred *cred,
+    u64 handle,unsigned int type,loff_t start,loff_t length)
+{
+    struct file *file;
+    struct file_lock *lock;
+    const struct cred *saved;
+    int error=0;
+    if (!port || !cred) return -EINVAL;
+    if (port->nowait) return -EAGAIN;
+    if (type!=F_RDLCK && type!=F_WRLCK && type!=F_UNLCK) return -EINVAL;
+    if (start<0) return -EINVAL;
+    if (length>0 && length-1>OFFSET_MAX-start) return -EOVERFLOW;
+    if (length<0 && length < -start) return -EINVAL;
+    file=fs_file(port,handle);
+    if (IS_ERR(file)) return PTR_ERR(file);
+    if ((type==F_RDLCK && !(file->f_mode&FMODE_READ)) ||
+        (type==F_WRLCK && !(file->f_mode&FMODE_WRITE)) || (file->f_mode&FMODE_PATH)) {
+        fput(file);return -EBADF;
+    }
+    lock=locks_alloc_lock();
+    if (!lock) { fput(file);return -ENOLCK; }
+    lock->c.flc_file=file;
+    /* The authenticated client table, retained by the admitted request, is
+     * the POSIX process owner. Worker identity and the shared OFD are not.
+     * F_GETLK remains unsupported until logical PID reporting is available. */
+    lock->c.flc_owner=port->table;
+    lock->c.flc_pid=0;
+    lock->c.flc_flags=FL_POSIX;
+    lock->c.flc_type=type;
+    lock->fl_start=length<0 ? start+length : start;
+    lock->fl_end=length<0 ? start-1 : length ? start+length-1 : OFFSET_MAX;
+    saved=override_creds(cred);
+    /* Serialize publication with CLOSE of the requesting descriptor. All
+     * real client closes use this table as filp_close's POSIX lock owner. */
+    mutex_lock(&port->table->lock);
+    if (kobox_fs_handle_load(&port->table->latest,&port->table->files,handle)!=file)
+        error=-EBADF;
+    else {
+        error=security_file_lock(file,type);
+        if (!error) error=vfs_lock_file(file,F_SETLK,lock,NULL);
+    }
+    mutex_unlock(&port->table->lock);
+    revert_creds(saved);
+    locks_free_lock(lock);
+    fput(file);
+    return error;
 }
 
 long kobox_linux_fs_fcntl(struct kobox_linux_fs_port *port,

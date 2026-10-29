@@ -95,7 +95,7 @@ GATE_SOURCES = (
 
 def support_sources(with_gates, device_profile="gpu"):
     if device_profile not in ("gpu", "usb-hid", "usb-storage", "nvme",
-                              "virtio-net", "network", "amdgpu", "storage"):
+                              "virtio-net", "network", "wifi", "amdgpu", "storage", "virtio-sound", "ps2"):
         raise ValueError(f"unsupported device profile: {device_profile}")
     gpu = device_profile in ("gpu", "amdgpu")
     gates = GATE_SOURCES if gpu else tuple(
@@ -103,9 +103,14 @@ def support_sources(with_gates, device_profile="gpu"):
     device_sources = (GPU_SOURCES if gpu else
                       USB_INPUT_SOURCES + BLOCK_SOURCES if device_profile == "usb-storage" else
                       USB_INPUT_SOURCES if device_profile == "usb-hid" else
+                      USB_INPUT_SOURCES + ("kobox/boot/ps2_port.c",) if device_profile == "ps2" else
                       BLOCK_SOURCES if device_profile == "nvme" else
-                      NET_SOURCES if device_profile in ("virtio-net", "network") else ())
+                      NET_SOURCES if device_profile in ("virtio-net", "network", "wifi") else
+                      ("kobox/boot/audio_port.c",) if device_profile == "virtio-sound" else ())
     fs_sources = FS_SOURCES if device_profile == "storage" else ()
+    if device_profile == "wifi":
+        device_sources += ("kobox/boot/user_process.c", "kobox/boot/entropy_port.c",
+                           "kobox/boot/wifi_control.c", "kobox/boot/wifi_service.c")
     if with_gates and not gpu:
         # Non-GPU profiles grant no virtio/GPU device; that device gate also
         # requires the unrelated DRM/sync_file subsystem in their core.

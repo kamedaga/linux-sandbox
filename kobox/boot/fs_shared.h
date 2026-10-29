@@ -21,6 +21,9 @@ struct kobox_linux_fs_shared_ops {
 	int (*create)(void *, uint64_t client, uint64_t sequence,
 		const uint64_t *pages, size_t count, uint64_t flags, uint64_t *id);
 	int (*refresh)(void *, uint64_t id, const uint64_t *pages, size_t count);
+	/* Exact logical-page bitmap. Failure preserves native dirty inventory;
+	 * Linux must retain pins and retry rather than acknowledge writeback. */
+	int (*collect_dirty)(void *, uint64_t id, uint64_t *bitmap, size_t words);
 	/* force=0: return 1 only after exclusive ownership AND alias retirement;
 	 * 0 keeps the export alive. force=1 may revoke live mappings for shutdown.
 	 * Errors always preserve Linux pins and the native owner's inventory.
@@ -30,12 +33,17 @@ struct kobox_linux_fs_shared_ops {
 #ifdef __KERNEL__
 struct kobox_linux_fs_shared;
 struct file;
+struct address_space;
 /* Stack-owned acquisition mode. An ordinary data guard can coexist with
- * exports; mutations and direct I/O take the write guard when exports exist. */
+ * exports; mutations and direct I/O take the write guard for matching exports. */
 enum kobox_linux_fs_shared_mode {
 	KOBOX_FS_SHARED_NONE, KOBOX_FS_SHARED_READ, KOBOX_FS_SHARED_WRITE,
 };
-struct kobox_linux_fs_shared_guard { enum kobox_linux_fs_shared_mode mode; };
+struct kobox_linux_fs_shared_guard {
+	enum kobox_linux_fs_shared_mode mode;
+	/* Borrowed from the admitted file until leave; NULL covers all exports. */
+	struct address_space *mapping;
+};
 struct kobox_linux_fs_shared *kobox_linux_fs_shared_create(void);
 int kobox_linux_fs_shared_bind(struct kobox_linux_fs_shared *,
 	const struct kobox_linux_fs_shared_ops *);
@@ -43,6 +51,8 @@ int kobox_linux_fs_shared_close(struct kobox_linux_fs_shared *);
 void kobox_linux_fs_shared_destroy(struct kobox_linux_fs_shared *);
 int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *, bool nowait,
 	bool publishing, struct kobox_linux_fs_shared_guard *);
+int kobox_linux_fs_shared_enter_file(struct kobox_linux_fs_shared *, bool nowait,
+	bool publishing, struct file *, struct kobox_linux_fs_shared_guard *);
 int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *, bool nowait,
 	struct file *, struct kobox_linux_fs_shared_guard *);
 int kobox_linux_fs_shared_leave(struct kobox_linux_fs_shared *, bool refresh,

@@ -1,0 +1,6 @@
+# linux-firmware tag 20260916, intel/iwlwifi/; regulatory database from Alpine
+# wireless-regdb 2025.02.20-r0. Keep the upstream signed database intact.
+cd4f8fe2242c115cf8687878c2534fbb436fbaa7172f49a1f69952a23c686ac9  iwlwifi-ty-a0-gf-a0-89.ucode
+cc4c0de4593292490459f1aa8c1606ea370a0307f5be9089ef99a0aa8e36be7a  iwlwifi-ty-a0-gf-a0.pnvm
+d67150c8925a98a4783c2c9a3e652b5a21fcdf8119875e1d2860c7c180fa98f8  regulatory.db
+704ba48e3b12a28d3ed9411e526f127870201ba5007ee0c17ae92dafe2444fa5  regulatory.db.p7s

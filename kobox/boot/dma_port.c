@@ -76,7 +76,7 @@ struct kobox_linux_dma_port {
 };
 
 static void record_map_failure(struct kobox_linux_dma_port *port,
-			       size_t bytes, int error)
+			       size_t bytes, int error, const char *stage)
 {
 	atomic64_inc(&port->map_failures);
 	atomic64_set(&port->last_failure_bytes, bytes);
@@ -84,8 +84,8 @@ static void record_map_failure(struct kobox_linux_dma_port *port,
 	/* Drivers may translate a mapping failure into RESOURCE and retry forever
 	 * before their device is published. Preserve the underlying failure here,
 	 * with rate limiting so a retry loop cannot exhaust the diagnostic log. */
-	dev_err_ratelimited(port->device, "kobox-dma: mapping failed bytes=%zu error=%d\n",
-			    bytes, error);
+	dev_err_ratelimited(port->device, "kobox-dma: mapping failed bytes=%zu error=%d stage=%s\n",
+			    bytes, error, stage);
 }
 
 int kobox_linux_dma_snapshot(struct device *device,
@@ -579,6 +579,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 	unsigned int protection = 0;
 	u64 end;
 	int result = 0;
+	const char *stage = "range";
 
 	*mapped = 0;
 	if (pgsize != PAGE_SIZE || !count ||
@@ -589,7 +590,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 	    end > (u64)max_pfn << PAGE_SHIFT ||
 	    !IS_ALIGNED(iova | physical, PAGE_SIZE) ||
 	    prot & ~(IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE | IOMMU_NOEXEC)) {
-		record_map_failure(dma->port, length, -EINVAL);
+		record_map_failure(dma->port, length, -EINVAL, stage);
 		pr_err_ratelimited("kobox-dma: invalid range iova=%#lx physical=%#llx page-size=%zu count=%zu prot=%x\n",
 			iova, physical, pgsize, count, prot);
 		return -EINVAL;
@@ -611,14 +612,17 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		struct folio *folio;
 		bool pin;
 
+		stage = "physical-page";
 		if (!pfn_valid(pfn)) {
 			result = -EINVAL;
 			goto rollback;
 		}
+		stage = "reserve-pages";
 		result = dma_xa_reserve(&dma->pages, key, gfp);
 		if (result)
 			goto rollback;
 		if (host->map_page_list) {
+			stage = "reserve-states";
 			result = dma_xa_reserve(&dma->states, key, gfp);
 			if (result) {
 				dma_xa_release(&dma->pages, key);
@@ -635,18 +639,23 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		raw_spin_lock_irqsave(&dma->lock, flags);
 		if (xa_load(&dma->pages, key) ||
 		    (host->map_page_list && xa_load(&dma->states, key))) {
+			stage = "overlap";
 			result = -EEXIST;
 		} else {
 			if (pin && !folio_try_get(folio)) {
+				stage = "pin-page";
 				raw_spin_unlock_irqrestore(&dma->lock, flags);
 				dma_xa_release(&dma->pages, key);
 				result = -EFAULT;
 				goto rollback;
 			}
+			stage = "store-pages";
 			result = xa_err(xa_store(&dma->pages, key, page, GFP_NOWAIT));
-			if (!result && host->map_page_list)
+			if (!result && host->map_page_list) {
+				stage = "store-states";
 				result = xa_err(xa_store(&dma->states, key,
 					mapping_state(protection, false), GFP_NOWAIT));
+			}
 			if (!result && pin)
 				xa_set_mark(&dma->pages, key, DMA_PAGE_PINNED);
 			if (result) {
@@ -668,6 +677,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 		*mapped = length;
 		return 0;
 	}
+	stage = "host-map";
 	result = kobox_host_call(host->map(host->context, iova, physical,
 					   length, protection));
 	if (result)
@@ -682,7 +692,7 @@ static int map_pages(struct iommu_domain *domain, unsigned long iova,
 	return 0;
 
 rollback:
-	record_map_failure(dma->port, length, result);
+	record_map_failure(dma->port, length, result, stage);
 	release_hosted_pages(dma, iova, stored);
 	return result > 0 ? -EIO : result;
 }
@@ -711,6 +721,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	snapshot = dma->page_snapshots[cpu];
 	if (!snapshot) {
 		put_cpu();
+		record_map_failure(dma->port, size, -ENOMEM, "snapshot-buffer");
 		return -ENOMEM;
 	}
 
@@ -741,7 +752,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	raw_spin_unlock_irqrestore(&dma->lock, flags);
 	if (!valid) {
 		put_cpu();
-		record_map_failure(dma->port, size, -EINVAL);
+		record_map_failure(dma->port, size, -EINVAL, "snapshot-pages");
 		return -EINVAL;
 	}
 
@@ -751,7 +762,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	local_irq_restore(flags);
 	if (result) {
 		put_cpu();
-		record_map_failure(dma->port, size, result);
+		record_map_failure(dma->port, size, result, "host-publish");
 		return result > 0 ? -EIO : result;
 	}
 
@@ -790,7 +801,7 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 		if (result)
 			panic("host DMA rollback invalidation failed\n");
 		put_cpu();
-		record_map_failure(dma->port, size, -EIO);
+		record_map_failure(dma->port, size, -EIO, "publish-state");
 		return -EIO;
 	}
 	atomic64_inc(&dma->port->map_published);
@@ -1079,9 +1090,11 @@ int kobox_linux_dma_attach(struct device *device,
 		return -EINVAL;
 	if (host->map_page_list &&
 	    (!host->ram_size || !IS_ALIGNED(host->ram_size, PAGE_SIZE) ||
-	     host->ram_size / PAGE_SIZE > ULONG_MAX ||
-	     host->ram_size - 1 > host->aperture_end - host->aperture_start))
+	     host->ram_size / PAGE_SIZE > ULONG_MAX))
 		return -EINVAL;
+	/* RAM offsets and IOVAs are independent namespaces. A constrained device
+	 * aperture may be smaller than backing RAM; map_pages/sync_map check each
+	 * published range rather than requiring the entire RAM to fit at once. */
 	/* x86's current machine configuration is coherent. Reject an unknown
 	 * cache-maintenance contract rather than silently skipping its syncs.
 	 */

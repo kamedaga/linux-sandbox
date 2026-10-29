@@ -106,7 +106,8 @@ int kobox_boot_iommu_resource(const struct kobox_linux_resource_port *port,
 	iommu.ram_length = ram_length;
 	iommu.host = (struct kobox_linux_dma_host) {
 		.size = sizeof(iommu.host), .aperture_start = domain.aperture_start,
-		.aperture_end = domain.aperture_end, .coherent = domain.coherent,
+		.aperture_end = domain.aperture_end, .ram_size = ram_length,
+		.coherent = domain.coherent,
 		.enable = enable, .map = map, .unmap = unmap,
 	};
 	*out = iommu;

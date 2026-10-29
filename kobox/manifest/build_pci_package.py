@@ -27,12 +27,16 @@ def main():
     parser.add_argument("--protocol-dir", type=pathlib.Path, required=True)
     parser.add_argument("--generator-dir", type=pathlib.Path,
                         help="keep host-only generator sources/tools outside the published package")
-    parser.add_argument("--profile", choices=("network", "amdgpu",
-                                              "usb-storage-xhci", "nvme", "storage"),
+    parser.add_argument("--profile", choices=("network", "wifi", "amdgpu",
+                                              "usb-storage-xhci", "nvme", "storage", "virtio-sound", "ps2"),
                         default="network")
     parser.add_argument("--extension-module", action="append", type=pathlib.Path,
                         default=[], help="Kobox module built against this canonical core")
+    parser.add_argument("--ram-root", action="store_true",
+                        help="storage core with no PCI resource declarations or bindings")
     args = parser.parse_args()
+    if args.ram_root and args.profile != "storage":
+        parser.error("--ram-root requires the storage profile")
     inventory = json.loads(args.inventory.read_text())
     if inventory.get("profile") != args.profile:
         raise ValueError(f"{args.profile} package requires its own closure inventory")
@@ -229,19 +233,38 @@ int main(int argc, char **argv) {
   return ok ? 0 : 7;
 }
 """ % ("\n".join(artifact_lines), "\n".join(edge_lines), "\n".join(binding_lines))
+    if args.ram_root:
+        c_source = c_source.replace("if (status == KB2_STATUS_OK)\n    status = kb2_closure_builder_add_resource", "if (0 && status == KB2_STATUS_OK)\n    status = kb2_closure_builder_add_resource")
+        c_source = c_source.replace("  for (size_t i = 0; status == KB2_STATUS_OK &&\n       i < sizeof(bindings)/sizeof(bindings[0]); ++i)", "  if (0) for (size_t i = 0; status == KB2_STATUS_OK &&\n       i < sizeof(bindings)/sizeof(bindings[0]); ++i)")
+        c_source = c_source.replace(".resources=&resource, .resource_count=1,", ".resources=NULL, .resource_count=0,")
+        c_source = c_source.replace(".bindings=bindings, .binding_count=sizeof(bindings)/sizeof(bindings[0]),", ".bindings=NULL, .binding_count=0,")
     generator_dir = args.generator_dir or output
     generator_dir.mkdir(parents=True, exist_ok=True)
+    if args.profile == "ps2":
+        # A platform controller has neither PCI identity nor DMA authority.
+        # Keep the manifest's interface digest distinct from a PCI function.
+        c_source = c_source.replace('kobox2/pci_function_layout.h', 'kobox2/platform_device_layout.h')
+        c_source = c_source.replace('KB2_PCI_FUNCTION_', 'KB2_PLATFORM_DEVICE_')
     generated = generator_dir / f"{args.profile}-manifest-generator.c"
     generated.write_text(c_source)
     encoder = generator_dir / f"{args.profile}-manifest-generator"
-    subprocess.run([
-        "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+    compile_flags = ["-std=c11", "-Wall", "-Wextra", "-Werror",
         "-I", str(args.protocol_dir / "include"),
         "-I", str(args.protocol_dir / "generated/include"),
-        "-I", str(args.protocol_dir.parent / "include"),
-        str(generated), str(args.protocol_dir / "src/closure_manifest.c"),
-        str(args.protocol_dir.parent / "src/closure.c"),
+        "-I", str(args.protocol_dir.parent / "include")]
+    sources = [generated, args.protocol_dir / "src/closure_manifest.c",
+               args.protocol_dir.parent / "src/closure.c"]
+    subprocess.run(["cc", *compile_flags, *map(str, sources),
+        "-MD", "-MF", str(encoder) + ".d",
         "-o", str(encoder)], check=True)
+    deps_dir = generator_dir / ".deps"
+    deps_dir.mkdir(exist_ok=True)
+    for index, source in enumerate(sources):
+        subprocess.run([
+            "cc", *compile_flags, "-MD", "-MF",
+            str(deps_dir / f"{index}-{source.name}.d"),
+            "-MT", str(encoder), "-E", str(source),
+        ], check=True, stdout=subprocess.DEVNULL)
     subprocess.run([str(encoder), str(output / "manifest.bin")], check=True)
 
 

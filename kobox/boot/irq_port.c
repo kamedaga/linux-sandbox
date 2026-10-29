@@ -2,6 +2,9 @@
 
 #include "irq_host.h"
 #include "../arch/x86_64/host_call.h"
+#if defined(KOBOX_BOOT_PS2) && KOBOX_BOOT_PS2
+#include "ps2_port.h"
+#endif
 
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -292,6 +295,10 @@ void kobox_linux_irq_dispatch(unsigned int cpu)
 
 	if (!in_hardirq() || !irqs_disabled() || cpu != raw_smp_processor_id())
 		panic("host device IRQ outside its CPU execution domain\n");
+#if defined(KOBOX_BOOT_PS2) && KOBOX_BOOT_PS2
+	if (cpu == 0)
+		(void)kobox_linux_ps2_irq_dispatch();
+#endif
 	rcu_read_lock();
 	list_for_each_entry_rcu(port, &irq_ports, list) {
 		unsigned int budget;

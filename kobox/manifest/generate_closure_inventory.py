@@ -306,6 +306,12 @@ def validate_profile(profile):
         (2, "dma-domain", "kobox2.dma-domain", "device", 5, 1, False),
         (3, "irq-endpoint", "kobox2.irq-endpoint", "notification", 1, 2048, False),
     )
+    if profile["name"] == "ps2":
+        # Legacy input has PIO/IRQ authority, but no PCI function or DMA
+        # domain. Certify that distinct boundary instead of inventing slots.
+        expected_slots = (
+            (1, "platform-controller", "kobox2.platform-device", "device", 7, 1, True),
+        )
     slots = profile["resource_slots"]
     if not isinstance(slots, list) or len(slots) != len(expected_slots):
         raise ClosureError("profile has an incomplete device resource slot set")

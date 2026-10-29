@@ -102,7 +102,7 @@ int main(int argc, char **argv)
 	struct kobox_posix_bootstrap bootstrap = {0};
 	const struct kobox_posix_boot_profile profile = {
 		.ram_size = 256UL << 20,
-		.vmemmap_size = 16UL << 20,
+		.vmemmap_size = KOBOX_CORE_VMEMMAP_SIZE,
 		.vmalloc_size = KOBOX_CORE_VMALLOC_SIZE,
 		.image_physical_base = 16UL << 20,
 	};

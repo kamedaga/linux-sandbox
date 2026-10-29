@@ -483,6 +483,9 @@ def compile_runtime_source(arguments, output_dir, source_name):
         "-fmacro-prefix-map=" + str(arguments.source_tree) + "=linux",
         "-I",
         arguments.protocol_include,
+        "-MD",
+        "-MF",
+        str(output) + ".d",
         "-c",
         source,
         "-o",
@@ -537,7 +540,8 @@ def compile_support_source(arguments, output_dir, source_name):
             "-fno-common",
             "-mno-red-zone",
         ))
-    command.extend(("-c", source, "-o", output))
+    command.extend(("-MD", "-MF", str(output) + ".d",
+                    "-c", source, "-o", output))
     run_command(command)
     return output
 

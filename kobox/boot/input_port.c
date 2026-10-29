@@ -36,7 +36,11 @@ struct kobox_linux_input_port {
 };
 
 static const struct input_device_id usb_input_ids[] = {
+#if defined(KOBOX_BOOT_PS2) && KOBOX_BOOT_PS2
+	{ .flags = INPUT_DEVICE_ID_MATCH_BUS, .bustype = BUS_I8042 },
+#else
 	{ .flags = INPUT_DEVICE_ID_MATCH_BUS, .bustype = BUS_USB },
+#endif
 	{ },
 };
 

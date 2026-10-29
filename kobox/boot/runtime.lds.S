@@ -71,6 +71,9 @@ SECTIONS
 		KPROBES_TEXT
 		SOFTIRQENTRY_TEXT
 		STATIC_CALL_TEXT
+		/* Upstream x86 retains exit code until runtime: warning/alternative
+		 * metadata can refer to it. Keep those targets in the RX segment. */
+		EXIT_TEXT
 	} :text
 	.plt : { *(.plt .iplt) }
 	.altinstr_replacement : { *(.altinstr_replacement) }
@@ -99,6 +102,7 @@ SECTIONS
 		CACHELINE_ALIGNED_DATA(L1_CACHE_BYTES)
 		READ_MOSTLY_DATA(INTERNODE_CACHE_BYTES)
 		DATA_DATA
+		EXIT_DATA
 		CONSTRUCTORS
 		_edata = .;
 	}
@@ -165,8 +169,6 @@ SECTIONS
 
 	/* No runtime dynamic linker participates in this fixed ET_EXEC image. */
 	/DISCARD/ : {
-		EXIT_TEXT
-		EXIT_DATA
 		EXIT_CALL
 		*(.discard .discard.*)
 		*(.export_symbol .no_trim_symbol)

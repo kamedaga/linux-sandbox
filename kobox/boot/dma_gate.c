@@ -1328,6 +1328,208 @@ out:
 	return result;
 }
 
+struct aggregate_dma_gate {
+	const struct kobox_linux_dma_host *original;
+	unsigned int calls;
+};
+
+static int aggregate_enable(void *context, unsigned int enabled)
+{
+	struct aggregate_dma_gate *gate = context;
+	return gate->original->enable(gate->original->context, enabled);
+}
+
+static int aggregate_map(void *context, uint64_t iova, uint64_t offset,
+			size_t length, unsigned int protection)
+{
+	/* A page-list host must publish only through sync_map(), never early. */
+	(void)context; (void)iova; (void)offset; (void)length; (void)protection;
+	return -EPROTO;
+}
+
+static int aggregate_pages(void *context, uint64_t iova, const uint64_t *pages,
+			   size_t count, unsigned int protection)
+{
+	struct aggregate_dma_gate *gate = context;
+	size_t i;
+
+	/* The fixture engine exposes contiguous host mappings. Publish each real
+	 * page without copying RAM, rolling back all preceding pages on failure.
+	 * This also covers coherent allocations assembled from scattered pages. */
+	if (!count || count > gate->original->ram_size / PAGE_SIZE)
+		return -EINVAL;
+	for (i = 0; i < count; i++)
+		if (pages[i] >= gate->original->ram_size / PAGE_SIZE)
+			return -EINVAL;
+	gate->calls++;
+	for (i = 0; i < count; i++) {
+		int result = gate->original->map(gate->original->context,
+			iova + i * PAGE_SIZE, pages[i] * PAGE_SIZE, PAGE_SIZE, protection);
+		if (result) {
+			while (i)
+				if (gate->original->unmap(gate->original->context,
+				    iova + --i * PAGE_SIZE, PAGE_SIZE))
+					panic("aggregate DMA gate rollback failed\n");
+			return result;
+		}
+	}
+	return 0;
+}
+
+static int aggregate_unmap(void *context, uint64_t iova, size_t length)
+{
+	struct aggregate_dma_gate *gate = context;
+	size_t offset;
+
+	for (offset = 0; offset < length; offset += PAGE_SIZE) {
+		int result = gate->original->unmap(gate->original->context,
+			iova + offset, PAGE_SIZE);
+		if (result)
+			return result;
+	}
+	return 0;
+}
+
+int kobox_linux_dma_aggregate_verify(const struct kobox_linux_pci_host *pci,
+			   const struct kobox_linux_dma_test *test,
+			   struct kobox_linux_dma_report *report)
+{
+	static const enum dma_data_direction directions[] = {
+		DMA_TO_DEVICE, DMA_FROM_DEVICE, DMA_BIDIRECTIONAL,
+	};
+	struct aggregate_dma_gate gate;
+	struct kobox_linux_dma_host host;
+	struct pci_host_bridge *bridge = NULL;
+	struct pci_dev *device = NULL;
+	struct kobox_linux_dma_port *port = NULL;
+	struct page *page = NULL;
+	unsigned int order, direction;
+	int result;
+
+	if (!pci || !test || !test->host.ram_size || !test->transfer ||
+	    !test->fail_map || !report || report->size != sizeof(*report))
+		return -EINVAL;
+	gate = (struct aggregate_dma_gate){.original = &test->host};
+	host = test->host;
+	host.context = &gate;
+	host.enable = aggregate_enable;
+	host.map = aggregate_map;
+	host.map_page_list = aggregate_pages;
+	host.unmap = aggregate_unmap;
+	report->phase = 1;
+	result = kobox_linux_pci_scan(pci, &bridge);
+	if (result)
+		goto out;
+	device = pci_get_slot(bridge->bus, pci->devfn);
+	result = -ENODEV;
+	if (!device || device->driver || device->dev.driver)
+		goto out;
+	result = kobox_linux_dma_attach(&device->dev, &host, &port);
+	if (result)
+		goto out;
+	result = dma_set_mask_and_coherent(&device->dev, DMA_BIT_MASK(36));
+	if (result)
+		goto out;
+	for (order = 0; order <= 3; order += 3) {
+		page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_COMP, order);
+		result = -ENOMEM;
+		if (!page)
+			goto out;
+		for (direction = 0; direction < ARRAY_SIZE(directions); direction++) {
+			size_t bytes = PAGE_SIZE << order;
+			dma_addr_t address;
+			unsigned int before = gate.calls;
+			u32 value = 0x1234, *cpu = page_address(page);
+
+			report->phase = 2 + order + direction;
+			fail_map(test, 1);
+			address = dma_map_page(&device->dev, page, 0, bytes, directions[direction]);
+			result = -EINVAL;
+			if (!dma_mapping_error(&device->dev, address)) {
+				dma_unmap_page(&device->dev, address, bytes, directions[direction]);
+				goto out;
+			}
+			if (gate.calls != before + 1 || page_count(page) != 1)
+				goto out;
+			*cpu = value;
+			address = dma_map_page(&device->dev, page, 0, bytes, directions[direction]);
+			if (dma_mapping_error(&device->dev, address))
+				goto out;
+			result = 0;
+			if (gate.calls != before + 2 || page_count(page) != 1 + (1U << order))
+				result = -EINVAL;
+			if (!result && directions[direction] != DMA_FROM_DEVICE &&
+			    (transfer(test, address, &value, false) || value != *cpu))
+				result = -EIO;
+			if (!result && directions[direction] != DMA_TO_DEVICE) {
+				value = 0x5678;
+				if (transfer(test, address + bytes - sizeof(value), &value, true) ||
+				    *(u32 *)((char *)cpu + bytes - sizeof(value)) != value)
+					result = -EIO;
+			}
+			dma_unmap_page(&device->dev, address, bytes, directions[direction]);
+			if (!result && page_count(page) != 1)
+				result = -EINVAL;
+			if (result)
+				goto out;
+			report->cases++;
+		}
+		__free_pages(page, order);
+		page = NULL;
+	}
+	/* AX210's queue descriptors use coherent allocations, whose upstream
+	 * scatter-list construction differs from dma_map_page(). Exercise that
+	 * entry point as well, including a failed host publication before retry. */
+	for (order = 0; order <= 3; order += 3) {
+		size_t bytes = PAGE_SIZE << order;
+		dma_addr_t address;
+		u32 value, *cpu;
+		unsigned int before = gate.calls;
+
+		report->phase = 8 + order;
+		fail_map(test, 1);
+		cpu = dma_alloc_coherent(&device->dev, bytes, &address, GFP_KERNEL);
+		result = -EINVAL;
+		if (cpu) {
+			dma_free_coherent(&device->dev, bytes, cpu, address);
+			goto out;
+		}
+		if (gate.calls != before + 1)
+			goto out;
+		cpu = dma_alloc_coherent(&device->dev, bytes, &address, GFP_KERNEL);
+		if (!cpu)
+			goto out;
+		result = gate.calls == before + 2 ? 0 : -EINVAL;
+		*cpu = 0x9abc;
+		value = 0;
+		if (!result && (transfer(test, address, &value, false) || value != *cpu))
+			result = -EIO;
+		value = 0xdef0;
+		if (!result && (transfer(test, address + bytes - sizeof(value), &value, true) ||
+		    *(u32 *)((char *)cpu + bytes - sizeof(value)) != value))
+			result = -EIO;
+		dma_free_coherent(&device->dev, bytes, cpu, address);
+		if (result)
+			goto out;
+		report->cases++;
+	}
+out:
+	if (port && kobox_linux_dma_detach(port))
+		return -EBUSY;
+	if (page)
+		__free_pages(page, order);
+	pci_dev_put(device);
+	if (bridge && kobox_linux_pci_remove(bridge))
+		return -EBUSY;
+	rcu_barrier();
+	report->drained = 1;
+	report->warnings = kobox_linux_exception_warnings();
+	if (!result && report->warnings)
+		result = -EINVAL;
+	report->result = result;
+	return result;
+}
+
 int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 			   const struct kobox_linux_dma_test *test,
 			   struct kobox_linux_dma_report *report)

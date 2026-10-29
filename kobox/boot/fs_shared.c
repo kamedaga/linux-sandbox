@@ -24,6 +24,8 @@ struct fs_shared_export {
 	struct vm_area_struct *vma;
 	struct folio **folios;
 	u64 *pages;
+	u64 *dirty;
+	size_t dirty_words;
 	u64 id, offset, flags, charged;
 	size_t count;
 	bool writable;
@@ -157,6 +159,7 @@ static int fs_shared_pages(struct fs_shared_export *view,
 	struct folio **folios;
 	u64 *pages;
 	loff_t size = i_size_read(file_inode(view->file));
+	const size_t batch_pages = (2UL * 1024 * 1024) / PAGE_SIZE;
 	size_t i;
 	int error = -ENOMEM;
 
@@ -171,6 +174,21 @@ static int fs_shared_pages(struct fs_shared_export *view,
 		pages[i] = U64_MAX;
 		if (size <= 0 || index > ((u64)(size - 1) >> PAGE_SHIFT))
 			continue;
+		/* An export already needs every in-file page. read_mapping_folio()
+		 * alone waits for one cold folio at a time, bypassing the readahead
+		 * used by Linux file reads/faults. Submit bounded contiguous batches
+		 * through the filesystem's normal readahead path, then retain the
+		 * same per-folio validation, error handling and native pin lifetime.
+		 * Shmem has no disk reads; EOF slots remain holes, not prefetched RAM.
+		 */
+		if (!shmem_file(view->file) && !(i % batch_pages)) {
+			unsigned long nr = min_t(u64, view->count - i,
+				((u64)(size - 1) >> PAGE_SHIFT) - index + 1);
+			DEFINE_READAHEAD(ractl, view->file, &view->file->f_ra,
+				mapping, index);
+			/* Match Linux's forced readahead cap of 2 MiB per batch. */
+			page_cache_ra_unbounded(&ractl, min(nr, batch_pages), 0);
+		}
 		folio = shmem_file(view->file) ? shmem_read_folio(mapping, index) :
 			read_mapping_folio(mapping, index, view->file);
 		if (IS_ERR(folio)) {
@@ -192,24 +210,65 @@ fail:
 	return error;
 }
 
-static void fs_shared_dirty(struct fs_shared_export *view)
+static void fs_shared_dirty_all(struct fs_shared_export *view)
 {
 	size_t i;
 	if (!view->writable)
 		return;
-	/* Native PTEs do not participate in Linux's page_mkclean dirty tracking.
-	 * Conservatively dirty writable exports before sync and periodically;
-	 * never acknowledge writeback of a private pread copy as MAP_SHARED.
-	 */
-	for (i = 0; i < view->count; i++)
-		if (view->folios[i])
-			folio_mark_dirty(view->folios[i]);
+	/* One-time publication/retirement boundaries conservatively cover writes
+	 * through aliases that no longer have a PTE to harvest. Periodic and
+	 * sync admission use the native logical-page dirty bitmap instead. */
+	for (i = 0; i < view->count; i++) {
+		struct folio *folio = view->folios[i];
+		if (!folio)
+			continue;
+		/* Writeback can clean an exported folio between native writes.
+		 * Filesystems such as ext4 require the folio lock when the first
+		 * dirty mark updates its buffer heads again. */
+		folio_lock(folio);
+		folio_mark_dirty(folio);
+		folio_unlock(folio);
+	}
+}
+
+static int fs_shared_collect_dirty(struct kobox_linux_fs_shared *shared,
+	struct fs_shared_export *view)
+{
+	size_t word;
+	int error;
+	if (!view->writable)
+		return 0;
+	error = shared->ops.collect_dirty(shared->ops.context, view->id,
+		view->dirty, view->dirty_words);
+	if (error)
+		return error;
+	for (word = 0; word < view->dirty_words; word++) {
+		u64 bits = view->dirty[word];
+		while (bits) {
+			unsigned int bit = __ffs64(bits);
+			size_t index = word * 64 + bit;
+			struct folio *folio;
+			bits &= bits - 1;
+			if (index >= view->count)
+				return -EPROTO;
+			folio = view->folios[index];
+			if (!folio)
+				continue;
+			/* ext4 updates buffer-head dirty state under the folio lock.
+			 * A native ACK transfers evidence here before Linux writeback;
+			 * subsequent CPU writes stay armed for the next collection. */
+			folio_lock(folio);
+			folio_mark_dirty(folio);
+			folio_unlock(folio);
+		}
+	}
+	return 0;
 }
 
 static void fs_shared_drop(struct kobox_linux_fs_shared *shared,
 	struct fs_shared_export *view)
 {
-	fs_shared_dirty(view);
+	fs_shared_dirty_all(view);
 	list_del(&view->link);
 	fs_shared_restore_eviction(shared, view);
 	shared->bytes -= view->charged;
@@ -217,6 +276,7 @@ static void fs_shared_drop(struct kobox_linux_fs_shared *shared,
 		mapping_unmap_writable(view->file->f_mapping);
 	fs_shared_put_pages(view->folios, view->count);
 	kvfree(view->pages);
+	kvfree(view->dirty);
 	fs_shared_unprepare(view);
 	fput(view->file);
 	kfree(view);
@@ -241,7 +301,11 @@ static void fs_shared_maintenance(struct work_struct *work)
 	up_read(&shared->lock);
 	down_write(&shared->lock);
 	list_for_each_entry_safe(view, next, &shared->exports, link) {
-		fs_shared_dirty(view);
+		int error = fs_shared_collect_dirty(shared, view);
+		if (error) {
+			pr_warn_ratelimited("native shared dirty collection failed: %d\n", error);
+			continue; /* Preserve export/pins and retry the native inventory. */
+		}
 		if (shared->ops.retire(shared->ops.context, view->id, 0) == 1)
 			fs_shared_drop(shared, view);
 	}
@@ -264,7 +328,7 @@ struct kobox_linux_fs_shared *kobox_linux_fs_shared_create(void)
 int kobox_linux_fs_shared_bind(struct kobox_linux_fs_shared *shared,
 	const struct kobox_linux_fs_shared_ops *ops)
 {
-	if (!shared || !ops || !ops->create || !ops->refresh || !ops->retire ||
+	if (!shared || !ops || !ops->create || !ops->refresh || !ops->collect_dirty || !ops->retire ||
 	    !ops->budget_bytes)
 		return -EINVAL;
 	down_write(&shared->lock);
@@ -312,11 +376,29 @@ void kobox_linux_fs_shared_destroy(struct kobox_linux_fs_shared *shared)
 	kfree(shared);
 }
 
-int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowait,
-	bool publishing, struct kobox_linux_fs_shared_guard *guard)
+static bool fs_shared_matches(const struct fs_shared_export *view,
+	const struct kobox_linux_fs_shared_guard *guard)
+{
+	return !guard->mapping || view->file->f_mapping == guard->mapping;
+}
+
+static bool fs_shared_has_exports(struct kobox_linux_fs_shared *shared,
+	const struct kobox_linux_fs_shared_guard *guard)
+{
+	struct fs_shared_export *view;
+	list_for_each_entry(view, &shared->exports, link)
+		if (fs_shared_matches(view, guard))
+			return true;
+	return false;
+}
+
+static int fs_shared_enter_mapping(struct kobox_linux_fs_shared *shared, bool nowait,
+	bool publishing, struct address_space *mapping,
+	struct kobox_linux_fs_shared_guard *guard)
 {
 	struct fs_shared_export *view, *next;
 	guard->mode = KOBOX_FS_SHARED_NONE;
+	guard->mapping = mapping;
 	if (!shared)
 		return 0;
 	/* Publication can allocate, run VFS mmap callbacks and enter native IPC;
@@ -334,11 +416,13 @@ int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowai
 			up_read(&shared->lock);
 			return -ESHUTDOWN;
 		}
-		/* No native aliases exist. Keep read admission through VFS so writes
-		 * may run concurrently, while a new export (always write admission)
-		 * cannot publish stale PFNs halfway through an in-flight mutation.
+		/* No aliases of this file exist. Keep registry read admission until
+		 * VFS returns: publication requires write admission, so no export
+		 * can race a page replacement. Unrelated files may mutate together;
+		 * their pinned aliases neither need refresh nor confer authority here.
+		 * A NULL mapping retains the conservative namespace/global scope.
 		 */
-		if (list_empty(&shared->exports)) {
+		if (!fs_shared_has_exports(shared, guard)) {
 			guard->mode = KOBOX_FS_SHARED_READ;
 			return 0;
 		}
@@ -357,11 +441,36 @@ int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowai
 	// Reap before VFS observes mmap-writer counters: after the last native
 	// munmap, F_ADD_SEALS must not see a fictitious writer until the timer fires.
 	list_for_each_entry_safe(view, next, &shared->exports, link)
-		if (shared->ops.retire(shared->ops.context, view->id, 0) == 1)
+		if (fs_shared_matches(view, guard) &&
+		    shared->ops.retire(shared->ops.context, view->id, 0) == 1)
 			fs_shared_drop(shared, view);
-	list_for_each_entry(view, &shared->exports, link)
-		fs_shared_dirty(view);
+	list_for_each_entry(view, &shared->exports, link) {
+		int error;
+		if (!fs_shared_matches(view, guard))
+			continue;
+		error = fs_shared_collect_dirty(shared, view);
+		if (error) {
+			up_write(&shared->lock);
+			guard->mode = KOBOX_FS_SHARED_NONE;
+			return error;
+		}
+	}
 	return 0;
+}
+
+int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowait,
+	bool publishing, struct kobox_linux_fs_shared_guard *guard)
+{
+	return fs_shared_enter_mapping(shared, nowait, publishing, NULL, guard);
+}
+
+int kobox_linux_fs_shared_enter_file(struct kobox_linux_fs_shared *shared, bool nowait,
+	bool publishing, struct file *file, struct kobox_linux_fs_shared_guard *guard)
+{
+	/* Request admission pins this exact struct file through leave. Never use
+	 * an untrusted inode number or a handle that could have been recycled. */
+	return fs_shared_enter_mapping(shared, nowait, publishing,
+		file && S_ISREG(file_inode(file)->i_mode) ? file->f_mapping : NULL, guard);
 }
 
 /* Buffered reads consume the same folios as a native shared alias, so they
@@ -376,6 +485,7 @@ int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *shared,
 	bool direct;
 
 	guard->mode = KOBOX_FS_SHARED_NONE;
+	guard->mapping = file ? file->f_mapping : NULL;
 	if (!shared)
 		return 0;
 	if (nowait) {
@@ -392,7 +502,7 @@ int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *shared,
 		!list_empty(&shared->exports);
 	if (direct) {
 		up_read(&shared->lock);
-		return kobox_linux_fs_shared_enter(shared, nowait, false, guard);
+		return kobox_linux_fs_shared_enter_file(shared, nowait, false, file, guard);
 	}
 	guard->mode = KOBOX_FS_SHARED_READ;
 	return 0;
@@ -418,10 +528,18 @@ int kobox_linux_fs_shared_leave(struct kobox_linux_fs_shared *shared, bool refre
 		list_for_each_entry(view, &shared->exports, link) {
 			struct folio **folios = NULL;
 			u64 *pages = NULL;
-			int status = fs_shared_pages(view, &folios, &pages);
-			if (!status && memcmp(pages, view->pages, view->count * sizeof(*pages)))
+			int status;
+			if (!fs_shared_matches(view, guard))
+				continue;
+			status = fs_shared_pages(view, &folios, &pages);
+			if (!status && memcmp(pages, view->pages, view->count * sizeof(*pages))) {
 				status = shared->ops.refresh(shared->ops.context, view->id,
 					pages, view->count);
+				/* Native retirement ACK closes the last old-alias writes.
+				 * Dirty OLD folios before dropping their lifetime pins. */
+				if (!status)
+					fs_shared_dirty_all(view);
+			}
 			if (!status) {
 				fs_shared_put_pages(view->folios, view->count);
 				kvfree(view->pages);
@@ -522,7 +640,6 @@ bool kobox_linux_fs_shared_add_seals(struct kobox_linux_fs_shared *shared,
 	lockdep_assert_held(&shared->lock);
 	if (list_empty(&shared->exports))
 		return false;
-	lockdep_assert_held_write(&shared->lock);
 	list_for_each_entry(view, &shared->exports, link) {
 		if (view->file->f_mapping != mapping)
 			continue;
@@ -540,6 +657,7 @@ bool kobox_linux_fs_shared_add_seals(struct kobox_linux_fs_shared *shared,
 	}
 	if (!capacity)
 		return false;
+	lockdep_assert_held_write(&shared->lock);
 
 	/* Mirror the real fcntl admission under the caller's credential scope.
 	 * Linux's private memfd pin scanner cannot distinguish native RO aliases
@@ -625,7 +743,7 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 {
 	struct fs_shared_export *view;
 	struct fs_shared_export *other;
-	u64 count, charged;
+	u64 count, charged, dirty_bytes;
 	vm_flags_t vm_flags;
 	int error;
 
@@ -667,6 +785,10 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	if (count > (U64_MAX - sizeof(*view)) / (2 * (sizeof(u64) + sizeof(void *))))
 		return -ENOMEM;
 	charged = sizeof(*view) + count * 2 * (sizeof(u64) + sizeof(void *));
+	dirty_bytes = (flags & 1) ? DIV_ROUND_UP_ULL(count, 64) * sizeof(u64) : 0;
+	if (charged > U64_MAX - dirty_bytes)
+		return -ENOMEM;
+	charged += dirty_bytes;
 	if (charged > shared->ops.budget_bytes || shared->bytes > shared->ops.budget_bytes - charged)
 		return -ENOMEM;
 	view = kzalloc(sizeof(*view), GFP_KERNEL);
@@ -678,6 +800,14 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	view->flags = flags;
 	view->charged = charged;
 	view->writable = flags & 1;
+	if (view->writable) {
+		view->dirty_words = DIV_ROUND_UP_ULL(count, 64);
+		view->dirty = kvcalloc(view->dirty_words, sizeof(*view->dirty), GFP_KERNEL);
+		if (!view->dirty) {
+			error = -ENOMEM;
+			goto fail;
+		}
+	}
 	error = fs_shared_prepare(view, vm_flags);
 	if (error)
 		goto fail;
@@ -712,7 +842,7 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	}
 	shared->bytes += charged;
 	list_add_tail(&view->link, &shared->exports);
-	fs_shared_dirty(view);
+	fs_shared_dirty_all(view);
 	*id = view->id;
 	*file_size = i_size_read(file_inode(file));
 	file_accessed(file);
@@ -721,6 +851,7 @@ fail:
 	fs_shared_restore_eviction(shared, view);
 	fs_shared_put_pages(view->folios, view->count);
 	kvfree(view->pages);
+	kvfree(view->dirty);
 	fs_shared_unprepare(view);
 	fput(view->file);
 	kfree(view);

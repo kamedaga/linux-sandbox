@@ -77,6 +77,8 @@ int kobox_linux_fs_utimensat(struct kobox_linux_fs_port *port,
 long kobox_linux_fs_fcntl(struct kobox_linux_fs_port *port,
 			 const struct cred *cred, u64 handle,
 			 unsigned int command, unsigned long argument);
+int kobox_linux_fs_setlk(struct kobox_linux_fs_port *,const struct cred *,
+    u64 handle,unsigned int type,loff_t start,loff_t length);
 /* sync has no fd operand and applies to this sandbox's Linux instance. */
 int kobox_linux_fs_sync(const struct cred *cred);
 int kobox_linux_fs_syncfs(struct kobox_linux_fs_port *port,

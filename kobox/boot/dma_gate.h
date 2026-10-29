@@ -49,6 +49,9 @@ int kobox_linux_dma_xarray_verify(void);
 int kobox_linux_dma_verify(const struct kobox_linux_pci_host *pci,
 			   const struct kobox_linux_dma_test *test,
 			   struct kobox_linux_dma_report *report);
+int kobox_linux_dma_aggregate_verify(const struct kobox_linux_pci_host *pci,
+			   const struct kobox_linux_dma_test *test,
+			   struct kobox_linux_dma_report *report);
 #endif
 
 #endif

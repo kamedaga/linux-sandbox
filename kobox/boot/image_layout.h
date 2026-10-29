@@ -7,7 +7,9 @@
 #define KOBOX_CORE_LINK_BASE 0x10000000
 #define KOBOX_CORE_PHYSICAL_BASE 0x01000000
 #define KOBOX_CORE_VMEMMAP_BASE 0x18000000
-#define KOBOX_CORE_VMEMMAP_SIZE 0x01000000
+/* 64 MiB of struct-page metadata covers a filesystem core with 4 GiB RAM.
+ * This reserves address space; backing is populated only for present RAM. */
+#define KOBOX_CORE_VMEMMAP_SIZE 0x04000000
 /* A single PCI BAR mapping can consume 256 MiB plus vmalloc guard pages.
  * Keep room for other allocations, while leaving the native launcher,
  * process stack and read-only launch data below this window. The exclusive

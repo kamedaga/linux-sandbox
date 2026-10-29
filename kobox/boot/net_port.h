@@ -16,6 +16,9 @@ struct kobox_linux_net_frame {
 
 struct kobox_linux_net_info {
 	uint64_t sequence;
+	/* Changes on WiFi authorization transitions and each observed CONNECTED.
+	 * Native L3 must retire its old policy before forwarding a new epoch. */
+	uint64_t association_sequence;
 	uint64_t rx_drops;
 	uint32_t mtu;
 	uint8_t mac[6];
@@ -40,6 +43,21 @@ int kobox_linux_net_port_read(struct kobox_linux_net_port *port,
 			     size_t capacity, size_t *count);
 int kobox_linux_net_port_write(struct kobox_linux_net_port *port,
 			      const void *frame, size_t length);
+int kobox_linux_net_port_name(struct kobox_linux_net_port *port,
+			     char *name, size_t capacity);
+int kobox_linux_net_wifi_request(struct kobox_linux_net_port *port,
+	const void *request, size_t length, void *reply, size_t capacity, size_t *received);
+int kobox_linux_net_wifi_configure(struct kobox_linux_net_port *port,
+	const void *config, size_t length);
+int kobox_linux_net_wifi_events(struct kobox_linux_net_port *port, uint32_t *events);
+
+struct kobox_linux_wifi_service;
+/* Opening-task-only binding; a failed stop keeps this binding and the port
+ * live. Packet delivery uses the separately locked authorization gate. */
+int kobox_linux_net_port_wifi_bind(struct kobox_linux_net_port *port,
+	struct kobox_linux_wifi_service *service);
+void kobox_linux_net_port_wifi_authorize(struct kobox_linux_net_port *port, bool authorized);
+void kobox_linux_net_port_wifi_association(struct kobox_linux_net_port *port);
 #endif
 
 #endif

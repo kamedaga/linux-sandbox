@@ -529,6 +529,7 @@ def build_phase_boundary(arguments, definitions):
     run([
         arguments.cc, "-shared", "-Wl,-z,defs",
         "-Wl,--build-id=none", "-Wl,-soname,linux-early-memory-boundary.so",
+        "-MD", "-MF", str(output) + ".d",
         source, guard_source, "-o", output,
     ])
     return output
@@ -541,12 +542,21 @@ def include_overlay_identity(arguments):
         roots.append(architecture)
     roots.append(arguments.source_tree / "kobox/provider/include")
     digest = hashlib.sha256()
+    headers = []
     for index, root in enumerate(roots):
         digest.update(f"{index}\0".encode())
         for header in sorted(root.rglob("*.h")):
+            headers.append(header)
             digest.update(str(header.relative_to(root)).encode())
             digest.update(b"\0")
             digest.update(header.read_bytes())
+    metadata = arguments.output_dir / ".metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    depfile = metadata / "kobox-include-overlay.d"
+    escaped = [str(header).replace("\\", "\\\\").replace(" ", "\\ ")
+               for header in headers]
+    depfile.write_text("kobox-include-overlay: " + " ".join(escaped) + "\n",
+                       encoding="utf-8")
     return digest.hexdigest()
 
 

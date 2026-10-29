@@ -7,9 +7,13 @@
 #include <string.h>
 #include <sys/mman.h>
 
+#ifndef BAR_BASE
 #define BAR_BASE 0x120000000ULL
+#endif
 #define BAR_SIZE 0x4000U
+#ifndef BAR_FLAGS
 #define BAR_FLAGS (PCI_BASE_ADDRESS_MEM_TYPE_64 | PCI_BASE_ADDRESS_MEM_PREFETCH)
+#endif
 #define SMALL_BASE 0x30000100ULL
 #define SMALL_SECOND_BASE 0x30000300ULL
 #define SMALL_SIZE 0x100U

@@ -159,9 +159,12 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 		report->capabilities += 5;
 		report->bar_start = pci_resource_start(device, 0);
 		report->bar_size = pci_resource_len(device, 0);
-		if (report->bar_start != 0x120000000ULL || report->bar_size != 0x4000 ||
+		if (pci_read_config_dword(device, PCI_BASE_ADDRESS_0, &value))
+			goto remove;
+		if (report->bar_start != host->windows[0].start || report->bar_size != 0x4000 ||
 		    !(pci_resource_flags(device, 0) & IORESOURCE_MEM_64) ||
-		    !(pci_resource_flags(device, 0) & IORESOURCE_PREFETCH) ||
+		    !!(pci_resource_flags(device, 0) & IORESOURCE_PREFETCH) !=
+			!!(value & PCI_BASE_ADDRESS_MEM_PREFETCH) ||
 		    !device->resource[0].parent)
 			goto remove;
 		if (small_bars(device, report, mapping_faults, !!host->memory_read))

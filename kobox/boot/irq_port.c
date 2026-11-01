@@ -36,6 +36,9 @@ struct hosted_irq {
 	unsigned int virq;
 };
 
+#if defined(KOBOX_NET_PERF_TRACE) && KOBOX_NET_PERF_TRACE
+extern void kobox_net_perf_irq_mark(void) __attribute__((weak));
+#endif
 static LIST_HEAD(irq_ports);
 static DEFINE_MUTEX(irq_ports_lock);
 
@@ -312,6 +315,9 @@ void kobox_linux_irq_dispatch(unsigned int cpu)
 				break;
 			if (result)
 				panic("host IRQ receive failed\n");
+#if defined(KOBOX_NET_PERF_TRACE) && KOBOX_NET_PERF_TRACE
+   if(kobox_net_perf_irq_mark)kobox_net_perf_irq_mark();
+#endif
 			irq = xa_load(&port->routes, event.hwirq);
 			if (irq && irq->route.cookie == event.cookie &&
 			    generic_handle_domain_irq(irq->domain, event.hwirq) &&

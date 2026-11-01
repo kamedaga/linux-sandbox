@@ -1,0 +1,4 @@
+# linux-firmware tag 20260916; Tiger Lake filenames declared by Linux v6.18.48 i915.
+3c013ef0ad96ba73aee8e5bd04a8e27cc9b1c6e9183b1a83ce124485f325afca  i915/tgl_dmc_ver2_12.bin
+5ab0e417fba5ec7588384e21556b30355300d450a35e06ebb94821c012611d77  i915/tgl_guc_70.1.1.bin
+dbb1316bac13a76427ffa7827e52b5b9affe8a4cadd23dc22e2a54e35c53bdad  i915/tgl_huc_7.9.3.bin

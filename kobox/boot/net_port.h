@@ -26,6 +26,16 @@ struct kobox_linux_net_info {
 	uint8_t reserved;
 };
 
+/* Copied diagnostics, never pointers. Counters are scoped to one port epoch. */
+struct kobox_linux_net_rx_stats {
+	uint64_t queued, high_water, packets, bytes;
+	uint64_t drop_full, drop_oversize, drop_gso, drop_policy, drop_copy;
+	uint64_t wake_edges, wake_writes, wake_errors, tx_packets, tx_errors;
+	uint64_t features_before, features_active;
+	uint64_t gso_seen, measurement_control;
+	uint64_t wireless, power_save;
+};
+
 #ifdef __KERNEL__
 struct pci_dev;
 struct kobox_linux_net_port;
@@ -36,6 +46,13 @@ int kobox_linux_net_port_open(struct kobox_linux_net_port **out,
 					      size_t module_index, int status),
 			     void *progress_context);
 void kobox_linux_net_port_close(struct kobox_linux_net_port *port);
+/* Process context only. Unbind waits for callbacks before context reclamation.
+ * The callback is a nonblocking, coalescing hint; the queue remains truth. */
+int kobox_linux_net_port_bind_wake(struct kobox_linux_net_port *port,
+	int (*wake)(void *), void *context);
+int kobox_linux_net_port_rx_stats(struct kobox_linux_net_port *port,
+	struct kobox_linux_net_rx_stats *stats);
+int kobox_linux_net_port_perf_request(struct kobox_linux_net_port *, const void *, size_t, void *, size_t, size_t *);
 int kobox_linux_net_port_info(struct kobox_linux_net_port *port,
 			     struct kobox_linux_net_info *info);
 int kobox_linux_net_port_read(struct kobox_linux_net_port *port,

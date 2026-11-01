@@ -11,6 +11,7 @@
 #include <linux/fs_struct.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
+#include <linux/poll.h>
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
@@ -648,6 +649,29 @@ ssize_t kobox_linux_fs_pwrite(struct kobox_linux_fs_port *port,
 			     const void *buffer, size_t count, loff_t offset)
 {
 	return fs_io(port, cred, handle, (void *)buffer, count, offset, true, true);
+}
+
+int kobox_linux_fs_poll(struct kobox_linux_fs_port *port,
+			const struct cred *cred, u64 handle,
+			unsigned int events)
+{
+	const __poll_t unconditional = EPOLLERR | EPOLLHUP | EPOLLNVAL | EPOLLRDHUP;
+	const struct cred *saved;
+	struct file *file;
+	__poll_t ready;
+
+	if (!cred)
+		return -EINVAL;
+	file = fs_file(port, handle);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+	saved = override_creds(cred);
+	/* A NULL poll table is Linux's nonblocking readiness snapshot.  It must
+	 * not register a waiter or consume FIFO bytes. */
+	ready = vfs_poll(file, NULL);
+	revert_creds(saved);
+	fput(file);
+	return (int)(ready & ((__poll_t)events | unconditional));
 }
 
 loff_t kobox_linux_fs_seek(struct kobox_linux_fs_port *port,

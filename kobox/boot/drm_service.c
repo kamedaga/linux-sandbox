@@ -8,11 +8,15 @@
 #include <drm/drm_ioctl.h>
 #include <drm/virtgpu_drm.h>
 #include <linux/fdtable.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-direction.h>
+#include <linux/file.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/slab.h>
 #include <linux/task_work.h>
+#include <linux/sync_file.h>
 #include <kobox2/gpu_layout.h>
 #include "../arch/x86_64/host_call.h"
 
@@ -41,12 +45,19 @@ struct drm_owned_prime {
 	struct kobox_linux_drm_mapping *owner;
 };
 
+struct drm_owned_sync_file {
+    u64 id;
+    int fd;
+};
+
 struct kobox_linux_drm_service {
 	struct task_struct *owner;
 	struct files_struct *files;
 	struct drm_owned_file *entries;
 	struct drm_owned_mapping mappings[DRM_MAPPING_LIMIT];
 	struct drm_owned_prime primes[DRM_PRIME_LIMIT];
+    struct drm_owned_sync_file sync_files[KOBOX_DRM_SYNC_FILE_LIMIT];
+    u64 sync_file_sequence;
 	struct kobox_linux_drm_service_report report;
 	struct kobox_linux_drm_event_host events;
 	struct kobox_drm_fences fences;
@@ -342,8 +353,8 @@ int kobox_linux_drm_service_take_fence(struct kobox_linux_drm_service *service,
 	return error ? error : kobox_drm_fences_take(&service->fences, result);
 }
 
-int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
-				u64 cookie, u32 handle, u32 mapping_rights,
+static int service_map(struct kobox_linux_drm_service *service,
+				u64 cookie, u32 handle, u32 mapping_rights, u32 kind, bool i915,
 				u64 *page_indices, size_t page_capacity,
 				struct kobox_linux_drm_service_mapping *result)
 {
@@ -371,7 +382,9 @@ int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
 	}
 	if (!mapping)
 		return -ENOSPC;
-	error = kobox_linux_drm_map_pages(file->file, handle, mapping_rights,
+	error = i915 ? kobox_linux_drm_i915_map_pages(file->file, handle, mapping_rights,
+		kind, page_indices, page_capacity, &pages, &owner) :
+		kobox_linux_drm_map_pages(file->file, handle, mapping_rights,
 		page_indices, page_capacity, &pages, &owner);
 	if (error)
 		return error;
@@ -385,6 +398,18 @@ int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
 		.backing_kind = pages.backing_kind,
 	};
 	return 0;
+}
+
+int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
+    u64 cookie,u32 handle,u32 rights,u64 *pages,size_t capacity,
+    struct kobox_linux_drm_service_mapping *result)
+{ return service_map(service,cookie,handle,rights,0,false,pages,capacity,result); }
+int kobox_linux_drm_service_i915_map(struct kobox_linux_drm_service *service,
+    u64 cookie,u32 handle,u32 rights,u32 kind,u64 *pages,size_t capacity,
+    struct kobox_linux_drm_service_mapping *result)
+{
+    if(kind>2) return -EINVAL;
+    return service_map(service,cookie,handle,rights,kind,true,pages,capacity,result);
 }
 
 int kobox_linux_drm_service_unmap(struct kobox_linux_drm_service *service,
@@ -473,6 +498,185 @@ int kobox_linux_drm_service_prime_export(
 	return 0;
 }
 
+/* Real Linux sync_file FDs remain installed in this owner task. An opaque
+ * token selects the ledger entry only after the native broker proves its
+ * lease capability. No wait channel is ever treated as a Linux dma_fence. */
+static struct drm_owned_sync_file *find_sync_file(
+    struct kobox_linux_drm_service *service, u64 token)
+{
+    unsigned int i;
+    if(!token) return NULL;
+    for(i=0;i<KOBOX_DRM_SYNC_FILE_LIMIT;++i)
+        if(service->sync_files[i].id==token) return &service->sync_files[i];
+    return NULL;
+}
+
+static int sync_file_reserve(struct kobox_linux_drm_service *service,
+    u64 session,u64 correlation,struct drm_owned_sync_file **slot,
+    struct kobox_drm_fence_entry **watch)
+{
+    unsigned int i;
+    if(service->stopping || service->report.close_error) return -ESHUTDOWN;
+    if(service->sync_file_sequence==U64_MAX) return -EOVERFLOW;
+    for(i=0;i<KOBOX_DRM_SYNC_FILE_LIMIT;++i) if(!service->sync_files[i].id) break;
+    if(i==KOBOX_DRM_SYNC_FILE_LIMIT) return -ENOSPC;
+    *slot=&service->sync_files[i];
+    return kobox_drm_fence_reserve(&service->fences,session,correlation,watch);
+}
+
+static int retain_sync_file(struct kobox_linux_drm_service *service,
+    struct drm_owned_sync_file *slot,struct kobox_drm_fence_entry **watch,
+    int internal_fd,u64 *token)
+{
+    struct dma_fence *fence=sync_file_get_fence(internal_fd);
+    int error=fence ? kobox_drm_fence_arm(*watch,fence) : -EBADF;
+    if(error) {
+        int closed;
+        if(fence) dma_fence_put(fence);
+        closed=close_fd(internal_fd);
+        task_work_run();
+        if(closed && !service->report.close_error) service->report.close_error=closed;
+        return error;
+    }
+    /* The watch owns its fence reference independently of this FD/lease.
+     * Closing an export before completion does not manufacture a signal. */
+    *slot=(struct drm_owned_sync_file){.id=++service->sync_file_sequence,.fd=internal_fd};
+    *token=slot->id;
+    *watch=NULL;
+    return 0;
+}
+
+int kobox_linux_drm_service_syncobj_export_file(
+    struct kobox_linux_drm_service *service,u64 cookie,u32 handle,
+    u64 session,u64 correlation,u64 *token)
+{
+    struct drm_owned_file *file;
+    struct drm_owned_sync_file *slot=NULL;
+    struct kobox_drm_fence_entry *watch=NULL;
+    int internal_fd=-1,error=check_owner(service);
+    if(error) return error;
+    if(!handle || !token) return -EINVAL;
+    file=find_file(service,cookie);
+    if(!file || !file->file) return -ENOENT;
+    error=sync_file_reserve(service,session,correlation,&slot,&watch);
+    if(error) return error;
+    error=kobox_linux_drm_syncobj_export_file(file->file,handle,&internal_fd);
+    if(!error) error=retain_sync_file(service,slot,&watch,internal_fd,token);
+    if(watch) kobox_drm_fence_cancel(&watch);
+    return error;
+}
+
+int kobox_linux_drm_service_prime_export_file(
+    struct kobox_linux_drm_service *service,u64 prime,u32 flags,
+    u64 session,u64 correlation,u64 *token)
+{
+    struct drm_owned_sync_file *slot=NULL;
+    struct kobox_drm_fence_entry *watch=NULL;
+    unsigned int i;
+    int internal_fd=-1,error=check_owner(service);
+    if(error) return error;
+    if(!prime || !flags || (flags & ~3u) || !token) return -EINVAL;
+    for(i=0;i<DRM_PRIME_LIMIT;++i)
+        if(service->primes[i].id==prime && service->primes[i].dma_fd>=0) break;
+    if(i==DRM_PRIME_LIMIT) return -ENOENT;
+    error=sync_file_reserve(service,session,correlation,&slot,&watch);
+    if(error) return error;
+    error=kobox_linux_drm_dmabuf_export_file(service->primes[i].dma_fd,flags,&internal_fd);
+    if(!error) error=retain_sync_file(service,slot,&watch,internal_fd,token);
+    if(watch) kobox_drm_fence_cancel(&watch);
+    return error;
+}
+
+int kobox_linux_drm_service_syncobj_import_file(
+    struct kobox_linux_drm_service *service,u64 cookie,u32 handle,u64 token)
+{
+    struct drm_owned_sync_file *sync;
+    struct drm_owned_file *file;
+    int error=check_owner(service);
+    if(error) return error;
+    if(service->stopping || service->report.close_error) return -ESHUTDOWN;
+    if(!handle) return -EINVAL;
+    sync=find_sync_file(service,token);
+    if(!sync) return -ENOENT;
+    file=find_file(service,cookie);
+    if(!file || !file->file) return -ENOENT;
+    return kobox_linux_drm_syncobj_import_file(file->file,handle,sync->fd);
+}
+
+int kobox_linux_drm_service_prime_import_file(
+    struct kobox_linux_drm_service *service,u64 prime,u32 flags,u64 token)
+{
+    struct drm_owned_sync_file *sync;
+    unsigned int i;
+    int error=check_owner(service);
+    if(error) return error;
+    if(service->stopping || service->report.close_error) return -ESHUTDOWN;
+    if(!prime || !flags || (flags & ~3u)) return -EINVAL;
+    sync=find_sync_file(service,token);
+    if(!sync) return -ENOENT;
+    for(i=0;i<DRM_PRIME_LIMIT;++i)
+        if(service->primes[i].id==prime && service->primes[i].dma_fd>=0) break;
+    if(i==DRM_PRIME_LIMIT) return -ENOENT;
+    return kobox_linux_drm_dmabuf_import_file(service->primes[i].dma_fd,flags,sync->fd);
+}
+
+int kobox_linux_drm_service_release_sync_file(
+    struct kobox_linux_drm_service *service,u64 token)
+{
+    struct drm_owned_sync_file *sync;
+    int error=check_owner(service);
+    if(error) return error;
+    sync=find_sync_file(service,token);
+    if(!sync) return -ENOENT;
+    /* close_fd consumes the descriptor even when flush reports an error. */
+    error=close_fd(sync->fd);
+    *sync=(struct drm_owned_sync_file){0};
+    task_work_run();
+    if(error && !service->report.close_error) service->report.close_error=error;
+    return error;
+}
+
+int kobox_linux_drm_service_prime_cpu_sync(
+    struct kobox_linux_drm_service *service, u64 prime_id, u64 flags)
+{
+    enum dma_data_direction direction;
+    struct dma_buf *buffer;
+    unsigned int index;
+    int error = check_owner(service);
+
+    if (error)
+        return error;
+    if (!(flags & 3ULL) || (flags & ~7ULL))
+        return -EINVAL;
+    if (!prime_id)
+        return -EOPNOTSUPP;
+    if (service->stopping || service->report.close_error)
+        return -ESHUTDOWN;
+    for (index = 0; index < DRM_PRIME_LIMIT; ++index)
+        if (service->primes[index].id == prime_id &&
+            service->primes[index].dma_fd >= 0)
+            break;
+    if (index == DRM_PRIME_LIMIT)
+        return -ENOENT;
+    /* The same lifecycle owner serializes export, sync and retirement.
+     * Retain a dma-buf reference across the potentially sleeping exporter
+     * callback; never infer coherency from a native PAGE_VIEW mapping. */
+    buffer = dma_buf_get(service->primes[index].dma_fd);
+    if (IS_ERR(buffer))
+        return PTR_ERR(buffer);
+    if (((flags & 1) && !(buffer->file->f_mode & FMODE_READ)) ||
+        ((flags & 2) && !(buffer->file->f_mode & FMODE_WRITE))) {
+        dma_buf_put(buffer);
+        return -EACCES;
+    }
+    direction = (flags & 3) == 3 ? DMA_BIDIRECTIONAL :
+        (flags & 2) ? DMA_TO_DEVICE : DMA_FROM_DEVICE;
+    error = flags & 4 ? dma_buf_end_cpu_access(buffer, direction) :
+        dma_buf_begin_cpu_access(buffer, direction);
+    dma_buf_put(buffer);
+    return error;
+}
+
 int kobox_linux_drm_service_prime_import(
 	struct kobox_linux_drm_service *service, u64 cookie,
 	u64 prime_id, u32 *handle)
@@ -511,6 +715,12 @@ int kobox_linux_drm_service_quiesce(struct kobox_linux_drm_service *service,
 	result = kobox_drm_fences_quiesce(&service->fences);
 	if (result && !service->report.close_error)
 		service->report.close_error = result;
+    for(index=0;index<KOBOX_DRM_SYNC_FILE_LIMIT;++index) {
+        if(service->sync_files[index].id) {
+            result=kobox_linux_drm_service_release_sync_file(service,service->sync_files[index].id);
+            if(result && !service->report.close_error) service->report.close_error=result;
+        }
+    }
 	for (index = 0; index < DRM_MAPPING_LIMIT; index++) {
 		if (service->mappings[index].owner) {
 			result = release_mapping(&service->mappings[index]);
@@ -525,6 +735,9 @@ int kobox_linux_drm_service_quiesce(struct kobox_linux_drm_service *service,
 				service->report.close_error = result;
 		}
 	}
+	result = kobox_linux_drm_mapping_quiesce();
+	if (result && !service->report.close_error)
+		service->report.close_error = result;
 	for (index = 0; index < service->limit; index++)
 		if (service->entries[index].file && !service->entries[index].close_error)
 			close_entry(service, &service->entries[index]);

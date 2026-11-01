@@ -617,6 +617,8 @@ static s64 fs_execute_locked(struct kobox_linux_fs_port *port, const struct cred
 				bytes + r->data.offset, r->length) :
 			kobox_linux_fs_pwrite(port, cred, r->handle,
 				bytes + r->data.offset, r->length, r->offset);
+	case KB2_FILESYSTEM_OP_POLL:
+		return kobox_linux_fs_poll(port, cred, r->handle, r->mask);
 	case KB2_FILESYSTEM_OP_LSEEK:
 		if (r->flags > UINT_MAX)
 			return -EINVAL;
@@ -866,6 +868,7 @@ static int fs_request_bind_files(struct kobox_linux_fs_request *job)
 	case KB2_FILESYSTEM_OP_PREAD:
 	case KB2_FILESYSTEM_OP_WRITE:
 	case KB2_FILESYSTEM_OP_PWRITE:
+	case KB2_FILESYSTEM_OP_POLL:
 	case KB2_FILESYSTEM_OP_LSEEK:
 	case KB2_FILESYSTEM_OP_GETDENTS64:
 	case KB2_FILESYSTEM_OP_STATFS:

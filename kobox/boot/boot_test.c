@@ -269,13 +269,16 @@ static void kernel_main(void *argument)
 	uint64_t notification_mask;
 	int status, length;
 
-	status = verify_boot(&report);
+	status = verify_boot ? verify_boot(&report) : 0;
 	/* libc formatting must not be interrupted by a Linux callback. */
 	if (kobox_posix_notifications_save(&notification_mask))
 		__builtin_trap();
 	length = snprintf(message, sizeof(message),
 		"boot service Gate: status=%d phase=%u warnings=%llu\n",
 		status, report.phase, (unsigned long long)report.warnings);
+	if (!verify_boot)
+		length = snprintf(message, sizeof(message),
+			"boot service: module-only production core; verification gate absent\n");
 	if (length > 0 && (size_t)length < sizeof(message))
 		(void)write(STDERR_FILENO, message, length);
 	if (status) {
@@ -299,7 +302,7 @@ static void kernel_main(void *argument)
 		(void)write(STDERR_FILENO, message, length);
 	if (kobox_posix_notifications_restore(notification_mask))
 		__builtin_trap();
-	if (!status) {
+	if (!status && verify_memory) {
 		status = verify_memory(&memory);
 		if (kobox_posix_notifications_save(&notification_mask))
 			__builtin_trap();
@@ -913,10 +916,14 @@ int kobox_boot_test_run(int argc, char **argv,
 	core = kobox_posix_core_boot(native_core);
 	core_base = (uintptr_t)kobox_posix_core_base(native_core);
 	address = core->lookup(core->loader, "kobox_linux_boot_verify");
-	CHECK(address);
+	/* A module-only smoke test also exercises the exact production core,
+	 * which deliberately has no verification gates. Loading real modules
+	 * and their regression probes remains mandatory in that mode; ordinary
+	 * boot/gate tests still reject a core missing these entry points. */
+	CHECK(address || (resources && resources->modules));
 	memcpy(&verify_boot, &address, sizeof(verify_boot));
 	address = core->lookup(core->loader, "kobox_linux_boot_memory_verify");
-	CHECK(address);
+	CHECK(address || (resources && resources->modules));
 	memcpy(&verify_memory, &address, sizeof(verify_memory));
 	if (argc == 4 && !strcmp(argv[2], "--fs-port")) {
 		struct stat info;

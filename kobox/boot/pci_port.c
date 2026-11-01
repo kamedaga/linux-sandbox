@@ -34,10 +34,34 @@ static int config_read(struct pci_bus *bus, unsigned int devfn,
 	int result;
 
 	*value = ~0U;
-	if (bus->number != pci->host.bus || devfn != pci->host.devfn)
+	if (bus->number != pci->host.bus)
 		return PCIBIOS_DEVICE_NOT_FOUND;
 	if (!config_valid(offset, size))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
+	if (devfn != pci->host.devfn) {
+		unsigned int i, byte;
+		for (i = 0; i < pci->host.metadata_count; i++) {
+			const struct kobox_linux_pci_metadata *m = &pci->host.metadata[i];
+			if (m->devfn != devfn)
+				continue;
+			if (offset > sizeof(m->config) - size)
+				return PCIBIOS_BAD_REGISTER_NUMBER;
+			*value = 0;
+			for (byte = 0; byte < size; byte++) {
+				u8 v = m->config[offset + byte];
+				/* Companion metadata has no capability/control interface.
+				 * Do not advertise live MSI/PM/PCIe capabilities from a
+				 * snapshot to Linux's generic device setup code. */
+				if (offset + byte == PCI_STATUS)
+					v &= ~PCI_STATUS_CAP_LIST;
+				if (offset + byte == PCI_CAPABILITY_LIST)
+					v = 0;
+				*value |= (u32)v << (8 * byte);
+			}
+			return PCIBIOS_SUCCESSFUL;
+		}
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 	raw_spin_lock_irqsave(&pci->config_lock, flags);
 	result = kobox_host_call(pci->host.config_read(pci->host.context, offset, size, value));
 	raw_spin_unlock_irqrestore(&pci->config_lock, flags);
@@ -53,10 +77,17 @@ static int config_write(struct pci_bus *bus, unsigned int devfn,
 	unsigned long flags;
 	int result;
 
-	if (bus->number != pci->host.bus || devfn != pci->host.devfn)
+	if (bus->number != pci->host.bus)
 		return PCIBIOS_DEVICE_NOT_FOUND;
 	if (!config_valid(offset, size))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
+	if (devfn != pci->host.devfn) {
+		unsigned int i;
+		for (i = 0; i < pci->host.metadata_count; i++)
+			if (pci->host.metadata[i].devfn == devfn)
+				return PCIBIOS_SET_FAILED;
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
 	raw_spin_lock_irqsave(&pci->config_lock, flags);
 	result = kobox_host_call(pci->host.config_write(pci->host.context, offset, size, value));
 	raw_spin_unlock_irqrestore(&pci->config_lock, flags);
@@ -143,6 +174,20 @@ int kobox_linux_pci_scan(const struct kobox_linux_pci_host *host,
 	    host->bus > U8_MAX || host->devfn > U8_MAX ||
 	    host->window_count > KOBOX_PCI_MEMORY_WINDOWS)
 		return -EINVAL;
+	{
+		struct kobox_linux_pci_topology topology = {
+			.segment = host->segment, .bus = host->bus, .devfn = host->devfn,
+			.metadata_count = host->metadata_count,
+		};
+		if (host->metadata_count > KOBOX_PCI_METADATA_MAX ||
+		    (host->metadata_count && !host->metadata))
+			return -EINVAL;
+		if (host->metadata_count)
+			memcpy(topology.metadata, host->metadata,
+			       host->metadata_count * sizeof(*host->metadata));
+		if (!kobox_pci_metadata_valid(&topology))
+			return -EINVAL;
+	}
 	for (index = 0; index < host->window_count; index++) {
 		const struct kobox_linux_pci_window *window = &host->windows[index];
 

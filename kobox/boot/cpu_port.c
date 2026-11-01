@@ -16,6 +16,7 @@
 #include <asm/text-patching.h>
 #include <asm/memtype.h>
 #include "../arch/x86_64/user_layout.h"
+#include "cpu_features.h"
 #include "../../arch/x86/mm/mm_internal.h"
 
 /* fpu__init_system() remains upstream, including task/FPU allocation sizing. */
@@ -74,6 +75,19 @@ static void __init hosted_cpu_features(void)
 	cpuid(1, &eax, &ebx, &ecx, &edx);
 	if (ecx & BIT(X86_FEATURE_XMM4_2 % 32))
 		set_cpu_cap(cpu, X86_FEATURE_XMM4_2);
+	/* CLFLUSH is an unprivileged, address-scoped coherency operation. DRM
+	 * uses it for its own pages; hiding the real capability instead selects
+	 * a privileged whole-machine WBINVD fallback. Publish only the basic
+	 * instruction and its CPUID line size, not vendor/MSR power controls or
+	 * CLFLUSHOPT alternatives absent from this execution contract. */
+	if (edx & BIT(X86_FEATURE_CLFLUSH % 32)) {
+		unsigned int line = kobox_cpuid_clflush_size(edx, ebx, PAGE_SIZE);
+		if (!line)
+			panic("host advertises invalid CLFLUSH line size");
+		cpu->x86_clflush_size = line;
+		cpu->x86_cache_alignment = line;
+		set_cpu_cap(cpu, X86_FEATURE_CLFLUSH);
+	}
 	/* Fast REP string forms, also general-register only. Without them
 	 * memcpy, copy_page and clear_page take the unrolled fallback, which
 	 * sampling put at about a quarter of a 4 KiB pwrite; native Linux on the

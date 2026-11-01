@@ -7,6 +7,7 @@
 #include "../runtime/host.h"
 #include "port.h"
 #ifdef KOBOX_BOOT_RUNTIME
+#include "cache_lease.h"
 #include "../mm/port.h"
 #include "../arch/x86_64/user_layout.h"
 #include "mmio.h"
@@ -583,16 +584,67 @@ void __flush_tlb_all(void)
 	flush_tlb_kernel_range(0, ULONG_MAX);
 }
 
+/* Only a just-completed full reconciliation can acknowledge CPA's following
+ * WBINVD. The host's persistent historical drain flag alone is not proof. */
+static DEFINE_PER_CPU(bool, kobox_cpa_drain_ready);
+
 void kobox_cpa_wbinvd(void)
 {
 	/* This is the second half of Linux CPA's flush. The host already
 	 * performed its real all-CPU WBINVD in set_cache; acknowledge only after
 	 * that synchronous operation succeeded.
 	 */
+	if (!this_cpu_xchg(kobox_cpa_drain_ready, false))
+		panic("hosted CPA cache drain lacks fresh reconciliation");
+#ifdef KOBOX_BOOT_RUNTIME
+	if (kobox_cache_lease_flush_ack())
+		return;
+#endif
 	if (!memory_layout || !memory_layout->operations->cache_flush ||
 	    kobox_host_call(memory_layout->operations->cache_flush()))
 		panic("hosted CPA cache drain unavailable");
 }
+
+#ifdef KOBOX_BOOT_RUNTIME
+unsigned long kobox_memory_cache_alias_lock(void)
+{
+	unsigned long flags;
+	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
+	return flags;
+}
+
+void kobox_memory_cache_alias_unlock(unsigned long flags)
+{
+	raw_spin_unlock_irqrestore(&kernel_alias_lock, flags);
+}
+
+int kobox_memory_cache_inspect(unsigned long pfn, unsigned int *cache,
+			       unsigned int *protection)
+{
+	pte_t pte;
+	if (!memory_layout || !cache || !protection ||
+	    pfn >= memory_layout->ram_size >> PAGE_SHIFT)
+		return -EINVAL;
+	pte = kernel_pte(page_offset_base + (pfn << PAGE_SHIFT));
+	if (!(pte_flags(pte) & _PAGE_PRESENT) || pte_pfn(pte) != pfn)
+		return -EINVAL;
+	*cache = host_pte_cache(pte);
+	*protection = host_pte_protection(pte);
+	return 0;
+}
+
+int kobox_memory_cache_native(unsigned long pfn, size_t pages, unsigned int cache)
+{
+	if (!memory_layout || !memory_layout->operations->set_cache || !pages ||
+	    pfn >= memory_layout->ram_size >> PAGE_SHIFT ||
+	    pages > (memory_layout->ram_size >> PAGE_SHIFT) - pfn ||
+	    cache > KOBOX_LINUX_MEMORY_CACHE_WC)
+		return -EINVAL;
+	return kobox_host_call(memory_layout->operations->set_cache(
+		memory_layout->ram_backing, pfn << PAGE_SHIFT,
+		pages << PAGE_SHIFT, cache));
+}
+#endif
 
 static void protect_direct_range(unsigned long start, unsigned long end)
 {
@@ -605,17 +657,31 @@ static void protect_direct_range(unsigned long start, unsigned long end)
 	start = max(start, page_offset_base);
 	end = min(end, page_offset_base + memory_layout->ram_size);
 	for (address = start; address < end; ) {
+		unsigned long span_end = end;
+#ifdef KOBOX_BOOT_RUNTIME
+		bool managed;
+		span_end = page_offset_base + (kobox_cache_lease_boundary(
+			(address - page_offset_base) >> PAGE_SHIFT,
+			(end - page_offset_base) >> PAGE_SHIFT) << PAGE_SHIFT);
+#endif
 		begin = address;
 		protection = host_pte_protection(kernel_pte(address));
 		cache = host_pte_cache(kernel_pte(address));
 		do {
 			address += PAGE_SIZE;
-		} while (address < end &&
+		} while (address < span_end &&
 			 host_pte_protection(kernel_pte(address)) == protection &&
 			 host_pte_cache(kernel_pte(address)) == cache);
 		/* A driver can perform hundreds of successful CPA transitions in one
 		 * ioctl. Per-span success logs evict the actual failure from the RAM
 		 * ring; report the exact failed span instead. */
+		status = 0;
+#ifdef KOBOX_BOOT_RUNTIME
+		managed = kobox_cache_lease_shadow(
+			(begin - page_offset_base) >> PAGE_SHIFT,
+			(address - begin) >> PAGE_SHIFT, cache, protection, &status);
+		if (!managed)
+#endif
 		status = memory_layout->operations->set_cache ?
 			kobox_host_call(memory_layout->operations->set_cache(
 				memory_layout->ram_backing,
@@ -649,6 +715,7 @@ static int reset_kernel_window(void *context, unsigned long start,
 void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
 	unsigned long address, unmapped, flags;
+	bool full = end == TLB_FLUSH_ALL;
 
 	if (!memory_layout)
 		BUG();
@@ -670,6 +737,7 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 		end = end > ULONG_MAX - (PAGE_SIZE - 1) ? ULONG_MAX : PAGE_ALIGN(end);
 	}
 	raw_spin_lock_irqsave(&kernel_alias_lock, flags);
+	this_cpu_write(kobox_cpa_drain_ready, false);
 	protect_direct_range(start, end);
 	/* The host owns translations for the direct map and core image. This
 	 * boundary reconciles Linux's dynamic kernel aliases with its real PTEs.
@@ -711,6 +779,8 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 #endif
 	}
 out_unlock:
+	if (full)
+		this_cpu_write(kobox_cpa_drain_ready, true);
 	raw_spin_unlock_irqrestore(&kernel_alias_lock, flags);
 }
 

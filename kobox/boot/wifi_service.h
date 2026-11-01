@@ -15,6 +15,15 @@
 #define KOBOX_WIFI_CONFIG "/etc/wpa_supplicant.conf"
 #define KOBOX_WIFI_CONFIG_MAX 8192U
 
+/* Diagnostic only: feed the upstream supplicant's nl80211 setter rather
+ * than touching wdev flags or firmware state behind its owner. */
+static inline const char *kobox_wifi_perf_ps_request(const void *request, size_t length)
+{
+ if(request && length==15 && !memcmp(request,"NET_PERF_PS_OFF",15))return "SET ps 0";
+ if(request && length==14 && !memcmp(request,"NET_PERF_PS_ON",14))return "SET ps 1";
+ return NULL;
+}
+
 static inline int kobox_wifi_status_completed(const char *reply, size_t length)
 {
 	const char completed[] = "wpa_state=COMPLETED";

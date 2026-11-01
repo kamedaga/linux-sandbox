@@ -4,6 +4,7 @@
 
 #include "../task/host.h"
 #include "../memory/mmio.h"
+#include "pci_metadata.h"
 
 #define KOBOX_PCI_MEMORY_WINDOWS 6U
 
@@ -26,6 +27,8 @@ struct kobox_linux_pci_host {
 	uint32_t bus;
 	uint32_t devfn;
 	uint32_t window_count;
+	const struct kobox_linux_pci_metadata *metadata;
+	uint32_t metadata_count;
 	struct kobox_linux_pci_window windows[KOBOX_PCI_MEMORY_WINDOWS];
 	int (*config_read)(void *context, uint32_t offset, uint32_t width,
 			   uint32_t *value);

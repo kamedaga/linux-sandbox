@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "mmio.h"
+#include "../boot/net_perf.h"
 #include "../arch/x86_64/host_call.h"
 
 #include <linux/list.h>
@@ -76,7 +77,7 @@ out:
 	return handled;
 }
 
-u64 kobox_mmio_read(const volatile void __iomem *address, unsigned int width)
+static u64 mmio_read_impl(const volatile void __iomem *address, unsigned int width)
 {
 	const volatile void *native = (const volatile void __force *)address;
 	u64 value = 0;
@@ -94,7 +95,7 @@ u64 kobox_mmio_read(const volatile void __iomem *address, unsigned int width)
 	return value;
 }
 
-void kobox_mmio_write(volatile void __iomem *address, unsigned int width, u64 value)
+static void mmio_write_impl(volatile void __iomem *address, unsigned int width, u64 value)
 {
 	volatile void *native = (volatile void __force *)address;
 
@@ -108,6 +109,20 @@ void kobox_mmio_write(volatile void __iomem *address, unsigned int width, u64 va
 	case 8: *(volatile u64 *)native = value; break;
 	}
 	barrier();
+}
+
+u64 kobox_mmio_read(const volatile void __iomem *address, unsigned int width)
+{
+ u64 begin=kobox_net_tx_probe_begin();
+ u64 value=mmio_read_impl(address,width);
+ kobox_net_mmio_total(0,(u64)__builtin_return_address(0));
+ kobox_net_tx_probe_end(KOBOX_TX_MMIO_READ,begin); return value;
+}
+void kobox_mmio_write(volatile void __iomem *address, unsigned int width,u64 value)
+{
+ u64 begin=kobox_net_tx_probe_begin(); mmio_write_impl(address,width,value);
+ kobox_net_mmio_total(1,(u64)__builtin_return_address(0));
+ kobox_net_tx_probe_end(KOBOX_TX_MMIO_WRITE,begin);
 }
 
 /* String I/O instructions cannot be forwarded as one device transaction.

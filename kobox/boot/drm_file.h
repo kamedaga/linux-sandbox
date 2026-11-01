@@ -14,6 +14,29 @@
 #endif
 
 struct kobox_linux_drm_file;
+int kobox_linux_drm_i915_create_ext(struct kobox_linux_drm_file *, uint64_t,
+    uint32_t, const void *, size_t, uint64_t *, uint32_t *);
+int kobox_linux_drm_i915_execbuffer(struct kobox_linux_drm_file *, const void *, size_t, void *, size_t);
+int kobox_linux_drm_i915_context(struct kobox_linux_drm_file *, uint32_t,
+    const void *, size_t, const void *, size_t, uint32_t *);
+int kobox_linux_drm_i915_get_aperture(struct kobox_linux_drm_file *, uint64_t *, uint64_t *);
+int kobox_linux_drm_i915_context_getparam(struct kobox_linux_drm_file *, uint32_t, uint64_t, uint64_t *);
+int kobox_linux_drm_i915_getparam(struct kobox_linux_drm_file *, int32_t, int32_t *);
+/* Fixed scalar UAPI records only. Input and capacity are checked against the
+ * shared BO shape. No-result commands accept NULL output. WAIT copies its
+ * UAPI prefix after dispatch even on errors; caller encodes errno separately
+ * in the typed completion. Other output changes only on success. Restarted
+ * WAIT returns EINTR; admission failures never change output. */
+int kobox_linux_drm_i915_bo(struct kobox_linux_drm_file *, uint32_t command,
+    const void *input, size_t bytes, void *output, size_t capacity);
+/* Private LE aux: count 24-byte {id:u64, length:i32, flags:u32, offset:u64}
+ * items, followed by blobs in item order at eight-byte aligned offsets.
+ * Positive lengths with offset zero retain Linux's NULL-pointer semantics;
+ * nonpositive lengths require offset zero. bytes is the exact final extent,
+ * with no trailing padding. Only item lengths and driver-owned blobs change.
+ * Per-item errors are returned inside a successful ioctl, as in Linux. */
+int kobox_linux_drm_i915_query(struct kobox_linux_drm_file *, uint32_t flags,
+    uint32_t count, void *data, size_t bytes);
 struct kobox_linux_drm_mapping;
 struct dma_fence;
 
@@ -172,10 +195,10 @@ struct kobox_linux_drm_mapping_operations {
 	size_t size;
 	int (*get_size)(struct file *file, uint32_t handle, uint64_t *size);
 	int (*map)(struct file *file, uint32_t handle, uint32_t mapping_rights,
-		   uint64_t *page_indices, size_t page_capacity,
+		   uint32_t cache_kind, uint64_t driver_offset, uint64_t *page_indices, size_t page_capacity,
 		   struct kobox_linux_drm_map_pages *result,
 		   void **private_mapping);
-	void (*release)(void *private_mapping);
+	int (*release)(void *private_mapping);
 };
 
 /* Private readiness observer for one hosted DRM open-file description.
@@ -188,6 +211,12 @@ struct kobox_linux_drm_event_observer {
 	void (*notify)(void *context);
 	bool attached;
 };
+
+struct kobox_i915_mapping_api;
+/* A successful get pins the real provider module until put. */
+const struct kobox_i915_mapping_api *kobox_linux_drm_i915_mapping_get(void);
+void kobox_linux_drm_i915_mapping_put(void);
+int kobox_linux_drm_mapping_quiesce(void);
 
 int kobox_linux_drm_mapping_register(
 	const struct kobox_linux_drm_mapping_operations *operations,
@@ -343,6 +372,12 @@ int kobox_linux_drm_prime_export(struct kobox_linux_drm_file *file,
 				 uint32_t handle, uint32_t flags, int *dma_fd);
 int kobox_linux_drm_prime_import(struct kobox_linux_drm_file *file,
 				 int dma_fd, uint32_t *handle);
+/* Linux FD values stay inside the owner core and its service ledger.
+ * Never serialize them or accept native client FD numbers here. */
+int kobox_linux_drm_syncobj_export_file(struct kobox_linux_drm_file *, uint32_t, int *);
+int kobox_linux_drm_syncobj_import_file(struct kobox_linux_drm_file *, uint32_t, int);
+int kobox_linux_drm_dmabuf_export_file(int, uint32_t, int *);
+int kobox_linux_drm_dmabuf_import_file(int, uint32_t, int);
 int kobox_linux_drm_syncobj_create(struct kobox_linux_drm_file *file,
 					 uint32_t flags, uint32_t *handle);
 int kobox_linux_drm_syncobj_destroy(struct kobox_linux_drm_file *file,
@@ -389,6 +424,11 @@ int kobox_linux_drm_virtgpu_wait(struct kobox_linux_drm_file *file,
 /* Resolve the real DRM fake offset and retain a pinned shmem GEM object.
  * page_indices are guest physical page numbers copied into private adapter
  * staging. The returned owner is released only by the Linux owner task. */
+int kobox_linux_drm_i915_map_pages(struct kobox_linux_drm_file *file,
+			      uint32_t handle, uint32_t mapping_rights, uint32_t cache_kind,
+			      uint64_t *page_indices, size_t page_capacity,
+			      struct kobox_linux_drm_map_pages *result,
+			      struct kobox_linux_drm_mapping **owner);
 int kobox_linux_drm_map_pages(struct kobox_linux_drm_file *file,
 			      uint32_t handle, uint32_t mapping_rights,
 			      uint64_t *page_indices, size_t page_capacity,

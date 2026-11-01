@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -20,15 +21,46 @@
 static struct kobox_linux_native_module modules[MAX_MODULES];
 static struct kobox_linux_firmware_file firmware[MAX_FIRMWARE];
 static struct kobox_linux_lifecycle lifecycle;
+static bool asynchronous;
+static atomic_uint started, advanced, published;
 
 static int ready(void *context)
 {
+	if (asynchronous && atomic_load(&started) != 1)
+		return -EINVAL;
+	atomic_fetch_add(&published, 1);
 	return context == &lifecycle ? 0 : -EINVAL;
 }
 
 static int pending(void *context)
 {
-	return context == &lifecycle ? 1 : -EINVAL;
+	if (context != &lifecycle)
+		return -EINVAL;
+	return asynchronous && !atomic_load(&advanced) ? 2 : 1;
+}
+
+static int start(void *context, void *service)
+{
+	if (context != &lifecycle || service || atomic_exchange(&started, 1))
+		return -EINVAL;
+	return 0;
+}
+
+static int advance(void *context, void *service)
+{
+	if (context != &lifecycle || service || atomic_load(&published) != 1)
+		return -EINVAL;
+	atomic_store(&advanced, 1);
+	return 2;
+}
+
+static int finish(void *context, void *service)
+{
+	if (context != &lifecycle || service || atomic_load(&started) != 1 ||
+	    atomic_load(&published) != 1 || atomic_load(&advanced) != 1)
+		return -EINVAL;
+	fputs("Native asynchronous lifecycle: start/ready/advance/finish PASS\n", stderr);
+	return 0;
 }
 
 static void close_images(void *context)
@@ -111,8 +143,8 @@ int main(int argc, char **argv)
 	};
 	size_t index;
 
-	if (argc < 3 || (unsigned int)argc > MAX_MODULES + MAX_FIRMWARE + 2) {
-		fprintf(stderr, "usage: %s CORE [--firmware=NAME=SHA256=FILE ...] NAME=MODULE.ko [...]\n", argv[0]);
+	if (argc < 3 || (unsigned int)argc > MAX_MODULES + MAX_FIRMWARE + 3) {
+		fprintf(stderr, "usage: %s CORE [--async-lifecycle] [--firmware=NAME=SHA256=FILE ...] NAME=MODULE.ko [...]\n", argv[0]);
 		return 64;
 	}
 	lifecycle = (struct kobox_linux_lifecycle) {
@@ -120,6 +152,13 @@ int main(int argc, char **argv)
 		.ready = ready, .pending = pending,
 	};
 	index = 2;
+	if (!strcmp(argv[index], "--async-lifecycle")) {
+		asynchronous = true;
+		lifecycle.start = start;
+		lifecycle.advance = advance;
+		lifecycle.finish = finish;
+		index++;
+	}
 	while (index < (size_t)argc &&
 	       !strncmp(argv[index], "--firmware=", 11)) {
 		if (launch.firmware_count == MAX_FIRMWARE ||

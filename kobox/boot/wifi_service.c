@@ -317,6 +317,14 @@ int kobox_linux_wifi_service_request(struct kobox_linux_wifi_service *service,
 
 	if (error)
 		return error;
+ /* PS experiments use the normal nl80211 path in the unmodified
+  * supplicant; boot defaults and firmware dynamic-PS policy stay intact. */
+ const char *ps_request=kobox_wifi_perf_ps_request(request,length);
+ if(ps_request){request=ps_request;length=8;}
+ else {
+  error=kobox_linux_net_port_perf_request(service->port,request,length,reply,capacity,received);
+  if(error)return error>0?0:error;
+ }
 	error = kobox_wifi_qualify_request(service->interface, request, length,
 		service->request, sizeof(service->request), &qualified_length);
 	if (error)
@@ -352,6 +360,14 @@ int kobox_linux_wifi_service_configure(struct kobox_linux_wifi_service *service,
 	if (error)
 		return error;
 	snprintf(request, sizeof(request), "IFNAME=%s RECONFIGURE", service->interface);
+	error = kobox_linux_wifi_control_request(service->control, request, strlen(request),
+		reply, sizeof(reply), &received, WIFI_REQUEST_MS);
+	if (error)
+		return fail_service(service, error);
+	if (received != 3 || memcmp(reply, "OK\n", 3))
+		return -EINVAL;
+	/* Reloading policy preserves supplicant's explicit disconnected state. */
+	snprintf(request, sizeof(request), "IFNAME=%s RECONNECT", service->interface);
 	error = kobox_linux_wifi_control_request(service->control, request, strlen(request),
 		reply, sizeof(reply), &received, WIFI_REQUEST_MS);
 	if (error)

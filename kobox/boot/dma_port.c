@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "dma_host.h"
+#include "net_perf.h"
 #include "diagnostic.h"
 #include "../arch/x86_64/host_call.h"
 
@@ -568,7 +569,7 @@ static struct hosted_dma_domain *hosted(struct iommu_domain *domain)
 	return container_of(domain, struct hosted_dma_domain, domain);
 }
 
-static int map_pages(struct iommu_domain *domain, unsigned long iova,
+static int map_pages_impl(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t physical, size_t pgsize, size_t count,
 		     int prot, gfp_t gfp, size_t *mapped)
 {
@@ -697,7 +698,15 @@ rollback:
 	return result > 0 ? -EIO : result;
 }
 
-static int sync_map(struct iommu_domain *domain, unsigned long iova,
+static int map_pages(struct iommu_domain *domain, unsigned long iova, phys_addr_t physical, size_t pgsize, size_t count, int prot, gfp_t gfp, size_t *mapped)
+{
+ u64 begin=kobox_net_tx_probe_begin();
+ int result=map_pages_impl(domain,iova,physical,pgsize,count,prot,gfp,mapped);
+ kobox_net_tx_probe_end(KOBOX_TX_DMA_MAP,begin);
+ return result;
+}
+
+static int sync_map_impl(struct iommu_domain *domain, unsigned long iova,
 		    size_t size)
 {
 	struct hosted_dma_domain *dma = hosted(domain);
@@ -809,7 +818,15 @@ static int sync_map(struct iommu_domain *domain, unsigned long iova,
 	return 0;
 }
 
-static size_t unmap_pages(struct iommu_domain *domain, unsigned long iova,
+static int sync_map(struct iommu_domain *domain, unsigned long iova, size_t size)
+{
+ u64 begin=kobox_net_tx_probe_begin();
+ int result=sync_map_impl(domain,iova,size);
+ kobox_net_tx_probe_end(KOBOX_TX_DMA_SYNC,begin);
+ return result;
+}
+
+static size_t unmap_pages_impl(struct iommu_domain *domain, unsigned long iova,
 			  size_t pgsize, size_t count,
 			  struct iommu_iotlb_gather *gather)
 {
@@ -895,6 +912,14 @@ static size_t unmap_pages(struct iommu_domain *domain, unsigned long iova,
 	 * gather entries or no-op flush callbacks are needed in strict mode.
 	 */
 	return index * PAGE_SIZE;
+}
+
+static size_t unmap_pages(struct iommu_domain *domain, unsigned long iova, size_t pgsize, size_t count, struct iommu_iotlb_gather *gather)
+{
+ u64 begin=kobox_net_tx_probe_begin();
+ size_t result=unmap_pages_impl(domain,iova,pgsize,count,gather);
+ kobox_net_tx_probe_end(KOBOX_TX_DMA_UNMAP,begin);
+ return result;
 }
 
 static phys_addr_t iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)

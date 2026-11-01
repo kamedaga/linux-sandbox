@@ -81,12 +81,32 @@ int kobox_linux_drm_service_map(struct kobox_linux_drm_service *service,
 				uint32_t mapping_rights,
 				uint64_t *page_indices, size_t page_capacity,
 				struct kobox_linux_drm_service_mapping *result);
+int kobox_linux_drm_service_i915_map(struct kobox_linux_drm_service *service,
+				uint64_t cookie, uint32_t handle,
+				uint32_t mapping_rights, uint32_t cache_kind,
+				uint64_t *page_indices, size_t page_capacity,
+				struct kobox_linux_drm_service_mapping *result);
 int kobox_linux_drm_service_unmap(struct kobox_linux_drm_service *service,
 				  uint64_t mapping_id);
 int kobox_linux_drm_service_prime_export(
 	struct kobox_linux_drm_service *service, uint64_t cookie,
 	uint32_t handle, uint32_t flags, uint64_t *page_indices,
 	size_t page_capacity, struct kobox_linux_drm_service_prime *result);
+/* Object-scoped CPU coherency; the service owner pins the PRIME fd through
+ * the call. No DRM open-file lifetime or native address crosses this API. */
+/* Opaque sync-file tokens select real owner-task Linux FDs. The broker
+ * must prove the export's native lease before any token-based import. */
+int kobox_linux_drm_service_syncobj_export_file(struct kobox_linux_drm_service *,
+    uint64_t, uint32_t, uint64_t, uint64_t, uint64_t *);
+int kobox_linux_drm_service_syncobj_import_file(struct kobox_linux_drm_service *,
+    uint64_t, uint32_t, uint64_t);
+int kobox_linux_drm_service_prime_export_file(struct kobox_linux_drm_service *,
+    uint64_t, uint32_t, uint64_t, uint64_t, uint64_t *);
+int kobox_linux_drm_service_prime_import_file(struct kobox_linux_drm_service *,
+    uint64_t, uint32_t, uint64_t);
+int kobox_linux_drm_service_release_sync_file(struct kobox_linux_drm_service *, uint64_t);
+int kobox_linux_drm_service_prime_cpu_sync(
+    struct kobox_linux_drm_service *service, uint64_t prime_id, uint64_t flags);
 int kobox_linux_drm_service_prime_import(
 	struct kobox_linux_drm_service *service, uint64_t cookie,
 	uint64_t prime_id, uint32_t *handle);

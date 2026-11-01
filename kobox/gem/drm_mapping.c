@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "../boot/drm_file.h"
+#include "drm_dmabuf_mapping.h"
+#include "i915_mapping.h"
 
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -11,6 +13,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_prime.h>
 #if IS_ENABLED(CONFIG_DRM_GEM_SHMEM_HELPER)
 #include <drm/drm_gem_shmem_helper.h>
 #endif
@@ -25,11 +28,44 @@
 
 struct kobox_drm_mapping {
 	struct drm_gem_object *object;
+	struct kobox_drm_dmabuf_mapping dmabuf;
+	const struct kobox_i915_mapping_api *i915_api;
+	void *i915_cookie;
 #if IS_ENABLED(CONFIG_DRM_TTM)
 	struct ttm_buffer_object *ttm;
 	bool io_reserved;
 #endif
 };
+
+static int map_i915_pages(struct file *file, u32 handle,
+	struct drm_gem_object *object, u32 rights, u32 kind, u64 offset, u64 *pages, size_t capacity,
+	struct kobox_linux_drm_map_pages *result, void **private_mapping)
+{
+	struct kobox_drm_mapping *mapping;
+	int error;
+
+	mapping = kzalloc(sizeof(*mapping), GFP_KERNEL);
+	if (!mapping)
+		return -ENOMEM;
+	mapping->i915_api = kobox_linux_drm_i915_mapping_get();
+	if (!mapping->i915_api) {
+		kfree(mapping);
+		return -ENODEV;
+	}
+	/* PRIME has no explicit PAT selector. Use the driver's existing lease
+	 * policy, keeping its real BO/page references through final release. */
+	error = mapping->i915_api->acquire(file, handle, offset,
+		kind, rights, pages, capacity, result,
+		&mapping->i915_cookie);
+	if (error) {
+		kobox_linux_drm_i915_mapping_put();
+		kfree(mapping);
+		return error;
+	}
+	mapping->object = object;
+	*private_mapping = mapping;
+	return 0;
+}
 
 static int gem_size(struct file *file, u32 handle, u64 *size)
 {
@@ -245,7 +281,7 @@ free_mapping:
 }
 #endif
 
-static int map_system_memory_pages(struct file *file, u32 handle, u32 mapping_rights,
+static int map_system_memory_pages(struct file *file, u32 handle, u32 mapping_rights, u32 cache_kind, u64 driver_offset,
 			   u64 *page_indices, size_t page_capacity,
 			   struct kobox_linux_drm_map_pages *result,
 			   void **private_mapping)
@@ -275,11 +311,25 @@ static int map_system_memory_pages(struct file *file, u32 handle, u32 mapping_ri
 	device = drm_file->minor->dev;
 	if (!device->driver ||
 	    (strcmp(device->driver->name, "virtio_gpu") &&
-	     strcmp(device->driver->name, "amdgpu")))
+	     strcmp(device->driver->name, "amdgpu") &&
+	     strcmp(device->driver->name, "i915")))
 		return -ENODEV;
 	object = drm_gem_object_lookup(drm_file, handle);
 	if (!object)
 		return -ENOENT;
+	/* i915 uses separate per-cache-type mmap nodes, not base.vma_node.
+	 * Its adapter validates the handle and any explicit offset itself. */
+	if (!strcmp(device->driver->name, "i915")) {
+		error = map_i915_pages(file, handle, object, mapping_rights, cache_kind, driver_offset, page_indices,
+			page_capacity, result, private_mapping);
+		if (error)
+			goto put_object;
+		return 0;
+	}
+	if (cache_kind || driver_offset) {
+		error = -EINVAL;
+		goto put_object;
+	}
 	if (!drm_vma_node_is_allowed(&object->vma_node, drm_file)) {
 		error = -EACCES;
 		goto put_object;
@@ -373,15 +423,20 @@ put_object:
 	return error;
 }
 
-static void release_system_memory_pages(void *private_mapping)
+static int release_system_memory_pages(void *private_mapping)
 {
 	struct kobox_drm_mapping *mapping = private_mapping;
-#if IS_ENABLED(CONFIG_DRM_TTM)
 	int error;
-#endif
 
 	if (!mapping)
-		return;
+		return -EINVAL;
+	if (mapping->i915_api) {
+		error = mapping->i915_api->release(&mapping->i915_cookie);
+		if (error)
+			return error;
+		kobox_linux_drm_i915_mapping_put();
+	}
+	kobox_drm_dmabuf_unmap(&mapping->dmabuf);
 #if IS_ENABLED(CONFIG_DRM_TTM)
 	if (mapping->ttm) {
 		error = ttm_bo_reserve(mapping->ttm, false, false, NULL);
@@ -389,7 +444,7 @@ static void release_system_memory_pages(void *private_mapping)
 		 * failed uninterruptible reserve is exceptional and must be visible
 		 * rather than turning a release into a hidden use-after-free. */
 		if (WARN_ON_ONCE(error))
-			return;
+			return error;
 		if (mapping->io_reserved) {
 			struct ttm_buffer_object *ttm = mapping->ttm;
 
@@ -405,6 +460,7 @@ static void release_system_memory_pages(void *private_mapping)
 #endif
 	drm_gem_object_put(mapping->object);
 	kfree(mapping);
+	return 0;
 }
 
 static const struct kobox_linux_drm_mapping_operations mapping_operations = {
@@ -428,3 +484,4 @@ module_init(kobox_drm_mapping_init);
 module_exit(kobox_drm_mapping_exit);
 MODULE_DESCRIPTION("kobox2 DRM system-memory mapping provider");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("DMA_BUF");

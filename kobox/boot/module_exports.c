@@ -41,6 +41,8 @@ EXPORT_SYMBOL_GPL(kobox_vm_space_destroy);
 EXPORT_SYMBOL_GPL(kobox_vm_resolve_fault);
 EXPORT_SYMBOL_GPL(kobox_linux_resource_bind);
 #if !defined(KOBOX_BOOT_GPU) || KOBOX_BOOT_GPU
+EXPORT_SYMBOL_GPL(kobox_linux_drm_i915_mapping_get);
+EXPORT_SYMBOL_GPL(kobox_linux_drm_i915_mapping_put);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_register);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_mapping_unregister);
 EXPORT_SYMBOL_GPL(kobox_linux_drm_poll_events);

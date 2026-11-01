@@ -12,7 +12,7 @@
  */
 struct kobox_drm_query {
 	uint64_t generation, session_id, capability, fence_correlation;
-	uint32_t command_set_id, command_id;
+	uint32_t profile_kind, command_set_id, command_id;
 	uint32_t object_id, object_type, mode_flags;
 	uint32_t gamma_count;
 	uint64_t event_token, sequence;
@@ -28,15 +28,28 @@ struct kobox_drm_query {
 	int64_t timeout_nsec;
 	uint64_t fence_deadline_ns;
 	uint32_t syncobj_flags, exec_flags, ring_index;
+    uint32_t syncobj_handle, sync_attachment_class;
+    uint64_t sync_file_token;
 	uint32_t prime_handle, prime_flags;
 	uint64_t prime_token;
 	size_t mapping_page_capacity;
-	uint32_t mapping_handle, mapping_rights;
+	uint32_t mapping_handle, mapping_rights, mapping_cache_kind;
 	bool aux_input, aux_output;
 	unsigned char inline_data[KB2_GPU_DRM_AMDGPU_RECORD_GEM_METADATA_REQUEST_SIZE];
 };
 
 struct kobox_drm_query_api {
+    int (*i915_create_ext)(struct kobox_linux_drm_file *,uint64_t,uint32_t,const void *,size_t,uint64_t *,uint32_t *);
+    int (*i915_getparam)(struct kobox_linux_drm_file *, int32_t, int32_t *);
+    int (*i915_get_aperture)(struct kobox_linux_drm_file *, uint64_t *, uint64_t *);
+    int (*i915_context_getparam)(struct kobox_linux_drm_file *, uint32_t, uint64_t, uint64_t *);
+    int (*i915_bo)(struct kobox_linux_drm_file *, uint32_t, const void *, size_t,
+        void *, size_t);
+    int (*i915_execbuffer)(struct kobox_linux_drm_file *, const void *, size_t, void *, size_t);
+    int (*i915_context)(struct kobox_linux_drm_file *, uint32_t,
+        const void *, size_t, const void *, size_t, uint32_t *);
+    int (*i915_query)(struct kobox_linux_drm_file *, uint32_t, uint32_t,
+        void *, size_t);
 	int (*version)(struct kobox_linux_drm_file *, const size_t *,
 		       struct kobox_linux_drm_version *);
 	int (*get_cap)(struct kobox_linux_drm_file *, uint64_t, uint64_t *);
@@ -122,8 +135,18 @@ struct kobox_drm_query_api {
 	int (*prime_export)(struct kobox_linux_drm_service *, uint64_t,
 		uint32_t, uint32_t, uint64_t *, size_t,
 		struct kobox_linux_drm_service_prime *);
+    int (*prime_cpu_sync)(struct kobox_linux_drm_service *, uint64_t, uint64_t);
 	int (*prime_import)(struct kobox_linux_drm_service *, uint64_t,
 		uint64_t, uint32_t *);
+    int (*syncobj_export_file)(struct kobox_linux_drm_service *, uint64_t,
+        uint32_t, uint64_t, uint64_t, uint64_t *);
+    int (*syncobj_import_file)(struct kobox_linux_drm_service *, uint64_t,
+        uint32_t, uint64_t);
+    int (*prime_export_file)(struct kobox_linux_drm_service *, uint64_t,
+        uint32_t, uint64_t, uint64_t, uint64_t *);
+    int (*prime_import_file)(struct kobox_linux_drm_service *, uint64_t,
+        uint32_t, uint64_t);
+    int (*release_sync_file)(struct kobox_linux_drm_service *, uint64_t);
 	int (*syncobj_create)(struct kobox_linux_drm_file *, uint32_t, uint32_t *);
 	int (*syncobj_destroy)(struct kobox_linux_drm_file *, uint32_t);
 	int (*syncobj_wait)(struct kobox_linux_drm_file *, const void *, size_t,
@@ -146,12 +169,16 @@ struct kobox_drm_query_api {
 	int (*virtgpu_transfer)(struct kobox_linux_drm_file *, bool,
 		const struct kobox_linux_virtgpu_transfer *);
 	int (*virtgpu_wait)(struct kobox_linux_drm_file *, uint32_t, uint32_t);
+	int (*i915_map)(struct kobox_linux_drm_service *, uint64_t, uint32_t,
+        uint32_t, uint32_t, uint64_t *, size_t,
+        struct kobox_linux_drm_service_mapping *);
 	int (*virtgpu_map)(struct kobox_linux_drm_service *, uint64_t, uint32_t,
 		uint32_t, uint64_t *, size_t,
 		struct kobox_linux_drm_service_mapping *);
 };
 
 struct kobox_drm_query_result {
+    uint64_t sync_file_token;
 	uint64_t mapping_id, mapping_length, mapping_page_count;
 	uint32_t mapping_rights, mapping_cache_policy, attachment_class;
 	uint32_t mapping_backing_kind;

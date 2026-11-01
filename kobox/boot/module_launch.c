@@ -115,7 +115,7 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	struct pt_regs regs = {0};
 #if KOBOX_BOOT_GPU
 	struct kobox_linux_device_session *device = NULL;
-#if !KOBOX_BOOT_VIRTIO_GPU
+#if KOBOX_BOOT_AMDGPU
 	struct kobox_linux_lifecycle inspected_lifecycle;
 #endif
 #elif KOBOX_BOOT_NET
@@ -373,9 +373,10 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 			lifecycle = &wireless_lifecycle;
 		}
 #endif
-#if KOBOX_BOOT_GPU && !KOBOX_BOOT_VIRTIO_GPU
-		/* The normal device lifecycle remains unchanged. Only the one-shot
-		 * physical-GPU inspection has an owner-task sensor/time monitor.
+#if KOBOX_BOOT_AMDGPU
+		/* This monitor uses AMD private sensor ioctls and a synchronous
+		 * monitored lifecycle. Other PCI GPUs retain their supplied lifecycle;
+		 * adding a monitor to an asynchronous receiver violates its contract.
 		 */
 		if (device) {
 			inspected_lifecycle = *launch->lifecycle;

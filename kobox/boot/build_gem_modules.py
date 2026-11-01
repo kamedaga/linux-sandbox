@@ -90,7 +90,7 @@ def build(arguments):
     if arguments.mapping_only:
         for setting in ("CONFIG_MODULES=y", "CONFIG_DRM=m", "CONFIG_DRM_TTM=m"):
             if setting not in config.splitlines():
-                raise boot.BootBuildError(f"AMDGPU mapping module requires {setting}")
+                raise boot.BootBuildError(f"PCI DRM mapping module requires {setting}")
         native_objects = ()
         kobox_objects = ("kobox/gem/drm_mapping.o",)
     else:
@@ -193,7 +193,7 @@ def main():
     parser.add_argument("--virtio-gpu", action="store_true",
                         help="also build the real virtio-pci/virtio-gpu and KMS module closure")
     parser.add_argument("--mapping-only", action="store_true",
-                        help="build only the Kobox DRM mapping provider for the AMDGPU profile")
+                        help="build only the Kobox DRM mapping provider for a PCI DRM profile")
     arguments = parser.parse_args()
     if arguments.mapping_only and arguments.virtio_gpu:
         parser.error("--mapping-only and --virtio-gpu are mutually exclusive")

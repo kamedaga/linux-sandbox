@@ -315,6 +315,7 @@ def compile_module_exports(arguments, source_names, support):
     root.mkdir(parents=True, exist_ok=True)
     selected = [path for name, path in zip(source_names, support)
                 if name in ("kobox/task/port.c", "kobox/task/user.c", "kobox/memory/early_boot.c",
+                            "kobox/memory/cache_lease.c",
                             "kobox/arch/x86_64/registers.c",
                             "kobox/memory/mmio.c",
                             "kobox/mm/port.c", "kobox/mm/uaccess.c",
@@ -455,8 +456,9 @@ def build_inputs(arguments):
         arguments.canonical_build_dir / "include/config/kernel.release"
     ).read_text().strip()
     arguments.extra_cflags = ["-DKOBOX_BOOT_RUNTIME=1",
-                              f"-DKOBOX_BOOT_GPU={int(arguments.device_profile in ('gpu', 'amdgpu'))}",
+                              f"-DKOBOX_BOOT_GPU={int(arguments.device_profile in ('gpu', 'amdgpu', 'i915'))}",
                               f"-DKOBOX_BOOT_VIRTIO_GPU={int(arguments.device_profile == 'gpu')}",
+                              f"-DKOBOX_BOOT_AMDGPU={int(arguments.device_profile == 'amdgpu')}",
                               f"-DKOBOX_BOOT_NET={int(arguments.device_profile in ('virtio-net', 'network', 'wifi'))}",
                               f"-DKOBOX_BOOT_WIFI={int(arguments.device_profile == 'wifi')}",
                               f"-DKOBOX_BOOT_INPUT={int(arguments.device_profile in ('usb-hid', 'usb-storage', 'ps2'))}",
@@ -605,7 +607,7 @@ def compile_hosted_modules(arguments):
     inventory = json.loads(arguments.module_inventory.read_text(encoding="utf-8"))
     expected = {"usb-hid": "usb-hid-xhci", "usb-storage": "usb-storage-xhci",
                 "nvme": "nvme", "virtio-net": "virtio-net",
-                "network": "network", "wifi": "wifi", "amdgpu": "amdgpu", "storage": "storage",
+                "network": "network", "wifi": "wifi", "amdgpu": "amdgpu", "i915": "i915", "storage": "storage",
                 "virtio-sound": "virtio-sound", "ps2": "ps2"}
     if inventory.get("format") != "kobox-linux-driver-closure-inventory-dev" or \
             inventory.get("profile") != expected.get(arguments.device_profile):
@@ -668,17 +670,48 @@ def compile_hosted_modules(arguments):
         # segment core sets that base, and modules share its operations.
         if not segment and "%gs:" in task.run([arguments.objdump, "-d", source]):
             raise BootBuildError(f"hosted module still uses host GS: {name}")
+    # Keep the canonical upstream module object untouched. The owned i915
+    # adapter needs real private headers/functions, so link it into a separate
+    # staged input before modpost (not as a post-build binary patch).
+    module_inputs = {}
+    for name in module_objects:
+        source = arguments.provider_build_dir / name
+        if arguments.device_profile == "i915" and name == "drivers/gpu/drm/i915/i915.o":
+            saved_flags = arguments.extra_cflags
+            arguments.extra_cflags = [*saved_flags, "-DMODULE", '-DKBUILD_MODNAME="i915"',
+                '-DKBUILD_BASENAME="kobox_i915_mapping"', "-D__KBUILD_MODNAME=kmod_i915",
+                "-I" + str(arguments.source_tree / "drivers/gpu/drm/i915")]
+            try:
+                adapter = task.compile_support(arguments, "kobox/gem/i915_mapping.c")
+                display_trace = task.compile_support(arguments, "kobox/gem/i915_display_trace.c")
+                rps_trace = task.compile_support(arguments, "kobox/gem/i915_rps_trace.c")
+                vmap_cache = task.compile_support(arguments, "kobox/gem/i915_vmap_cache.c")
+            finally:
+                arguments.extra_cflags = saved_flags
+            staged = arguments.output_dir / ".owned-modules" / name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            task.run([arguments.ld, "-r", "-o", staged,
+                      "--wrap=drm_atomic_helper_wait_for_flip_done",
+                      "--wrap=drm_vblank_work_schedule",
+                      "--wrap=drm_crtc_arm_vblank_event",
+                      "--wrap=intel_rps_driver_register",
+                      "--wrap=intel_rps_driver_unregister",
+                      "--wrap=vmap", "--wrap=vunmap",
+                      source, adapter, display_trace, rps_trace, vmap_cache])
+            shutil.copy2(source.with_suffix(".mod"), staged.with_suffix(".mod"))
+            source = staged
+        module_inputs[name] = source
     task.run([
         arguments.provider_build_dir / "scripts/mod/modpost", "-M", "-E",
         "-i", arguments.output_dir / ".module-exports/native/native.symvers",
         "-i", symvers, "-o", "hosted-modules.symvers",
-        *(arguments.provider_build_dir / name for name in module_objects),
+        *(module_inputs[name] for name in module_objects),
     ], cwd=arguments.provider_build_dir)
     arguments.protocol_include = arguments.source_tree.parent / "protocol/generated/include"
     (arguments.output_dir / ".metadata").mkdir(parents=True, exist_ok=True)
     module_flags = arguments.extra_cflags
     for path in sorted(seen):
-        source = arguments.provider_build_dir / pathlib.PurePosixPath(path).with_suffix(".o")
+        source = module_inputs[str(pathlib.PurePosixPath(path).with_suffix(".o"))]
         name = source.stem.replace("-", "_")
         arguments.extra_cflags = [*module_flags, "-DMODULE", f'-DKBUILD_MODNAME="{name}"',
                                   f'-DKBUILD_BASENAME="{name}"',
@@ -748,7 +781,7 @@ def parse_arguments():
     parser.add_argument("--fs-executor-bench", action="store_true",
                         help="Compare private executor intake/recycle against worker-only submit/collect")
     parser.add_argument("--device-profile", choices=("gpu", "usb-hid", "usb-storage", "nvme",
-                                                     "virtio-net", "network", "wifi", "amdgpu", "storage", "virtio-sound", "ps2"),
+                                                     "virtio-net", "network", "wifi", "amdgpu", "i915", "storage", "virtio-sound", "ps2"),
                         default="gpu", help="Select a hosted device profile")
     parser.add_argument("--drm-exec-profile", action="store_true",
                         help="Opt-in bounded EXECBUFFER stage timing in the owned DRM bridge")

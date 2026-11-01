@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "drm_file.h"
+#include "../gem/i915_mapping.h"
+#include <linux/module.h>
+#include <drm/i915_drm.h>
 #include "diagnostic.h"
 #include "dma_host.h"
 #include "drm_memory_policy.h"
@@ -22,9 +25,11 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/sync_file.h>
+#include <uapi/linux/dma-buf.h>
 #include <linux/task_work.h>
 #include <linux/timekeeping.h>
 #include <linux/vmalloc.h>
+#include <linux/unaligned.h>
 #include <drm/drm_file.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
@@ -38,6 +43,9 @@
 #include <kobox2/amdgpu_info_bridge.h>
 #include <kobox2/amdgpu_info_shape.h>
 #include <kobox2/amdgpu_cs_shape.h>
+#include <kobox2/i915_bo_shape.h>
+#include <kobox2/i915_context_shape.h>
+#include <kobox2/i915_exec_shape.h>
 #include <asm/ptrace.h>
 
 long __x64_sys_ioctl(const struct pt_regs *regs);
@@ -187,6 +195,41 @@ static bool valid_context(void)
 	return !in_interrupt() && !irqs_disabled() && !current->mm &&
 	       ((current->flags & PF_KTHREAD) || current->pid == 1) &&
 	       current->files;
+}
+
+const struct kobox_i915_mapping_api *kobox_linux_drm_i915_mapping_get(void)
+{
+	const struct kobox_i915_mapping_api *api;
+
+	if (!valid_context())
+		return NULL;
+	api = __symbol_get("kobox_i915_mapping_api");
+	if (api && (api->size != sizeof(*api) || !api->acquire ||
+		    !api->release || !api->quiesce)) {
+		__symbol_put("kobox_i915_mapping_api");
+		api = NULL;
+	}
+	return api;
+}
+
+void kobox_linux_drm_i915_mapping_put(void)
+{
+	__symbol_put("kobox_i915_mapping_api");
+}
+
+int kobox_linux_drm_mapping_quiesce(void)
+{
+	const struct kobox_i915_mapping_api *api;
+	int error;
+
+	if (!valid_context())
+		return -EPERM;
+	api = kobox_linux_drm_i915_mapping_get();
+	if (!api)
+		return 0; /* Other GPU profiles have no i915 module. */
+	error = api->quiesce();
+	kobox_linux_drm_i915_mapping_put();
+	return error;
 }
 
 static int check_owner(struct kobox_linux_drm_file *file)
@@ -391,6 +434,395 @@ static int private_ioctl(struct kobox_linux_drm_file *file, unsigned int cmd,
 	 * Drain only this task, after the ioctl has released its driver locks. */
 	task_work_run();
 	return result;
+}
+
+int kobox_linux_drm_i915_getparam(struct kobox_linux_drm_file *file,
+    s32 parameter, s32 *value)
+{
+    s32 result_value = 0;
+    struct drm_i915_getparam argument = {.param = parameter, .value = &result_value};
+    int result;
+
+    if (parameter <= 0 || !value)
+        return -EINVAL;
+    result = check_owner(file);
+    if (!result)
+        result = private_ioctl(file, DRM_IOCTL_I915_GETPARAM, &argument);
+    if (!result)
+        *value = result_value;
+    return result;
+}
+
+int kobox_linux_drm_i915_get_aperture(struct kobox_linux_drm_file *file,
+    u64 *total, u64 *available)
+{
+    struct drm_i915_gem_get_aperture argument = {0};
+    int result;
+
+    if (!total || !available) return -EINVAL;
+    result = check_owner(file);
+    if (result) return result;
+    result = private_ioctl(file, DRM_IOCTL_I915_GEM_GET_APERTURE, &argument);
+    if (!result) {
+        *total = argument.aper_size;
+        *available = argument.aper_available_size;
+    }
+    return result;
+}
+
+int kobox_linux_drm_i915_context_getparam(struct kobox_linux_drm_file *file,
+    u32 context_id, u64 parameter, u64 *value)
+{
+    struct drm_i915_gem_context_param argument = {
+        .ctx_id = context_id, .param = parameter,
+    };
+    int result;
+
+    /* These two parameters return scalars. Never forward a peer's value
+     * as a driver-visible pointer for ENGINES, SSEU or future parameters. */
+    if (!value) return -EINVAL;
+    if (parameter != I915_CONTEXT_PARAM_GTT_SIZE && parameter != I915_CONTEXT_PARAM_VM)
+        return -EOPNOTSUPP;
+    result = check_owner(file);
+    if (result) return result;
+    result = private_ioctl(file, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &argument);
+    if (!result) *value = argument.value;
+    return result;
+}
+
+/* Canonical class:instance pairs only. No native/client pointer is accepted
+ * as an extension link; reconstruct the current Linux UAPI privately. */
+int kobox_linux_drm_i915_create_ext(struct kobox_linux_drm_file *file,
+    u64 bytes,u32 flags,const void *regions,size_t count,u64 *allocated,u32 *handle)
+{
+    struct drm_i915_gem_create_ext argument={.size=bytes,.flags=flags};
+    struct drm_i915_gem_create_ext_memory_regions extension={0};
+    struct drm_i915_gem_memory_class_instance *snapshot=NULL;
+    size_t i,j;
+    int error;
+    if(!bytes || (flags & ~I915_GEM_CREATE_EXT_FLAG_NEEDS_CPU_ACCESS) ||
+        count>64 || (count && !regions) || !allocated || !handle) return -EINVAL;
+    error=check_owner(file);
+    if(error) return error;
+    if(count) {
+        snapshot=kmemdup(regions,count*sizeof(*snapshot),GFP_KERNEL);
+        if(!snapshot) return -ENOMEM;
+        for(i=0;i<count;++i) for(j=0;j<i;++j)
+            if(snapshot[i].memory_class==snapshot[j].memory_class &&
+                snapshot[i].memory_instance==snapshot[j].memory_instance) {
+                error=-EINVAL;goto out;
+            }
+        extension.base.name=I915_GEM_CREATE_EXT_MEMORY_REGIONS;
+        extension.num_regions=count;
+        extension.regions=(unsigned long)snapshot;
+        argument.extensions=(unsigned long)&extension;
+    }
+    error=private_ioctl(file,DRM_IOCTL_I915_GEM_CREATE_EXT,&argument);
+    if(!error) {
+        if(!argument.handle) {error=-EPROTO;goto out;}
+        *allocated=argument.size;*handle=argument.handle;
+    }
+out:
+    kfree(snapshot);
+    return error;
+}
+
+int kobox_linux_drm_i915_execbuffer(struct kobox_linux_drm_file *file,
+    const void *input,size_t bytes,void *aux,size_t aux_bytes)
+{
+    struct drm_i915_gem_execbuffer2 argument={0};
+    struct drm_i915_gem_exec_object2 *objects=NULL;
+    struct drm_i915_gem_exec_fence *fences=NULL;
+    unsigned char header[32],*snapshot=NULL;
+    size_t expected;
+    u32 count,fence_count,i;
+    int result;
+
+    if(!input || bytes!=sizeof(header)) return -EINVAL;
+    memcpy(header,input,sizeof(header));
+    if(!kb2_i915_exec_header(header,sizeof(header),&expected) || !aux || aux_bytes!=expected) return -EINVAL;
+    result=check_owner(file);
+    if(result) return result;
+    count=get_unaligned_le32(header);fence_count=get_unaligned_le32(header+4);
+    snapshot=kvmalloc(aux_bytes,GFP_KERNEL);
+    if(!snapshot) return -ENOMEM;
+    memcpy(snapshot,aux,aux_bytes);
+    if(!kb2_i915_exec_payload(snapshot,aux_bytes,count,fence_count)) {result=-EINVAL;goto out;}
+    objects=kvcalloc(count,sizeof(*objects),GFP_KERNEL);
+    if(!objects) {result=-ENOMEM;goto out;}
+    if(fence_count) {
+        fences=kvcalloc(fence_count,sizeof(*fences),GFP_KERNEL);
+        if(!fences) {result=-ENOMEM;goto out;}
+    }
+    static_assert(sizeof(struct drm_i915_gem_execbuffer2)==64);
+    static_assert(sizeof(struct drm_i915_gem_exec_object2)==56);
+    static_assert(sizeof(struct drm_i915_gem_exec_fence)==8);
+    for(i=0;i<count;++i) {
+        const unsigned char *wire=snapshot+(size_t)i*40;
+        objects[i].handle=get_unaligned_le32(wire);
+        objects[i].alignment=get_unaligned_le64(wire+8);
+        objects[i].offset=get_unaligned_le64(wire+16);
+        objects[i].flags=get_unaligned_le64(wire+24);
+        objects[i].pad_to_size=get_unaligned_le64(wire+32);
+    }
+    for(i=0;i<fence_count;++i) {
+        const unsigned char *wire=snapshot+(size_t)count*40+(size_t)i*8;
+        fences[i].handle=get_unaligned_le32(wire);
+        fences[i].flags=get_unaligned_le32(wire+4);
+    }
+    argument.buffers_ptr=(unsigned long)objects;
+    argument.buffer_count=count;
+    argument.batch_start_offset=get_unaligned_le32(header+8);
+    argument.batch_len=get_unaligned_le32(header+12);
+    argument.flags=get_unaligned_le64(header+16);
+    argument.rsvd1=get_unaligned_le32(header+24);
+    argument.num_cliprects=fence_count;
+    argument.cliprects_ptr=fence_count ? (unsigned long)fences : 0;
+    /* The original driver consumes private UAPI records and installs real
+     * dma_fences into the supplied syncobjs. Returning zero is not a fence. */
+    result=private_ioctl(file,DRM_IOCTL_I915_GEM_EXECBUFFER2,&argument);
+    if(result==-ERESTARTSYS) result=-EINTR;
+    for(i=0;i<count;++i)
+        put_unaligned_le64(objects[i].offset,(unsigned char *)aux+(size_t)i*40+16);
+out:
+    kvfree(fences);
+    kvfree(objects);
+    kvfree(snapshot);
+    return result;
+}
+
+int kobox_linux_drm_i915_context(struct kobox_linux_drm_file *file,
+    u32 command, const void *input, size_t bytes, const void *aux,
+    size_t aux_bytes, u32 *context_id)
+{
+    struct context_engines {
+        u64 extensions;
+        struct i915_engine_class_instance engines[KB2_GPU_DRM_I915_MAX_CONTEXT_ENGINES_PER_PARAM];
+    };
+    struct context_frame {
+        struct drm_i915_gem_context_create_ext_setparam extensions[KB2_GPU_DRM_I915_MAX_CONTEXT_PARAMS];
+        struct context_engines engines[KB2_GPU_DRM_I915_MAX_CONTEXT_PARAMS];
+    } *frame = NULL;
+    struct drm_i915_gem_context_create_ext create = {0};
+    struct drm_i915_gem_context_destroy destroy = {0};
+    unsigned char header[16];
+    unsigned char *snapshot = NULL;
+    size_t expected;
+    u32 count, engine_count, i;
+    int result;
+
+    if (!input || bytes > sizeof(header)) return -EINVAL;
+    memcpy(header,input,bytes);
+    if (!kb2_i915_context_header(command,header,bytes,&expected) ||
+        aux_bytes != expected || (aux_bytes && !aux) ||
+        (command == KB2_GPU_DRM_I915_COMMAND_CONTEXT_CREATE && !context_id)) return -EINVAL;
+    result = check_owner(file);
+    if (result) return result;
+    if (command == KB2_GPU_DRM_I915_COMMAND_CONTEXT_DESTROY) {
+        destroy.ctx_id = get_unaligned_le32(header);
+        return private_ioctl(file,DRM_IOCTL_I915_GEM_CONTEXT_DESTROY,&destroy);
+    }
+    count = get_unaligned_le32(header+4);
+    engine_count = get_unaligned_le32(header+8);
+    if (aux_bytes) {
+        snapshot = kvmalloc(aux_bytes,GFP_KERNEL);
+        if (!snapshot) return -ENOMEM;
+        memcpy(snapshot,aux,aux_bytes);
+    }
+    if (!kb2_i915_context_params(snapshot,aux_bytes,count,engine_count)) {
+        result = -EINVAL;
+        goto out;
+    }
+    if (count) {
+        frame = kvzalloc(sizeof(*frame),GFP_KERNEL);
+        if (!frame) { result = -ENOMEM; goto out; }
+    }
+    static_assert(sizeof(struct drm_i915_gem_context_create_ext)==16);
+    static_assert(sizeof(struct drm_i915_gem_context_create_ext_setparam)==56);
+    static_assert(sizeof(struct i915_engine_class_instance)==4);
+    static_assert(offsetof(struct i915_context_param_engines,engines)==8);
+    for (i=0;i<count;++i) {
+        const unsigned char *wire = snapshot+(size_t)i*32;
+        struct drm_i915_gem_context_create_ext_setparam *ext = &frame->extensions[i];
+        const u32 first = get_unaligned_le32(wire+20);
+        const u32 engines = get_unaligned_le32(wire+24);
+        ext->base.name = I915_CONTEXT_CREATE_EXT_SETPARAM;
+        ext->base.next_extension = i+1<count ? (unsigned long)&frame->extensions[i+1] : 0;
+        ext->param.param = get_unaligned_le64(wire);
+        ext->param.value = get_unaligned_le64(wire+8);
+        ext->param.size = get_unaligned_le32(wire+16);
+        if (ext->param.param == I915_CONTEXT_PARAM_ENGINES && ext->param.size) {
+            memcpy(frame->engines[i].engines,
+                snapshot+(size_t)count*32+(size_t)first*4,(size_t)engines*4);
+            ext->param.value = (unsigned long)&frame->engines[i];
+        }
+    }
+    if (command == KB2_GPU_DRM_I915_COMMAND_CONTEXT_SETPARAM) {
+        frame->extensions[0].param.ctx_id = get_unaligned_le32(header);
+        result = private_ioctl(file,DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM,&frame->extensions[0].param);
+    } else {
+        create.flags = get_unaligned_le32(header);
+        create.extensions = count ? (unsigned long)&frame->extensions[0] : 0;
+        result = private_ioctl(file,DRM_IOCTL_I915_GEM_CONTEXT_CREATE_EXT,&create);
+        if (!result) *context_id = create.ctx_id;
+    }
+out:
+    kvfree(frame);
+    kvfree(snapshot);
+    return result;
+}
+
+int kobox_linux_drm_i915_bo(struct kobox_linux_drm_file *file,
+    u32 command, const void *input, size_t bytes, void *output, size_t capacity)
+{
+    union {
+        struct drm_i915_gem_create create;
+        struct drm_i915_gem_busy busy;
+        struct drm_i915_gem_madvise madvise;
+        struct drm_i915_gem_wait wait;
+        struct drm_i915_gem_set_domain domain;
+        struct drm_i915_gem_caching caching;
+    } argument = {0};
+    struct kb2_i915_bo_shape shape;
+    void *native;
+    unsigned int ioctl;
+    int result;
+
+    if (!kb2_i915_bo_shape_command(command, &shape) || !input ||
+        bytes != shape.bytes || bytes > sizeof(argument) ||
+        capacity < shape.result_bytes || (shape.result_bytes && !output))
+        return -EINVAL;
+    /* Snapshot before checking scalar fields: the checked bytes must be the
+     * same private record the driver receives, even for overlapping output. */
+    memcpy(&argument, input, bytes);
+    if (!kb2_i915_bo_input_valid(command, &argument, bytes))
+        return -EINVAL;
+#define BO_ARGUMENT(name, member, request) \
+    case KB2_GPU_DRM_I915_COMMAND_##name: { \
+        static_assert(sizeof(argument.member) == KB2_GPU_DRM_I915_RECORD_##name##_SIZE, \
+            "i915 BO wire/UAPI size mismatch"); \
+        native = &argument.member; ioctl = request; break; }
+    switch (command) {
+    BO_ARGUMENT(GEM_CREATE, create, DRM_IOCTL_I915_GEM_CREATE);
+    BO_ARGUMENT(GEM_BUSY, busy, DRM_IOCTL_I915_GEM_BUSY);
+    BO_ARGUMENT(GEM_MADVISE, madvise, DRM_IOCTL_I915_GEM_MADVISE);
+    BO_ARGUMENT(GEM_WAIT, wait, DRM_IOCTL_I915_GEM_WAIT);
+    BO_ARGUMENT(GEM_SET_DOMAIN, domain, DRM_IOCTL_I915_GEM_SET_DOMAIN);
+    BO_ARGUMENT(GEM_SET_CACHING, caching, DRM_IOCTL_I915_GEM_SET_CACHING);
+    default: return -EINVAL;
+    }
+#undef BO_ARGUMENT
+    if (ioctl != shape.ioctl)
+        return -EINVAL;
+    result = check_owner(file);
+    if (result)
+        return result;
+    result = private_ioctl(file, ioctl, native);
+    /* Linux WAIT reports remaining time even on timeout/interruption. Only
+     * the UAPI prefix belongs here; the caller encodes errno in its larger
+     * typed completion. Admission failures above never publish a prefix. */
+    if (command == KB2_GPU_DRM_I915_COMMAND_GEM_WAIT) {
+        if (result == -ERESTARTSYS)
+            result = -EINTR;
+        memcpy(output, &argument.wait, sizeof(argument.wait));
+    } else if (!result && shape.result_bytes) {
+        memcpy(output, native, bytes);
+    }
+    return result;
+}
+
+int kobox_linux_drm_i915_query(struct kobox_linux_drm_file *file,
+    u32 flags, u32 count, void *data, size_t bytes)
+{
+    struct drm_i915_query_item *items;
+    struct drm_i915_query argument = {.num_items = 1};
+    unsigned char *aux = data;
+    size_t end;
+    u32 i;
+    int result;
+
+    if (flags || count > 64 || bytes > SZ_16M || (!data && bytes))
+        return -EINVAL;
+    end = (size_t)count * 24;
+    if (end > bytes)
+        return -EINVAL;
+    /* Validate the entire private snapshot before any output mutation or
+     * ioctl. Offset equality enforces non-overlap and canonical item order;
+     * subtraction bounds the addition even for adversarial 64-bit offsets.
+     * NULL positive-length requests intentionally allocate no blob. */
+    for (i = 0; i < count; ++i) {
+        const unsigned char *wire = aux + (size_t)i * 24;
+        s32 length = (s32)get_unaligned_le32(wire + 8);
+        u64 offset = get_unaligned_le64(wire + 16);
+
+        if (length <= 0) {
+            if (offset)
+                return -EINVAL;
+        } else if (offset) {
+            if (offset != ALIGN(end, 8) || offset > bytes ||
+                (u32)length > bytes - offset)
+                return -EINVAL;
+            end = (size_t)offset + (u32)length;
+        }
+    }
+    if (end != bytes)
+        return -EINVAL;
+    result = check_owner(file);
+    if (result)
+        return result;
+    if (!count) {
+        argument.num_items = 0;
+        return private_ioctl(file, DRM_IOCTL_I915_QUERY, &argument);
+    }
+    items = kcalloc(count, sizeof(*items), GFP_KERNEL);
+    if (!items)
+        return -ENOMEM;
+    for (i = 0; i < count; ++i) {
+        const unsigned char *wire = aux + (size_t)i * 24;
+        u64 offset = get_unaligned_le64(wire + 16);
+
+        items[i] = (struct drm_i915_query_item) {
+            .query_id = get_unaligned_le64(wire),
+            .length = (s32)get_unaligned_le32(wire + 8),
+            .flags = get_unaligned_le32(wire + 12),
+            .data_ptr = offset ? (unsigned long)(aux + (size_t)offset) : 0,
+        };
+    }
+    /* QUERY executes sequentially. Do not compact/reorder items: a zero ID
+     * is a global EINVAL after preceding items have already completed. Safe
+     * items go through the real ioctl one at a time so blocked/future query
+     * types can never reinterpret peer bytes as nested native pointers. */
+    for (i = 0; i < count; ++i) {
+        switch (items[i].query_id) {
+        case 0:
+            result = -EINVAL;
+            goto out;
+        case DRM_I915_QUERY_PERF_CONFIG:
+            items[i].length = -EOPNOTSUPP;
+            break;
+        case DRM_I915_QUERY_TOPOLOGY_INFO:
+        case DRM_I915_QUERY_ENGINE_INFO:
+        case DRM_I915_QUERY_MEMORY_REGIONS:
+        case DRM_I915_QUERY_HWCONFIG_BLOB:
+        case DRM_I915_QUERY_GEOMETRY_SUBSLICES:
+        case DRM_I915_QUERY_GUC_SUBMISSION_VERSION:
+            argument.items_ptr = (unsigned long)&items[i];
+            result = private_ioctl(file, DRM_IOCTL_I915_QUERY, &argument);
+            if (result)
+                goto out;
+            break;
+        default:
+            /* Linux currently reports unknown IDs as a per-item EINVAL.
+             * Keep that result without enabling future pointer-bearing IDs. */
+            items[i].length = -EINVAL;
+            break;
+        }
+        put_unaligned_le32((u32)items[i].length, aux + (size_t)i * 24 + 8);
+    }
+    result = 0;
+out:
+    kfree(items);
+    return result;
 }
 
 int kobox_linux_drm_version(struct kobox_linux_drm_file *file,
@@ -2249,6 +2681,67 @@ static int decode_exec_syncobjs(const void *bytes, size_t count, bool output,
 	return 0;
 }
 
+int kobox_linux_drm_syncobj_export_file(struct kobox_linux_drm_file *file,
+    u32 handle, int *internal_fd)
+{
+    struct drm_syncobj_handle argument = {
+        .handle=handle, .flags=DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE, .fd=-1,
+    };
+    int error;
+    if(!handle || !internal_fd) return -EINVAL;
+    error=check_owner(file);
+    if(!error) error=private_ioctl(file,DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,&argument);
+    if(!error) {
+        if(argument.fd<0) return -EPROTO;
+        *internal_fd=argument.fd;
+    }
+    return error;
+}
+
+int kobox_linux_drm_syncobj_import_file(struct kobox_linux_drm_file *file,
+    u32 handle, int internal_fd)
+{
+    struct drm_syncobj_handle argument = {
+        .handle=handle, .flags=DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE,
+        .fd=internal_fd,
+    };
+    int error;
+    if(!handle || internal_fd<0) return -EINVAL;
+    error=check_owner(file);
+    return error ? error : private_ioctl(file,DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,&argument);
+}
+
+static int dmabuf_file_ioctl(int internal_fd, unsigned int command, void *argument)
+{
+    struct pt_regs regs = {.di=internal_fd, .si=command, .dx=(unsigned long)argument};
+    int error;
+    if(!valid_context()) return -EPERM;
+    if(internal_fd<0) return -EINVAL;
+    error=__x64_sys_ioctl(&regs);
+    task_work_run();
+    return error;
+}
+
+int kobox_linux_drm_dmabuf_export_file(int internal_fd, u32 flags, int *sync_fd)
+{
+    struct dma_buf_export_sync_file argument = {.flags=flags, .fd=-1};
+    int error;
+    if(!sync_fd || !flags || (flags & ~DMA_BUF_SYNC_RW)) return -EINVAL;
+    error=dmabuf_file_ioctl(internal_fd,DMA_BUF_IOCTL_EXPORT_SYNC_FILE,&argument);
+    if(!error) {
+        if(argument.fd<0) return -EPROTO;
+        *sync_fd=argument.fd;
+    }
+    return error;
+}
+
+int kobox_linux_drm_dmabuf_import_file(int internal_fd, u32 flags, int sync_fd)
+{
+    struct dma_buf_import_sync_file argument = {.flags=flags, .fd=sync_fd};
+    if(sync_fd<0 || !flags || (flags & ~DMA_BUF_SYNC_RW)) return -EINVAL;
+    return dmabuf_file_ioctl(internal_fd,DMA_BUF_IOCTL_IMPORT_SYNC_FILE,&argument);
+}
+
 int kobox_linux_drm_syncobj_create(struct kobox_linux_drm_file *file,
 					 u32 flags, u32 *handle)
 {
@@ -2638,8 +3131,8 @@ int kobox_linux_drm_virtgpu_wait(struct kobox_linux_drm_file *file,
 	return virtgpu_ioctl(file, DRM_IOCTL_VIRTGPU_WAIT, &argument);
 }
 
-int kobox_linux_drm_map_pages(struct kobox_linux_drm_file *file,
-			      u32 handle, u32 mapping_rights,
+static int map_pages(struct kobox_linux_drm_file *file,
+			      u32 handle, u32 mapping_rights, u32 cache_kind, u64 driver_offset,
 			      u64 *page_indices, size_t page_capacity,
 			      struct kobox_linux_drm_map_pages *result,
 			      struct kobox_linux_drm_mapping **owner)
@@ -2665,7 +3158,7 @@ int kobox_linux_drm_map_pages(struct kobox_linux_drm_file *file,
 		error = -ENODEV;
 		goto unlock;
 	}
-	error = operations->map(file->guard, handle, mapping_rights, page_indices,
+	error = operations->map(file->guard, handle, mapping_rights, cache_kind, driver_offset, page_indices,
 		page_capacity, result, &mapping->private_mapping);
 	if (error) {
 		module_put(module);
@@ -2685,10 +3178,47 @@ unlock:
 	return error;
 }
 
+int kobox_linux_drm_map_pages(struct kobox_linux_drm_file *file,
+    u32 handle, u32 rights, u64 *pages, size_t capacity,
+    struct kobox_linux_drm_map_pages *result, struct kobox_linux_drm_mapping **owner)
+{
+    return map_pages(file,handle,rights,KOBOX_I915_MAP_CURRENT,0,pages,capacity,result,owner);
+}
+
+int kobox_linux_drm_i915_map_pages(struct kobox_linux_drm_file *file,
+    u32 handle, u32 rights, u32 kind, u64 *pages, size_t capacity,
+    struct kobox_linux_drm_map_pages *result, struct kobox_linux_drm_mapping **owner)
+{
+    struct drm_i915_gem_mmap_offset argument = {.handle=handle};
+    int error;
+    if(!handle || !rights || (rights & ~3u) || !pages || !capacity ||
+        !result || !owner || *owner) return -EINVAL;
+    error=check_owner(file);
+    if(error) return error;
+    struct drm_file *drm_file=file->guard->private_data;
+    if(!drm_file->minor->dev->driver || strcmp(drm_file->minor->dev->driver->name,"i915")) return -ENODEV;
+    if(kind>KOBOX_I915_MAP_WC) return -EINVAL;
+    if(kind==KOBOX_I915_MAP_CURRENT) {
+        /* MODE_MAP_DUMB chooses its offset through the original driver.
+         * The owned adapter must validate that this is its WC mmap node;
+         * unsupported aperture/local-memory offsets cannot become RAM views. */
+        struct drm_mode_map_dumb dumb = {.handle=handle};
+        error=private_ioctl(file,DRM_IOCTL_MODE_MAP_DUMB,&dumb);
+        if(error) return error;
+        return map_pages(file,handle,rights,KOBOX_I915_MAP_WC,dumb.offset,
+                         pages,capacity,result,owner);
+    }
+    argument.flags=kind==KOBOX_I915_MAP_WB ? I915_MMAP_OFFSET_WB : I915_MMAP_OFFSET_WC;
+    error=private_ioctl(file,DRM_IOCTL_I915_GEM_MMAP_OFFSET,&argument);
+    if(error) return error;
+    return map_pages(file,handle,rights,kind,argument.offset,pages,capacity,result,owner);
+}
+
 int kobox_linux_drm_mapping_release(
 	struct kobox_linux_drm_mapping **owner)
 {
 	struct kobox_linux_drm_mapping *mapping;
+	int error;
 
 	if (!owner || !*owner)
 		return -EINVAL;
@@ -2696,7 +3226,9 @@ int kobox_linux_drm_mapping_release(
 	if (!valid_context() || current != mapping->owner ||
 	    current->files != mapping->files)
 		return -EPERM;
-	mapping->operations->release(mapping->private_mapping);
+	error = mapping->operations->release(mapping->private_mapping);
+	if (error)
+		return error; /* Keep owner, provider, and private lease for retry. */
 	/* The final GEM reference can enqueue the backing file's last fput. */
 	task_work_run();
 	module_put(mapping->module);

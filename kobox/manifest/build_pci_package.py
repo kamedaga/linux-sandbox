@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--protocol-dir", type=pathlib.Path, required=True)
     parser.add_argument("--generator-dir", type=pathlib.Path,
                         help="keep host-only generator sources/tools outside the published package")
-    parser.add_argument("--profile", choices=("network", "wifi", "amdgpu",
+    parser.add_argument("--profile", choices=("network", "wifi", "amdgpu", "i915",
                                               "usb-storage-xhci", "nvme", "storage", "virtio-sound", "ps2"),
                         default="network")
     parser.add_argument("--extension-module", action="append", type=pathlib.Path,

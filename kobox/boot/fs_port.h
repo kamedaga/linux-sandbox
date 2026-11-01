@@ -117,6 +117,9 @@ ssize_t kobox_linux_fs_pread(struct kobox_linux_fs_port *port,
 ssize_t kobox_linux_fs_pwrite(struct kobox_linux_fs_port *port,
 			     const struct cred *cred, u64 handle,
 			     const void *buffer, size_t count, loff_t offset);
+int kobox_linux_fs_poll(struct kobox_linux_fs_port *port,
+			const struct cred *cred, u64 handle,
+			unsigned int events);
 loff_t kobox_linux_fs_seek(struct kobox_linux_fs_port *port,
 			  const struct cred *cred, u64 handle,
 			  loff_t offset, unsigned int whence);

@@ -32,13 +32,13 @@ struct kobox_linux_device_session {
 	u32 render_file_limit;
 	int close_error;
 	bool render_close_attempted;
-#if !KOBOX_BOOT_VIRTIO_GPU
+#if KOBOX_BOOT_AMDGPU
 	u64 inspect_started_ns;
 	unsigned int inspect_samples;
 #endif
 };
 
-#if !KOBOX_BOOT_VIRTIO_GPU
+#if KOBOX_BOOT_AMDGPU
 /* This is a conservative thermal abort threshold, not the card's rating.
  * Elapsed time is diagnostic only: a desktop may stay active until its owner
  * requests stop. Stopping a healthy driver on a timer would interrupt that
@@ -249,7 +249,7 @@ int kobox_linux_device_ready(struct kobox_linux_device_session *session,
 	}
 	if (!result)
 		candidate.drm_queried = 1;
-#if !KOBOX_BOOT_VIRTIO_GPU
+#if KOBOX_BOOT_AMDGPU
 	if (!result) {
 		/* Upstream schedules its real IB/ring test two seconds after probe.
 		 * Sample across that interval before the timed lifecycle monitor

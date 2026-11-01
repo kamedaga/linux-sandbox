@@ -125,6 +125,14 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 			  int (*mapping_faults)(void *address))
 {
 	struct pci_host_bridge *bridge = NULL;
+	struct kobox_linux_pci_host topology_host;
+	struct kobox_linux_pci_metadata metadata[2] = {
+		{.devfn = 0, .config = {[0] = 0x86, [1] = 0x80, [2] = 0x14,
+			[3] = 0x9a, [6] = PCI_STATUS_CAP_LIST, [11] = 6,
+			[0x34] = 0xe0, [0x48] = 1}},
+		{.devfn = PCI_DEVFN(31, 0), .config = {[0] = 0x86, [1] = 0x80,
+			[2] = 0x80, [3] = 0xa0, [10] = 1, [11] = 6}},
+	};
 	struct pci_dev *device = NULL;
 	void __iomem *mapping = NULL, *alias = NULL;
 	void *retired;
@@ -137,6 +145,14 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 
 	if (!report || report->size != sizeof(*report) || !mapping_faults)
 		return -EINVAL;
+	/* Exercise the i915 topology with the existing fake device callbacks:
+	 * real driver function at 00:02.0, distinct read-only host/ISA metadata.
+	 * Configuration for companions must never reach the device callback. */
+	topology_host = *host;
+	topology_host.devfn = PCI_DEVFN(2, 0);
+	topology_host.metadata = metadata;
+	topology_host.metadata_count = ARRAY_SIZE(metadata);
+	host = &topology_host;
 	for (pass = 0; pass < 2; pass++) {
 		report->phase = 1 + pass * 16;
 		result = kobox_linux_pci_scan(host, &bridge);
@@ -149,6 +165,24 @@ int kobox_linux_pci_verify(const struct kobox_linux_pci_host *host,
 		    device->vendor != 0x1af4 || device->device != 0x1050 ||
 		    device->cfg_size != PCI_CFG_SPACE_EXP_SIZE)
 			goto remove;
+		{
+			struct pci_dev *gmch = pci_get_domain_bus_and_slot(host->segment,
+								 host->bus, 0);
+			struct pci_dev *pch = pci_get_slot(bridge->bus, PCI_DEVFN(31, 0));
+			bool valid = gmch && pch && gmch != device &&
+				gmch->class == (PCI_CLASS_BRIDGE_HOST << 8) &&
+				pch->class == (PCI_CLASS_BRIDGE_ISA << 8) &&
+				!pci_read_config_dword(gmch, 0x48, &value) && value == 1 &&
+				pci_write_config_dword(gmch, 0x48, 0) == PCIBIOS_SET_FAILED &&
+				!pci_read_config_dword(gmch, 0x48, &value) && value == 1 &&
+				!pci_find_capability(gmch, PCI_CAP_ID_EXP) &&
+				pci_bus_write_config_dword(bridge->bus, PCI_DEVFN(31, 0),
+					0x10, ~0U) == PCIBIOS_SET_FAILED;
+			pci_dev_put(gmch);
+			pci_dev_put(pch);
+			if (!valid)
+				goto remove;
+		}
 		report->phase++;
 		if (pci_find_capability(device, PCI_CAP_ID_EXP) != 0x40 ||
 		    pci_find_capability(device, PCI_CAP_ID_MSI) != 0x80 ||

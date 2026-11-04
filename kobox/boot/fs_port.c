@@ -31,7 +31,18 @@
 #include "../../fs/internal.h"
 #include "../../fs/mount.h"
 
+#ifdef KOBOX_RUNTIME_GATES
+struct kobox_fs_open_sample *kobox_fs_open_sample;
+void (*kobox_fs_open_resolved_hook)(void);
+void kobox_fs_open_stamp(unsigned int index)
+{
+ if (kobox_fs_open_sample && kobox_fs_open_sample->owner == current)
+  kobox_fs_open_sample->stamps[index] = ktime_get_ns();
+}
+#endif
+
 struct kobox_linux_fs_table {
+	pid_t logical_pid;
 	struct kobox_linux_fs_port owner;
 	struct path root;
 	struct xarray files;
@@ -377,7 +388,113 @@ int kobox_linux_fs_openat(struct kobox_linux_fs_port *port,
 			       (RESOLVE_IN_ROOT | RESOLVE_BENEATH) ? NULL : name,
 			       mask, &scope);
 	if (!error) {
-		file = do_filp_open(AT_FDCWD, filename, &op);
+        /* Resolve once and keep its mount+dentry until the guarded open
+         * finishes. A second lookup of the original string would race rename
+         * or symlink replacement during native retire/dirty IPC. Opening the
+         * empty path under this exact root runs upstream may_open/vfs_open/
+         * handle_truncate, including ETXTBSY, seals and final permissions.
+         * O_CREAT needs original atomic namei/sticky-create semantics; retain
+         * the conservative path until there is a full create transaction API.
+         * CACHED also keeps original namei's nonblocking resolution contract. */
+        bool scoped = !(checked.flags & (O_PATH | O_CREAT | __O_TMPFILE)) &&
+            ((checked.flags & O_TRUNC) || (checked.flags & O_ACCMODE) != O_RDONLY) &&
+            !(checked.resolve & RESOLVE_CACHED);
+        struct kobox_linux_fs_shared_guard guard;
+        struct path resolved;
+        bool guarded = false;
+#ifdef KOBOX_RUNTIME_GATES
+        kobox_fs_open_stamp(0);
+#endif
+        if (scoped) {
+            error=filename_lookup(AT_FDCWD,filename,op.lookup_flags,&resolved,NULL);
+            if (!error) {
+#ifdef KOBOX_RUNTIME_GATES
+                if (kobox_fs_open_resolved_hook) kobox_fs_open_resolved_hook();
+#endif
+                /* Only regular inodes can have native shared exports.
+                 * Never hold registry admission over a FIFO/device open that
+                 * may wait for a userspace peer indefinitely. The retained
+                 * dentry's inode type cannot turn into a regular file. */
+                if (S_ISREG(d_inode(resolved.dentry)->i_mode)) {
+                    error=kobox_linux_fs_shared_enter_path(port->shared,port->nowait,&resolved,&guard);
+                    guarded=!error;
+                }
+#ifdef KOBOX_RUNTIME_GATES
+                kobox_fs_open_stamp(1);
+#endif
+                file=error?ERR_PTR(error):do_file_open_root(&resolved,"",&op);
+#ifdef KOBOX_RUNTIME_GATES
+                kobox_fs_open_stamp(2);
+#endif
+                if (guarded) {
+                    /* A writable open without TRUNC changes no cache pages.
+                     * TRUNC may have changed i_size even if open fails. */
+                    error=kobox_linux_fs_shared_leave(port->shared,!!(checked.flags&O_TRUNC),&guard);
+                    if (error && !IS_ERR(file)) { fput(file);file=ERR_PTR(error); }
+                }
+                path_put(&resolved);
+            } else file=ERR_PTR(error);
+        } else if ((checked.flags&O_CREAT) && !(checked.flags&O_TRUNC)) {
+            /* Atomic create, sticky-directory policy, final symlinks and all
+             * RESOLVE constraints stay entirely inside Linux namei. Without
+             * TRUNC a successful open cannot replace existing cache pages, so
+             * acquire the exact returned OFD's mapping before publication.
+             * New inodes have no pre-existing export. No pathname is reopened
+             * after this guard: rename can never change which object we use. */
+            file=port->nowait?ERR_PTR(-EAGAIN):do_filp_open(AT_FDCWD,filename,&op);
+            if (file==ERR_PTR(-ETXTBSY) && !port->nowait) {
+                /* A retired executable alias may retain deny_write_access.
+                 * Failure created no writable OFD. Reap under conservative
+                 * admission, then retry real namei once; all possible rename
+                 * targets remain protected. A live executable still fails. */
+                error=kobox_linux_fs_shared_enter(port->shared,false,false,&guard);
+                if (!error) {
+                    file=do_filp_open(AT_FDCWD,filename,&op);
+                    error=kobox_linux_fs_shared_leave(port->shared,false,&guard);
+                    if (error) {if(!IS_ERR(file))fput(file);file=ERR_PTR(error);}
+                } else file=ERR_PTR(error);
+            }
+#ifdef KOBOX_RUNTIME_GATES
+            kobox_fs_open_stamp(1);
+#endif
+            if (!IS_ERR(file) && S_ISREG(file_inode(file)->i_mode)) {
+                error=kobox_linux_fs_shared_enter_file(port->shared,false,false,file,&guard);
+                if (!error) error=kobox_linux_fs_shared_leave(port->shared,false,&guard);
+                if (error) {fput(file);file=ERR_PTR(error);}
+            }
+#ifdef KOBOX_RUNTIME_GATES
+            kobox_fs_open_stamp(2);
+#endif
+        } else {
+            bool mutates = !(checked.flags&O_PATH) &&
+                ((checked.flags&(O_CREAT|O_TRUNC)) ||
+                 (checked.flags&O_ACCMODE)!=O_RDONLY ||
+                 (checked.flags&O_TMPFILE)==O_TMPFILE);
+            /* Exclusive creation and TMPFILE cannot replace existing pages:
+             * either they return a fresh unexported inode or fail. Read
+             * admission excludes publication until the new OFD is installed. */
+            bool fresh = (checked.flags&O_TMPFILE)==O_TMPFILE ||
+                (checked.flags&(O_CREAT|O_EXCL))==(O_CREAT|O_EXCL);
+            if (mutates) {
+                error=fresh?kobox_linux_fs_shared_enter_read(port->shared,port->nowait,NULL,&guard):
+                    kobox_linux_fs_shared_enter(port->shared,port->nowait,false,&guard);
+                guarded=!error;
+            }
+#ifdef KOBOX_RUNTIME_GATES
+            kobox_fs_open_stamp(1);
+#endif
+            file=error?ERR_PTR(error):do_filp_open(AT_FDCWD,filename,&op);
+#ifdef KOBOX_RUNTIME_GATES
+            kobox_fs_open_stamp(2);
+#endif
+            if (guarded) {
+                error=kobox_linux_fs_shared_leave(port->shared,!fresh&&!!(checked.flags&O_TRUNC),&guard);
+                if (error && !IS_ERR(file)) { fput(file);file=ERR_PTR(error); }
+            }
+        }
+#ifdef KOBOX_RUNTIME_GATES
+        kobox_fs_open_stamp(3);
+#endif
 		error = PTR_ERR_OR_ZERO(file);
 		if (!error) {
 			error = fs_install(port, file, handle);
@@ -1413,6 +1530,29 @@ int kobox_linux_fs_truncate(struct kobox_linux_fs_port *port,
 	return error;
 }
 
+int kobox_linux_fs_fallocate(struct kobox_linux_fs_port *port,
+	const struct cred *cred, u64 handle, int mode, loff_t offset, loff_t length)
+{
+	const struct cred *saved;
+	struct file *file;
+	int error;
+
+	if (!port || !cred)
+		return -EINVAL;
+	file = fs_file(port, handle);
+	if (IS_ERR(file))
+		return PTR_ERR(file);
+	saved = override_creds(cred);
+	/* O_PATH is rejected by fdget in Linux's syscall entry. vfs_fallocate
+	 * itself owns mode/range, FMODE_WRITE, seals, type and ENOSPC checks;
+	 * don't replace allocation with truncation or manufacture success. */
+	error = file->f_mode & FMODE_PATH ? -EBADF :
+		vfs_fallocate(file, mode, offset, length);
+	fput(file);
+	revert_creds(saved);
+	return error;
+}
+
 int kobox_linux_fs_fsync(struct kobox_linux_fs_port *port,
 			const struct cred *cred, u64 handle, bool data_only)
 {
@@ -1578,6 +1718,55 @@ static int fs_borrow_fd(struct kobox_linux_fs_port *port, u64 handle)
 	return fd;
 }
 
+/* Called only before publishing a newly registered client to admission. */
+void kobox_linux_fs_set_pid(struct kobox_linux_fs_port *port,pid_t pid)
+{
+    port->table->logical_pid=pid;
+}
+
+int kobox_linux_fs_getlk(struct kobox_linux_fs_port *port,const struct cred *cred,
+    u64 handle,unsigned int type,loff_t start,loff_t length,
+    struct kb2_fs_record_lock *out)
+{
+    struct file *file;
+    struct file_lock *lock;
+    const struct cred *saved;
+    int error;
+    if (!port || !cred || !out || start<0 ||
+        (type!=F_RDLCK && type!=F_WRLCK)) return -EINVAL;
+    if (port->nowait) return -EAGAIN;
+    if (length>0 && length-1>OFFSET_MAX-start) return -EOVERFLOW;
+    if (length<0 && length < -start) return -EINVAL;
+    file=fs_file(port,handle);
+    if (IS_ERR(file)) return PTR_ERR(file);
+    if (file->f_mode&FMODE_PATH) { fput(file);return -EBADF; }
+    lock=locks_alloc_lock();
+    if (!lock) { fput(file);return -ENOLCK; }
+    lock->c.flc_file=file;
+    lock->c.flc_owner=port->table;
+    lock->c.flc_pid=port->table->logical_pid;
+    lock->c.flc_flags=FL_POSIX;
+    lock->c.flc_type=type;
+    lock->fl_start=length<0 ? start+length : start;
+    lock->fl_end=length<0 ? start-1 : length ? start+length-1 : OFFSET_MAX;
+    saved=override_creds(cred);
+    /* Match SETLK/CLOSE serialization; VFS owns conflict lookup under its
+     * inode lock, including exclusion of the requesting process's own locks. */
+    mutex_lock(&port->table->lock);
+    error=kobox_fs_handle_load(&port->table->latest,&port->table->files,handle)!=file ?
+        -EBADF : security_file_lock(file,type);
+    if (!error) error=vfs_test_lock(file,lock);
+    if (!error) *out=(kb2_fs_record_lock_t){.type=lock->c.flc_type,
+        .start=lock->fl_start,
+        .length=lock->fl_end==OFFSET_MAX ? 0 : lock->fl_end-lock->fl_start+1,
+        .pid=lock->c.flc_flags&FL_OFDLCK ? -1 : lock->c.flc_pid};
+    mutex_unlock(&port->table->lock);
+    revert_creds(saved);
+    locks_free_lock(lock);
+    fput(file);
+    return error;
+}
+
 int kobox_linux_fs_setlk(struct kobox_linux_fs_port *port,const struct cred *cred,
     u64 handle,unsigned int type,loff_t start,loff_t length)
 {
@@ -1600,11 +1789,10 @@ int kobox_linux_fs_setlk(struct kobox_linux_fs_port *port,const struct cred *cre
     lock=locks_alloc_lock();
     if (!lock) { fput(file);return -ENOLCK; }
     lock->c.flc_file=file;
-    /* The authenticated client table, retained by the admitted request, is
-     * the POSIX process owner. Worker identity and the shared OFD are not.
-     * F_GETLK remains unsupported until logical PID reporting is available. */
+    /* The authenticated table owns both locks and the immutable logical PID.
+     * It outlives admitted jobs; a worker or OFD identity is not a process. */
     lock->c.flc_owner=port->table;
-    lock->c.flc_pid=0;
+    lock->c.flc_pid=port->table->logical_pid;
     lock->c.flc_flags=FL_POSIX;
     lock->c.flc_type=type;
     lock->fl_start=length<0 ? start+length : start;
@@ -1622,6 +1810,49 @@ int kobox_linux_fs_setlk(struct kobox_linux_fs_port *port,const struct cred *cre
     mutex_unlock(&port->table->lock);
     revert_creds(saved);
     locks_free_lock(lock);
+    fput(file);
+    return error;
+}
+
+int kobox_linux_fs_flock(struct kobox_linux_fs_port *port,
+    const struct cred *cred, u64 handle, unsigned int operation)
+{
+    struct fs_fd_scope scope;
+    const struct cred *saved;
+    struct file *file;
+    struct pt_regs regs = {};
+    int error, fd;
+
+    if (!port || !cred) return -EINVAL;
+    if (port->nowait) return -EAGAIN;
+    file = fs_file(port, handle);
+    if (IS_ERR(file)) return PTR_ERR(file);
+    error = fs_fd_scope_begin(&scope);
+    if (error) { fput(file); return error; }
+    fd = fs_borrow_fd(port, handle);
+    error = fd;
+    if (fd >= 0) {
+        saved = override_creds(cred);
+        /* Linux supplies FL_FLOCK with owner=the retained struct file, not
+         * worker/client identity. DUP/transfer keep that same file and final
+         * fput releases its flock. Scope teardown only fputs borrowed refs.
+         * Never sleep for a lock in a bounded worker or control lane: callers
+         * retry NB conflicts interruptibly while retaining their OFD lease.
+         * Publication and real CLOSE share this client-table lock, so client
+         * retirement cannot race a new orphan lock onto a detached handle. */
+        mutex_lock(&port->table->lock);
+        if (kobox_fs_handle_load(&port->table->latest, &port->table->files,
+                handle) != file)
+            error = -EBADF;
+        else {
+            regs.di = fd;
+            regs.si = operation | LOCK_NB;
+            error = x64_sys_call(&regs, __NR_flock);
+        }
+        mutex_unlock(&port->table->lock);
+        revert_creds(saved);
+    }
+    fs_fd_scope_end(&scope);
     fput(file);
     return error;
 }

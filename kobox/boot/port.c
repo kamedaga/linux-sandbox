@@ -4,6 +4,7 @@
 #include "diagnostic.h"
 #include "../arch/x86_64/host_call.h"
 #include "../memory/port.h"
+#include "../memory/reporting.h"
 #include "../task/boot.h"
 #include "../task/time_port.h"
 
@@ -50,10 +51,15 @@ bool kobox_linux_boot_host_init(void)
 
 void __noreturn kobox_linux_boot_run_init(void)
 {
+	int status;
+
 	if (!kobox_linux_boot_host_init() || task_pid_nr(current) != 1 ||
 	    system_state != SYSTEM_RUNNING || !kernel_set_to_readonly ||
 	    !rcu_inkernel_boot_has_ended())
 		panic("invalid hosted PID 1 boot handoff");
+	status = kobox_linux_reporting_start(&boot_layout->task.memory);
+	if (status)
+		panic("hosted page reporting registration failed: %d", status);
 	boot_layout->kernel_main(boot_layout->kernel_argument);
 	panic("hosted PID 1 entry returned");
 }

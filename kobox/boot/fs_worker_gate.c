@@ -1007,6 +1007,23 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 	WORKER_EXPECT(reply.result, -EACCES);
 	kobox_linux_fs_request_destroy(prepared);
 	prepared = NULL;
+	/* Allocation is a write, including KEEP_SIZE: credential snapshots must
+	 * deny it before Linux is entered even if a later update restores WRITE. */
+	WORKER_EXPECT(kobox_linux_fs_service_credentials(service, 1, 4, cred,
+		KB2_FILESYSTEM_RIGHT_READ), 0);
+	request = (kb2_fs_request_t) {.opcode = KB2_FILESYSTEM_OP_FALLOCATE,
+		.client = 1, .credential_generation = 4, .sequence = 104,
+		.mode = 1, .length = 4096};
+	WORKER_EXPECT(worker_gate_encode(input, sizeof(input), &request, NULL), 0);
+	WORKER_EXPECT(kobox_linux_fs_request_prepare(service, 1, input,
+		sizeof(input), response, sizeof(response), &prepared), 0);
+	WORKER_EXPECT(kobox_linux_fs_service_credentials(service, 1, 5, cred,
+		KB2_FILESYSTEM_RIGHTS_VALID_MASK), 0);
+	WORKER_EXPECT(kobox_linux_fs_request_execute(prepared, &used), 0);
+	WORKER_EXPECT(kb2_fs_response_decode(response, used, &reply), 0);
+	WORKER_EXPECT(reply.result, -EACCES);
+	kobox_linux_fs_request_destroy(prepared);
+	prepared = NULL;
 	request = (kb2_fs_request_t) {
 		.opcode = KB2_FILESYSTEM_OP_STATX, .client = 1, .sequence = 102,
 	};
@@ -1143,7 +1160,7 @@ int kobox_linux_fs_workers_verify(struct vfsmount *root, const struct cred *cred
 	WORKER_EXPECT(worker_gate_submit(&gate, 5, 1,
 		KB2_FILESYSTEM_OP_FTRUNCATE, handle), 0);
 	WORKER_EXPECT(worker_gate_submit(&gate, 6, 1, KB2_FILESYSTEM_OP_STATX, 0), 0);
-	WORKER_EXPECT(kobox_linux_fs_service_credentials(service, 1, 4, cred, 0), 0);
+	WORKER_EXPECT(kobox_linux_fs_service_credentials(service, 1, 6, cred, 0), 0);
 	WORKER_EXPECT(worker_gate_submit(&gate, 7, 1, KB2_FILESYSTEM_OP_STATX, 0), 0);
 	WORKER_EXPECT(worker_gate_submit(&gate, 9, 1, KB2_FILESYSTEM_OP_STATX, 0), -EAGAIN);
 	WORKER_EXPECT(worker_gate_submit(&gate, 8, 2, KB2_FILESYSTEM_OP_STATX, 0), 0);

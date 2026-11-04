@@ -6,6 +6,7 @@
 #include "fs_port_gate.h"
 #include "fs_worker_gate.h"
 #include "fs_shared_gate.h"
+#include "fs_shared.h"
 #include "lifecycle_gate.h"
 #include <kobox2/filesystem.h>
 #include <linux/blkdev.h>
@@ -16,8 +17,11 @@
 #include <linux/kdev_t.h>
 #include <linux/kthread.h>
 #include <linux/mount.h>
+#include <linux/statfs.h>
+#include <linux/mm.h>
 #include <linux/namei.h>
 #include <linux/rcupdate.h>
+#include <linux/sort.h>
 #include <linux/slab.h>
 #include <linux/task_work.h>
 #include <linux/unaligned.h>
@@ -332,6 +336,20 @@ static int wire_truncate(void *ctx, u64 handle, s64 length)
 	return gate_wire_call(ctx, FS_ROOT, r, NULL, NULL, NULL, 0, NULL, 0, NULL);
 }
 
+static int wire_flock(void *ctx, u64 handle, unsigned int operation)
+{
+	kb2_fs_request_t r = {.opcode = KB2_FILESYSTEM_OP_FLOCK,
+		.handle = handle, .flags = operation};
+	return gate_wire_call(ctx, FS_ROOT, r, NULL, NULL, NULL, 0, NULL, 0, NULL);
+}
+
+static int wire_fallocate(void *ctx, u64 handle, int mode, s64 offset, s64 length)
+{
+	kb2_fs_request_t r = {.opcode = KB2_FILESYSTEM_OP_FALLOCATE,
+		.handle = handle, .mode = (u64)(s64)mode, .offset = offset, .length = length};
+	return gate_wire_call(ctx, FS_ROOT, r, NULL, NULL, NULL, 0, NULL, 0, NULL);
+}
+
 static int wire_sync(void *ctx, u64 handle, int data_only)
 {
 	kb2_fs_request_t r = {.opcode = KB2_FILESYSTEM_OP_FSYNC,
@@ -406,7 +424,7 @@ static const struct fs_test_ops wire_ops = {
 	.openat = wire_openat, .open = wire_open, .close = wire_close,
 	.dup = wire_dup, .io = wire_io, .seek = wire_seek,
 	.getdents = wire_getdents, .stat = wire_stat, .change = wire_change,
-	.readlink = wire_readlink, .truncate = wire_truncate, .sync = wire_sync,
+	.readlink = wire_readlink, .truncate = wire_truncate, .fallocate = wire_fallocate, .flock = wire_flock, .sync = wire_sync,
 	.metadata = wire_metadata, .fcntl = wire_fcntl,
 	.memfd = wire_memfd, .utimes = wire_utimes,
 };
@@ -672,6 +690,8 @@ static int gate_capability_policy(struct fs_gate *gate)
 		sizeof(forbidden), &reply, NULL, 0), -EACCES);
 	r.opcode = KB2_FILESYSTEM_OP_STATX;
 	r.flags = 0;
+	/* OPEN mode is not a STATX selector; do not carry 0600 across ops. */
+	r.mode = 0;
 	r.mask = STATX_BASIC_STATS;
 	POLICY_EXPECT(gate_authority_call(gate, false, 12, r, forbidden,
 		sizeof(forbidden), &reply, stat, sizeof(stat)), -ENOENT);
@@ -1425,6 +1445,95 @@ out:
 	return error;
 }
 
+#define KOBOX_SCOPED_OPEN_EXPECTED 1
+struct open_gate_stats { u64 id, retire, dirty, refresh, stale; struct task_struct *owner; };
+static int open_gate_create(void *ctx,u64 client,u64 seq,const u64 *p,size_t n,u64 f,u64 *id){struct open_gate_stats*s=ctx;*id=++s->id;return 0;}
+static int open_gate_retire(void *ctx,u64 id,int force){struct open_gate_stats*s=ctx;if(current==s->owner)s->retire++;return force||s->stale==id;}
+static int open_gate_dirty(void *ctx,u64 id,u64 *b,size_t n){struct open_gate_stats*s=ctx;if(current==s->owner)s->dirty++;memset(b,0,n*sizeof(*b));return 0;}
+static int open_gate_refresh(void *ctx,u64 id,const u64*p,size_t n){struct open_gate_stats*s=ctx;if(current==s->owner)s->refresh++;return 0;}
+static int open_gate_order(const void*a,const void*b){u64 x=*(const u64*)a,y=*(const u64*)b;return (x>y)-(x<y);}
+static struct fs_gate *open_swap_gate;
+static int open_swap_error;
+static bool open_swap_symlink;
+static void open_swap_name(void)
+{
+ struct fs_gate *g=open_swap_gate;
+ kobox_fs_open_resolved_hook=NULL;
+ if (open_swap_symlink) {
+  open_swap_error=gate_wire_call(g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_UNLINKAT},"open-symlink",NULL,NULL,0,NULL,0,NULL);
+  if (!open_swap_error) open_swap_error=gate_wire_call(g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_SYMLINKAT},"open-target","open-symlink",NULL,0,NULL,0,NULL);
+  return;
+ }
+ open_swap_error=gate_wire_call(g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_RENAMEAT2},"open-target","open-target-old",NULL,0,NULL,0,NULL);
+ if (!open_swap_error) open_swap_error=gate_wire_call(g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_RENAMEAT2},"open-target-new","open-target",NULL,0,NULL,0,NULL);
+}
+static int gate_open_exports(struct fs_gate *parent,struct vfsmount *mnt)
+{
+ struct fs_gate g={};struct open_gate_stats s={.owner=current};
+ struct kobox_linux_fs_shared_ops ops={.context=&s,.budget_bytes=16<<20,.create=open_gate_create,.retire=open_gate_retire,.collect_dirty=open_gate_dirty,.refresh=open_gate_refresh};
+ u64 target=0,h=0;unsigned level,i,j,k;int error;const unsigned levels[]={0,32,128};
+ memcpy(g.creds,parent->creds,sizeof(g.creds));g.role=FS_ROOT;g.credential_generation=1;
+ g.service=kobox_linux_fs_service_create(mnt,1);if(IS_ERR(g.service))return PTR_ERR(g.service);
+ error=kobox_linux_fs_service_register(g.service,1,1,g.creds[FS_ROOT],KB2_FILESYSTEM_RIGHTS_VALID_MASK);if(error)goto out;
+ error=kobox_linux_fs_service_shared_bind(g.service,&ops);if(error)goto out;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_CREAT|O_RDWR,.mode=0600},"open-target",NULL,NULL,0,NULL,0,&target);if(error)goto out;
+ for(level=0;level<ARRAY_SIZE(levels);level++){
+  for(i=level?levels[level-1]:0;i<levels[level];i++){
+   char name[48];snprintf(name,sizeof(name),"open-export-%u",i);
+   error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_CREAT|O_RDWR,.mode=0600},name,NULL,NULL,0,NULL,0,&h);if(error)goto out;
+   error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_FTRUNCATE,.handle=h,.offset=PAGE_SIZE},NULL,NULL,NULL,0,NULL,0,NULL);if(error)goto out;
+   {kb2_fs_response_t response;error=gate_authority_call(&g,true,1,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_SHARED_FILE_VMO,.client=1,.credential_generation=1,.handle=h,.length=PAGE_SIZE,.flags=1,.mask=3},NULL,0,&response,NULL,0);}if(error!=PAGE_SIZE){error=-EINVAL;goto out;}
+   error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);if(error)goto out;
+  }
+  for(k=0;k<4;k++){
+   const unsigned flags[]={O_RDWR,O_WRONLY,O_RDONLY,O_CREAT|O_RDWR};u64 wall[31],parts[3][31],retire=s.retire,dirty=s.dirty,refresh=s.refresh;
+   for(j=0;j<31;j++){
+    struct kobox_fs_open_sample sample={.owner=current};u64 begin=ktime_get_ns();kobox_fs_open_sample=&sample;
+    error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=flags[k],.mode=(flags[k]&O_CREAT)?0600:0},"open-target",NULL,NULL,0,NULL,0,&h);
+    wall[j]=ktime_get_ns()-begin;kobox_fs_open_sample=NULL;if(error)goto out;
+    for(i=0;i<3;i++)parts[i][j]=sample.stamps[i+1]-sample.stamps[i];
+    error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);if(error)goto out;
+   }
+   sort(wall,31,sizeof(u64),open_gate_order,NULL);for(i=0;i<3;i++)sort(parts[i],31,sizeof(u64),open_gate_order,NULL);
+   pr_info("FS_OPEN_BENCH exports=%u flags=%u n=31 p50_ns=%llu p99_ns=%llu enter_ns=%llu body_ns=%llu leave_ns=%llu retire=%llu dirty=%llu refresh=%llu\n",levels[level],flags[k],wall[15],wall[30],parts[0][15],parts[1][15],parts[2][15],s.retire-retire,s.dirty-dirty,s.refresh-refresh);
+#ifdef KOBOX_SCOPED_OPEN_EXPECTED
+   if(s.retire!=retire||s.dirty!=dirty||s.refresh!=refresh){error=-EINVAL;goto out;}
+#endif
+  }
+ }
+ {u64 before=s.refresh;error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_RDWR|O_TRUNC},"open-export-0",NULL,NULL,0,NULL,0,&h);if(error||s.refresh==before){error=-EINVAL;goto out;}gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);}
+ s.stale=2;{u64 before=s.retire;error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_WRONLY},"open-export-1",NULL,NULL,0,NULL,0,&h);if(error||s.retire==before){error=-EINVAL;goto out;}gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);}
+ /* Interleave real rename calls exactly after namei returned the path.
+  * Opening the original pathname again would return NEW, not the pinned OLD. */
+ {char value[3];u64 replacement;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_PWRITE,.handle=target,.length=3},NULL,NULL,"OLD",3,NULL,0,NULL);if(error!=3){error=-EINVAL;goto out;}
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_CREAT|O_EXCL|O_RDWR,.mode=0600},"open-target-new",NULL,NULL,0,NULL,0,&replacement);if(error)goto out;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_PWRITE,.handle=replacement,.length=3},NULL,NULL,"NEW",3,NULL,0,NULL);if(error!=3){error=-EINVAL;goto out;}
+ gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=replacement},NULL,NULL,NULL,0,NULL,0,NULL);
+ open_swap_gate=&g;open_swap_symlink=false;open_swap_error=0;kobox_fs_open_resolved_hook=open_swap_name;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_RDWR},"open-target",NULL,NULL,0,NULL,0,&h);kobox_fs_open_resolved_hook=NULL;if(error||open_swap_error){error=-EINVAL;goto out;}
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_PREAD,.handle=h,.length=3},NULL,NULL,NULL,0,value,3,NULL);
+ if(error!=3||memcmp(value,"OLD",3)){error=-EINVAL;goto out;}
+ gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);
+ }
+ {char value[3];
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_SYMLINKAT},"open-target-old","open-symlink",NULL,0,NULL,0,NULL);if(error)goto out;
+ open_swap_symlink=true;open_swap_error=0;kobox_fs_open_resolved_hook=open_swap_name;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_RDWR},"open-symlink",NULL,NULL,0,NULL,0,&h);kobox_fs_open_resolved_hook=NULL;if(error||open_swap_error){error=-EINVAL;goto out;}
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_PREAD,.handle=h,.length=3},NULL,NULL,NULL,0,value,3,NULL);if(error!=3||memcmp(value,"OLD",3)){error=-EINVAL;goto out;}
+ gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);
+ }
+ {u64 retire=s.retire,dirty=s.dirty,refresh=s.refresh;
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_CREAT|O_RDWR,.mode=0600},"open-new",NULL,NULL,0,NULL,0,&h);if(error)goto out;
+ gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);
+ error=gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_TMPFILE|O_RDWR,.mode=0600},".",NULL,NULL,0,NULL,0,&h);if(error)goto out;
+ gate_wire_call(&g,FS_ROOT,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLOSE,.handle=h},NULL,NULL,NULL,0,NULL,0,NULL);
+ if(s.retire!=retire||s.dirty!=dirty||s.refresh!=refresh){error=-EINVAL;goto out;}
+ }
+ error=0;pr_info("FS_OPEN_GUARD unrelated_callbacks=0 truncate_refresh=PASS stale_reap=PASS rename_same_path=PASS symlink_same_path=PASS create_tmpfile=PASS\n");
+ out:kobox_fs_open_resolved_hook=NULL;kobox_fs_open_sample=NULL;kobox_linux_fs_service_destroy(g.service);return error;
+}
+
 static int gate_filesystem(struct fs_gate *gate, struct vfsmount *mnt,
 			   struct fs_test_report *results,
 			   struct kobox_fs_port_report *report)
@@ -1479,6 +1588,8 @@ static int gate_filesystem(struct fs_gate *gate, struct vfsmount *mnt,
 		error = kobox_linux_fs_shared_verify();
 	if (!error)
 		error = kobox_linux_fs_workers_verify(mnt, gate->creds[FS_ROOT]);
+	if (!error)
+		error = gate_open_exports(gate, mnt);
 	kobox_linux_fs_service_destroy(gate->service);
 	gate->service = NULL;
 	if (!error)
@@ -1645,4 +1756,116 @@ out_creds:
 	if (!error && report->warnings)
 		error = -EINVAL;
 	return error;
+}
+
+/* A separate entry keeps lock regression checks independent of the complete
+ * filesystem suite. Both ports are process owners, not duplicated OFDs. */
+static int gate_record_lock_wire(struct vfsmount *mnt,const struct cred *cred)
+{
+    struct fs_gate g={.service=kobox_linux_fs_service_create(mnt,1)};
+    kb2_fs_credentials_t credentials={0};
+    u8 bytes[KB2_FILESYSTEM_CREDENTIALS_SIZE],payload[KB2_FILESYSTEM_RECORD_LOCK_SIZE];
+    kb2_fs_response_t reply;
+    kb2_fs_record_lock_t conflict;
+    u64 handles[2];int error=0;
+    (void)cred;
+    if (IS_ERR(g.service)) return PTR_ERR(g.service);
+#define WIRE_CHECK(expr) do {if (!(expr)){pr_err("record lock wire failure line=%u\n",__LINE__);error=-EINVAL;goto out;}} while(0)
+    WIRE_CHECK(!kb2_fs_credentials_encode(bytes,sizeof(bytes),&credentials));
+    for (unsigned i=0;i<2;i++) {
+        WIRE_CHECK(!gate_authority_call(&g,true,0,(kb2_fs_request_t){
+            .opcode=KB2_FILESYSTEM_OP_CLIENT_REGISTER,.client=i+1,
+            .credential_generation=1,.offset=301+i,.capabilities=KB2_FILESYSTEM_RIGHTS_VALID_MASK,
+            .data={KB2_FILESYSTEM_REQUEST_SIZE,sizeof(bytes)}},bytes,sizeof(bytes),&reply,NULL,0));
+        const char name[]="wire-lock";
+        WIRE_CHECK(!gate_authority_call(&g,false,i+1,(kb2_fs_request_t){
+            .opcode=KB2_FILESYSTEM_OP_OPENAT2,.flags=O_RDWR|(i?0:O_CREAT),.mode=i?0:0666,
+            .path={KB2_FILESYSTEM_REQUEST_SIZE,sizeof(name)}},name,sizeof(name),&reply,NULL,0));
+        handles[i]=reply.handle;
+    }
+    WIRE_CHECK(!gate_authority_call(&g,false,1,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_FCNTL,
+        .handle=handles[0],.flags=F_SETLK,.mode=F_WRLCK,.offset=100,.length=20},NULL,0,&reply,NULL,0));
+    WIRE_CHECK(!gate_authority_call(&g,false,2,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_FCNTL,
+        .handle=handles[1],.flags=F_GETLK,.mode=F_RDLCK,.offset=105,.length=1},NULL,0,&reply,payload,sizeof(payload)));
+    WIRE_CHECK(!kb2_fs_record_lock_decode(payload,reply.data_length,&conflict)&&conflict.type==F_WRLCK&&conflict.start==100&&conflict.length==20&&conflict.pid==301);
+    WIRE_CHECK(gate_authority_call(&g,false,2,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_FCNTL,
+        .client=1,.handle=handles[1],.flags=F_GETLK,.mode=F_RDLCK},NULL,0,&reply,payload,sizeof(payload))==-EACCES);
+    WIRE_CHECK(gate_authority_call(&g,true,0,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_CLIENT_CREDENTIALS,
+        .client=1,.credential_generation=2,.offset=999,.capabilities=KB2_FILESYSTEM_RIGHTS_VALID_MASK,
+        .data={KB2_FILESYSTEM_REQUEST_SIZE,sizeof(bytes)}},bytes,sizeof(bytes),&reply,NULL,0)==-EPERM);
+    WIRE_CHECK(!kobox_linux_fs_service_unregister(g.service,1));
+    WIRE_CHECK(!gate_authority_call(&g,false,2,(kb2_fs_request_t){.opcode=KB2_FILESYSTEM_OP_FCNTL,
+        .handle=handles[1],.flags=F_GETLK,.mode=F_WRLCK,.offset=100,.length=20},NULL,0,&reply,payload,sizeof(payload)));
+    WIRE_CHECK(!kb2_fs_record_lock_decode(payload,reply.data_length,&conflict)&&conflict.type==F_UNLCK);
+out:
+    kobox_linux_fs_service_destroy(g.service);
+    return error;
+#undef WIRE_CHECK
+}
+
+int kobox_linux_fs_record_lock_verify(const struct kobox_fs_image *image,
+    struct kobox_fs_port_report *report)
+{
+    struct file_system_type *type;
+    struct vfsmount *mnt;
+    struct kobox_linux_fs_port *a=NULL,*b=NULL;
+    const struct cred *cred=get_current_cred();
+    struct open_how how={.flags=O_CREAT|O_RDWR,.mode=0600};
+    kb2_fs_record_lock_t conflict;
+    u64 ha=0,hb=0,alias=0;
+    int error=-ENOMEM;
+    (void)image;
+    type=get_fs_type("tmpfs");
+    if (!type) goto done;
+    mnt=kern_mount(type);put_filesystem(type);
+    if (IS_ERR(mnt)) {error=PTR_ERR(mnt);goto done;}
+    a=kobox_linux_fs_create(mnt);b=kobox_linux_fs_create(mnt);
+    if (IS_ERR(a)||IS_ERR(b)) {error=-ENOMEM;goto out;}
+    kobox_linux_fs_set_pid(a,101);kobox_linux_fs_set_pid(b,202);
+#define LOCK_CHECK(expr) do {report->line=__LINE__;if (!(expr)){error=-EINVAL;goto out;}report->tmpfs.checks++;} while(0)
+    /* A regular tmpfs mount must use Linux's physical-RAM default, not the
+     * native launcher's former fixed 512 MiB budget. Internal kern_mount is
+     * intentionally unlimited and cannot be used for this default-size test. */
+    {
+        struct file_system_type *tmp=get_fs_type("tmpfs");
+        struct vfsmount *regular=vfs_kern_mount(tmp,0,"tmpfs",NULL);
+        struct kstatfs stat;put_filesystem(tmp);
+        LOCK_CHECK(!IS_ERR(regular));
+        int rc=regular->mnt_sb->s_op->statfs(regular->mnt_root,&stat);
+        kern_unmount(regular);
+        pr_info("FS_RAM_POLICY total_pages=%lu tmpfs_blocks=%llu\n",totalram_pages(),stat.f_blocks);
+        LOCK_CHECK(!rc && stat.f_blocks==totalram_pages()/2);
+    }
+    LOCK_CHECK(!kobox_linux_fs_openat(a,cred,0,"record-lock",&how,0,&ha));
+    how.flags=O_RDWR;how.mode=0;
+    LOCK_CHECK(!kobox_linux_fs_openat(b,cred,0,"record-lock",&how,0,&hb));
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_WRLCK,100,20));
+    LOCK_CHECK(!kobox_linux_fs_getlk(a,cred,ha,F_WRLCK,100,20,&conflict)&&conflict.type==F_UNLCK);
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_RDLCK,105,2,&conflict)&&conflict.type==F_WRLCK&&conflict.start==100&&conflict.length==20&&conflict.pid==101);
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_UNLCK,0,0));
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_RDLCK,120,-20));
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_RDLCK,100,20,&conflict)&&conflict.type==F_UNLCK);
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,100,20,&conflict)&&conflict.type==F_RDLCK&&conflict.start==100&&conflict.length==20&&conflict.pid==101);
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_UNLCK,0,0));
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_WRLCK,4096,0));
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,8192,1,&conflict)&&conflict.length==0&&conflict.pid==101);
+    LOCK_CHECK(kobox_linux_fs_getlk(b,cred,hb,F_UNLCK,0,0,&conflict)==-EINVAL);
+    LOCK_CHECK(kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,0,-1,&conflict)==-EINVAL);
+    LOCK_CHECK(kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,OFFSET_MAX,2,&conflict)==-EOVERFLOW);
+    LOCK_CHECK(!kobox_linux_fs_dup_to(a,a,cred,ha,&alias));
+    LOCK_CHECK(!kobox_linux_fs_close(a,cred,alias));alias=0;
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,8192,1,&conflict)&&conflict.type==F_UNLCK);
+    LOCK_CHECK(!kobox_linux_fs_setlk(a,cred,ha,F_WRLCK,0,1));
+    LOCK_CHECK(!kobox_linux_fs_close(a,cred,ha));ha=0;
+    LOCK_CHECK(!kobox_linux_fs_getlk(b,cred,hb,F_WRLCK,0,1,&conflict)&&conflict.type==F_UNLCK);
+    LOCK_CHECK(!gate_record_lock_wire(mnt,cred));
+    error=0;
+out:
+    if (!IS_ERR_OR_NULL(a)) {if(alias)kobox_linux_fs_close(a,cred,alias);if(ha)kobox_linux_fs_close(a,cred,ha);kobox_linux_fs_destroy(a);}
+    if (!IS_ERR_OR_NULL(b)) {if(hb)kobox_linux_fs_close(b,cred,hb);kobox_linux_fs_destroy(b);}
+    kern_unmount(mnt);gate_drain();
+done:
+    put_cred(cred);report->result=error;report->stage=1;
+    return error;
+#undef LOCK_CHECK
 }

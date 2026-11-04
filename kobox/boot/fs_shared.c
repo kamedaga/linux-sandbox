@@ -17,8 +17,13 @@
 #include <linux/sort.h>
 #include <linux/sched/signal.h>
 #include <linux/rwsem.h>
+#include <linux/xarray.h>
+
+struct fs_shared_mapping { struct list_head exports; };
 
 struct fs_shared_export {
+	struct list_head mapping_link;
+	struct fs_shared_mapping *group;
 	struct list_head link;
 	struct file *file;
 	struct vm_area_struct *vma;
@@ -34,6 +39,8 @@ struct fs_shared_export {
 struct kobox_linux_fs_shared {
 	struct rw_semaphore lock;
 	struct list_head exports;
+	/* Index lifetime is covered by lock; exports retain mapping through file. */
+	struct xarray by_mapping;
 	struct delayed_work maintenance;
 	struct kobox_linux_fs_shared_ops ops;
 	u64 bytes;
@@ -139,12 +146,10 @@ static void fs_shared_put_pages(struct folio **folios, size_t count)
 static void fs_shared_restore_eviction(struct kobox_linux_fs_shared *shared,
 	struct fs_shared_export *view)
 {
-	struct fs_shared_export *other;
 	if (!view->restore_evictable)
 		return;
-	list_for_each_entry(other, &shared->exports, link)
-		if (other != view && other->file->f_mapping == view->file->f_mapping)
-			return;
+	if (view->group && !list_empty(&view->group->exports))
+		return;
 	mapping_clear_unevictable(view->file->f_mapping);
 }
 
@@ -270,7 +275,12 @@ static void fs_shared_drop(struct kobox_linux_fs_shared *shared,
 {
 	fs_shared_dirty_all(view);
 	list_del(&view->link);
-	fs_shared_restore_eviction(shared, view);
+ list_del(&view->mapping_link);
+ fs_shared_restore_eviction(shared, view);
+ if (list_empty(&view->group->exports)) {
+  xa_erase(&shared->by_mapping, (unsigned long)view->file->f_mapping);
+  kfree(view->group);
+ }
 	shared->bytes -= view->charged;
 	if (view->writable)
 		mapping_unmap_writable(view->file->f_mapping);
@@ -278,8 +288,12 @@ static void fs_shared_drop(struct kobox_linux_fs_shared *shared,
 	kvfree(view->pages);
 	kvfree(view->dirty);
 	fs_shared_unprepare(view);
-	fput(view->file);
-	kfree(view);
+ /* Reaping is an admission barrier, not eventual garbage collection. The
+  * last exported writable OFD must release i_writecount before an exec open
+  * or seal request observes it. These regular-file pins cannot reenter the
+  * native registry; do not flush unrelated global delayed-fput work. */
+ __fput_sync(view->file);
+ kfree(view);
 }
 
 static void fs_shared_maintenance(struct work_struct *work)
@@ -321,6 +335,7 @@ struct kobox_linux_fs_shared *kobox_linux_fs_shared_create(void)
 		return ERR_PTR(-ENOMEM);
 	init_rwsem(&shared->lock);
 	INIT_LIST_HEAD(&shared->exports);
+	xa_init(&shared->by_mapping);
 	INIT_DELAYED_WORK(&shared->maintenance, fs_shared_maintenance);
 	return shared;
 }
@@ -373,32 +388,50 @@ void kobox_linux_fs_shared_destroy(struct kobox_linux_fs_shared *shared)
 	 * registry. Failed revocation is retained ownership, not a safe unpin.
 	 */
 	BUG_ON(kobox_linux_fs_shared_close(shared));
+	xa_destroy(&shared->by_mapping);
 	kfree(shared);
 }
 
 static bool fs_shared_matches(const struct fs_shared_export *view,
 	const struct kobox_linux_fs_shared_guard *guard)
 {
-	return !guard->mapping || view->file->f_mapping == guard->mapping;
+	return (!guard->mapping || view->file->f_mapping == guard->mapping) &&
+		(!guard->superblock || file_inode(view->file)->i_sb == guard->superblock);
 }
 
-static bool fs_shared_has_exports(struct kobox_linux_fs_shared *shared,
-	const struct kobox_linux_fs_shared_guard *guard)
+/* A target inode lookup must not walk all other native mappings. Index
+ * entries disappear only after the last export releases its retained file. */
+static struct fs_shared_export *fs_shared_next(struct kobox_linux_fs_shared *shared,
+ const struct kobox_linux_fs_shared_guard *guard, struct fs_shared_export *previous)
 {
-	struct fs_shared_export *view;
-	list_for_each_entry(view, &shared->exports, link)
-		if (fs_shared_matches(view, guard))
-			return true;
-	return false;
+ struct list_head *head, *node;
+ if (guard->mapping) {
+  struct fs_shared_mapping *group=xa_load(&shared->by_mapping,(unsigned long)guard->mapping);
+  if (!group) return NULL;
+  head=&group->exports;node=previous?previous->mapping_link.next:head->next;
+  return node==head?NULL:list_entry(node,struct fs_shared_export,mapping_link);
+ }
+ head=&shared->exports;node=previous?previous->link.next:head->next;
+ for (;node!=head;node=node->next) {
+  struct fs_shared_export *view=list_entry(node,struct fs_shared_export,link);
+  if (fs_shared_matches(view,guard)) return view;
+ }
+ return NULL;
+}
+static bool fs_shared_has_exports(struct kobox_linux_fs_shared *shared,
+ const struct kobox_linux_fs_shared_guard *guard)
+{
+ return fs_shared_next(shared,guard,NULL)!=NULL;
 }
 
 static int fs_shared_enter_mapping(struct kobox_linux_fs_shared *shared, bool nowait,
-	bool publishing, struct address_space *mapping,
+	bool publishing, struct address_space *mapping, struct super_block *superblock,
 	struct kobox_linux_fs_shared_guard *guard)
 {
 	struct fs_shared_export *view, *next;
 	guard->mode = KOBOX_FS_SHARED_NONE;
 	guard->mapping = mapping;
+	guard->superblock = superblock;
 	if (!shared)
 		return 0;
 	/* Publication can allocate, run VFS mmap callbacks and enter native IPC;
@@ -440,11 +473,11 @@ static int fs_shared_enter_mapping(struct kobox_linux_fs_shared *shared, bool no
 	guard->mode = KOBOX_FS_SHARED_WRITE;
 	// Reap before VFS observes mmap-writer counters: after the last native
 	// munmap, F_ADD_SEALS must not see a fictitious writer until the timer fires.
-	list_for_each_entry_safe(view, next, &shared->exports, link)
-		if (fs_shared_matches(view, guard) &&
-		    shared->ops.retire(shared->ops.context, view->id, 0) == 1)
-			fs_shared_drop(shared, view);
-	list_for_each_entry(view, &shared->exports, link) {
+	for (view=fs_shared_next(shared,guard,NULL);view;view=next) {
+  next=fs_shared_next(shared,guard,view);
+  if (shared->ops.retire(shared->ops.context,view->id,0)==1) fs_shared_drop(shared,view);
+ }
+ for (view=fs_shared_next(shared,guard,NULL);view;view=fs_shared_next(shared,guard,view)) {
 		int error;
 		if (!fs_shared_matches(view, guard))
 			continue;
@@ -461,7 +494,7 @@ static int fs_shared_enter_mapping(struct kobox_linux_fs_shared *shared, bool no
 int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *shared, bool nowait,
 	bool publishing, struct kobox_linux_fs_shared_guard *guard)
 {
-	return fs_shared_enter_mapping(shared, nowait, publishing, NULL, guard);
+	return fs_shared_enter_mapping(shared, nowait, publishing, NULL, NULL, guard);
 }
 
 int kobox_linux_fs_shared_enter_file(struct kobox_linux_fs_shared *shared, bool nowait,
@@ -470,7 +503,21 @@ int kobox_linux_fs_shared_enter_file(struct kobox_linux_fs_shared *shared, bool 
 	/* Request admission pins this exact struct file through leave. Never use
 	 * an untrusted inode number or a handle that could have been recycled. */
 	return fs_shared_enter_mapping(shared, nowait, publishing,
-		file && S_ISREG(file_inode(file)->i_mode) ? file->f_mapping : NULL, guard);
+		file ? file->f_mapping : NULL, NULL, guard);
+}
+
+/* The pinned namei result is the very path subsequently opened, not an
+ * inode guessed from a string then looked up again after native IPC. */
+int kobox_linux_fs_shared_enter_path(struct kobox_linux_fs_shared *shared, bool nowait,
+ const struct path *path, struct kobox_linux_fs_shared_guard *guard)
+{
+ return fs_shared_enter_mapping(shared,nowait,false,d_inode(path->dentry)->i_mapping,NULL,guard);
+}
+int kobox_linux_fs_shared_enter_sb(struct kobox_linux_fs_shared *shared, bool nowait,
+ struct file *file, struct kobox_linux_fs_shared_guard *guard)
+{
+ if (!file) return -EBADF;
+ return fs_shared_enter_mapping(shared,nowait,false,NULL,file_inode(file)->i_sb,guard);
 }
 
 /* Buffered reads consume the same folios as a native shared alias, so they
@@ -486,6 +533,7 @@ int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *shared,
 
 	guard->mode = KOBOX_FS_SHARED_NONE;
 	guard->mapping = file ? file->f_mapping : NULL;
+	guard->superblock = NULL;
 	if (!shared)
 		return 0;
 	if (nowait) {
@@ -525,7 +573,7 @@ int kobox_linux_fs_shared_leave(struct kobox_linux_fs_shared *shared, bool refre
 		return 0;
 	}
 	if (refresh)
-		list_for_each_entry(view, &shared->exports, link) {
+		for (view=fs_shared_next(shared,guard,NULL);view;view=fs_shared_next(shared,guard,view)) {
 			struct folio **folios = NULL;
 			u64 *pages = NULL;
 			int status;
@@ -784,7 +832,7 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	count = length >> PAGE_SHIFT;
 	if (count > (U64_MAX - sizeof(*view)) / (2 * (sizeof(u64) + sizeof(void *))))
 		return -ENOMEM;
-	charged = sizeof(*view) + count * 2 * (sizeof(u64) + sizeof(void *));
+	charged = sizeof(*view) + sizeof(struct fs_shared_mapping) + count * 2 * (sizeof(u64) + sizeof(void *));
 	dirty_bytes = (flags & 1) ? DIV_ROUND_UP_ULL(count, 64) * sizeof(u64) : 0;
 	if (charged > U64_MAX - dirty_bytes)
 		return -ENOMEM;
@@ -795,6 +843,15 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	if (!view)
 		return -ENOMEM;
 	view->file = get_file(file);
+ view->group=xa_load(&shared->by_mapping,(unsigned long)file->f_mapping);
+ if (!view->group) {
+  view->group=kzalloc(sizeof(*view->group),GFP_KERNEL);
+  if (!view->group) { fput(view->file);kfree(view);return -ENOMEM; }
+  INIT_LIST_HEAD(&view->group->exports);
+  error=xa_insert(&shared->by_mapping,(unsigned long)file->f_mapping,view->group,GFP_KERNEL);
+  if (error) { kfree(view->group);fput(view->file);kfree(view);return error; }
+ }
+
 	view->offset = offset;
 	view->count = count;
 	view->flags = flags;
@@ -812,8 +869,7 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	if (error)
 		goto fail;
 	view->restore_evictable = !mapping_unevictable(file->f_mapping);
-	list_for_each_entry(other, &shared->exports, link)
-		if (other->file->f_mapping == file->f_mapping) {
+	list_for_each_entry(other, &view->group->exports, mapping_link) {
 			view->restore_evictable = other->restore_evictable;
 			break;
 		}
@@ -842,13 +898,18 @@ int kobox_linux_fs_shared_export(struct kobox_linux_fs_shared *shared,
 	}
 	shared->bytes += charged;
 	list_add_tail(&view->link, &shared->exports);
+	list_add_tail(&view->mapping_link, &view->group->exports);
 	fs_shared_dirty_all(view);
 	*id = view->id;
 	*file_size = i_size_read(file_inode(file));
 	file_accessed(file);
 	return 0;
 fail:
-	fs_shared_restore_eviction(shared, view);
+ fs_shared_restore_eviction(shared, view);
+ if (view->group && list_empty(&view->group->exports)) {
+  xa_erase(&shared->by_mapping,(unsigned long)view->file->f_mapping);
+  kfree(view->group);
+ }
 	fs_shared_put_pages(view->folios, view->count);
 	kvfree(view->pages);
 	kvfree(view->dirty);

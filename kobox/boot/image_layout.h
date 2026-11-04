@@ -10,6 +10,8 @@
 /* 64 MiB of struct-page metadata covers a filesystem core with 4 GiB RAM.
  * This reserves address space; backing is populated only for present RAM. */
 #define KOBOX_CORE_VMEMMAP_SIZE 0x04000000
+/* Host-side upper bound; boot checks the actual Linux struct page size. */
+#define KOBOX_CORE_PAGE_METADATA_MAX_BYTES 128
 /* A single PCI BAR mapping can consume 256 MiB plus vmalloc guard pages.
  * Keep room for other allocations, while leaving the native launcher,
  * process stack and read-only launch data below this window. The exclusive

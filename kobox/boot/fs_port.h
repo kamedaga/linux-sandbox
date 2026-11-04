@@ -8,6 +8,10 @@
 #include <uapi/linux/openat2.h>
 
 struct kobox_linux_fs_port;
+struct kb2_fs_record_lock;
+void kobox_linux_fs_set_pid(struct kobox_linux_fs_port *, pid_t);
+int kobox_linux_fs_getlk(struct kobox_linux_fs_port *,const struct cred *,
+    u64,unsigned int,loff_t,loff_t,struct kb2_fs_record_lock *);
 struct kobox_linux_fs_snapshot { u32 inode_generation, flags;u64 change_cookie; };
 int kobox_linux_fs_snapshot_stat(struct kobox_linux_fs_port *, const struct cred *,
     u64 handle, struct kstat *, struct kobox_linux_fs_snapshot *);
@@ -77,6 +81,8 @@ int kobox_linux_fs_utimensat(struct kobox_linux_fs_port *port,
 long kobox_linux_fs_fcntl(struct kobox_linux_fs_port *port,
 			 const struct cred *cred, u64 handle,
 			 unsigned int command, unsigned long argument);
+int kobox_linux_fs_flock(struct kobox_linux_fs_port *, const struct cred *,
+    u64 handle, unsigned int operation);
 int kobox_linux_fs_setlk(struct kobox_linux_fs_port *,const struct cred *,
     u64 handle,unsigned int type,loff_t start,loff_t length);
 /* sync has no fd operand and applies to this sandbox's Linux instance. */
@@ -147,7 +153,15 @@ ssize_t kobox_linux_fs_readlink(struct kobox_linux_fs_port *port,
 			       void *buffer, size_t count);
 int kobox_linux_fs_truncate(struct kobox_linux_fs_port *port,
 			   const struct cred *cred, u64 handle, loff_t length);
+int kobox_linux_fs_fallocate(struct kobox_linux_fs_port *port,
+	const struct cred *cred, u64 handle, int mode, loff_t offset, loff_t length);
 int kobox_linux_fs_fsync(struct kobox_linux_fs_port *port,
 			const struct cred *cred, u64 handle, bool data_only);
 
+#ifdef KOBOX_RUNTIME_GATES
+struct kobox_fs_open_sample { u64 stamps[4]; struct task_struct *owner; };
+extern struct kobox_fs_open_sample *kobox_fs_open_sample;
+void kobox_fs_open_stamp(unsigned int index);
+extern void (*kobox_fs_open_resolved_hook)(void);
+#endif
 #endif /* KOBOX_BOOT_FS_PORT_H */

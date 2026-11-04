@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/fsuid.h>
+#include <sys/file.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -195,6 +196,18 @@ static int native_truncate(void *ctx, uint64_t handle, int64_t length)
 	return ftruncate(handle, length) ? -errno : 0;
 }
 
+static int native_flock(void *ctx, uint64_t handle, unsigned int operation)
+{
+	(void)ctx;
+	return flock(handle, operation | LOCK_NB) ? -errno : 0;
+}
+
+static int native_fallocate(void *ctx, uint64_t handle, int mode, int64_t offset, int64_t length)
+{
+	(void)ctx;
+	return fallocate(handle, mode, offset, length) ? -errno : 0;
+}
+
 static int native_sync(void *ctx, uint64_t handle, int data_only)
 {
 	int result;
@@ -280,7 +293,7 @@ static const struct fs_test_ops native_ops = {
 	.open = native_open, .close = native_close, .dup = native_dup,
 	.io = native_io, .seek = native_seek, .getdents = native_getdents,
 	.stat = native_stat, .change = native_change, .readlink = native_readlink,
-	.truncate = native_truncate, .sync = native_sync,
+	.truncate = native_truncate, .fallocate = native_fallocate, .flock = native_flock, .sync = native_sync,
 	.metadata = native_metadata, .fcntl = native_fcntl,
 	.memfd = native_memfd, .utimes = native_utimes,
 };

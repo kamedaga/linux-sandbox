@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <linux/openat2.h>
 #include <linux/fs.h>
@@ -58,6 +59,8 @@ struct fs_test_ops {
 		      const char *to, unsigned int flags);
 	int64_t (*readlink)(void *ctx, const char *name, void *buf, size_t count);
 	int (*truncate)(void *ctx, uint64_t handle, int64_t length);
+	int (*flock)(void *ctx, uint64_t handle, unsigned int operation);
+	int (*fallocate)(void *ctx, uint64_t handle, int mode, int64_t offset, int64_t length);
 	int (*sync)(void *ctx, uint64_t handle, int data_only);
 	int (*metadata)(void *ctx, int role, int operation, uint64_t handle,
 			const char *path, uint64_t first, uint64_t second,

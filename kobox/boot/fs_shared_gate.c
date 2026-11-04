@@ -6,6 +6,8 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/shmem_fs.h>
+#include <linux/memfd.h>
+#include <linux/namei.h>
 #include <linux/completion.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
@@ -24,9 +26,11 @@ static int gate_refresh(void *context, u64 id, const u64 *pages, size_t count)
 	return 0;
 }
 
+static u64 gate_stale_id;
+
 static int gate_retire(void *context, u64 id, int force)
 {
-	return force ? 1 : 0;
+	return force || (gate_stale_id && id == gate_stale_id);
 }
 
 struct publication_gate {
@@ -184,6 +188,43 @@ static int gate_collect_dirty(void *context, u64 id, u64 *bitmap, size_t words)
 	return 0;
 }
 
+static int gate_stale_accounting(bool seal)
+{
+ struct kobox_linux_fs_shared *shared;
+ struct kobox_linux_fs_shared_guard guard={};
+ struct file *writer, *reader=NULL;
+ u64 next=0,id=0,size=0;
+ struct kobox_linux_fs_shared_ops ops={.context=&next,.budget_bytes=1<<20,
+  .create=gate_create,.retire=gate_retire,.refresh=gate_refresh,.collect_dirty=gate_collect_dirty};
+ int error;
+ writer=shmem_file_setup("stale-writer-gate",PAGE_SIZE,VM_NORESERVE);
+ if(IS_ERR(writer))return PTR_ERR(writer);
+ SHMEM_I(file_inode(writer))->seals=0;
+ /* shmem_file_setup is a kernel pseudo-file, not a userspace writable
+  * open; acquire a real VFS writer OFD so i_writecount is actually tested. */
+ {struct file *real=file_open_root(&writer->f_path,"",O_RDWR,0);
+  if(IS_ERR(real)){fput(writer);return PTR_ERR(real);}fput(writer);writer=real;}
+ shared=kobox_linux_fs_shared_create();if(IS_ERR(shared)){fput(writer);return PTR_ERR(shared);}
+ error=kobox_linux_fs_shared_bind(shared,&ops);if(error)goto out;
+ error=kobox_linux_fs_shared_enter(shared,false,true,&guard);if(error)goto out;
+ error=kobox_linux_fs_shared_export(shared,writer,1,1,0,PAGE_SIZE,1,3,&id,&size);
+ kobox_linux_fs_shared_leave(shared,false,&guard);if(error)goto out;
+ reader=file_open_root(&writer->f_path,"",O_RDONLY,0);
+ if(IS_ERR(reader)){error=PTR_ERR(reader);reader=NULL;goto out;}
+ if(seal){if(memfd_fcntl(writer,F_ADD_SEALS,F_SEAL_WRITE)!=-EBUSY){error=-EINVAL;goto out;}}
+ else {
+  fput(writer);writer=NULL;
+  {int status=deny_write_access(reader);if(status!=-ETXTBSY){if(!status)allow_write_access(reader);error=-EINVAL;goto out;}}
+ }
+ gate_stale_id=id;
+ error=kobox_linux_fs_shared_enter_file(shared,false,false,reader,&guard);if(error)goto out;
+ if(seal)error=memfd_fcntl(writer,F_ADD_SEALS,F_SEAL_WRITE);
+ else {error=deny_write_access(reader);if(!error)allow_write_access(reader);}
+ kobox_linux_fs_shared_leave(shared,false,&guard);
+ if(!error)pr_info("FS_SHARED_STALE %s=PASS\n",seal?"seal":"exec_writer");
+ out:gate_stale_id=0;kobox_linux_fs_shared_destroy(shared);if(reader)fput(reader);if(writer)fput(writer);return error;
+}
+
 int kobox_linux_fs_shared_verify(void)
 {
 	struct kobox_linux_fs_shared *shared;
@@ -199,6 +240,8 @@ int kobox_linux_fs_shared_verify(void)
 	long result;
 	int error;
 
+	error=gate_stale_accounting(true);if(error)return error;
+	error=gate_stale_accounting(false);if(error)return error;
 	file = shmem_file_setup("native-ro-pin-gate", PAGE_SIZE, VM_NORESERVE);
 	if (IS_ERR(file))
 		return PTR_ERR(file);

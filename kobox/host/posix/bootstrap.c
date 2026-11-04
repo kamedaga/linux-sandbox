@@ -17,7 +17,8 @@ int kobox_posix_bootstrap_prepare(struct kobox_posix_bootstrap *bootstrap,
 	if (!bootstrap || bootstrap->attempted || !core || !backing ||
 	    !backing->initialized || !profile ||
 	    backing->size != profile->ram_size ||
-	    profile->vmemmap_size != KOBOX_CORE_VMEMMAP_SIZE ||
+	    !profile->vmemmap_size || (profile->vmemmap_size & 4095) ||
+        profile->vmemmap_size < profile->ram_size / 4096 * KOBOX_CORE_PAGE_METADATA_MAX_BYTES ||
 	    profile->vmalloc_size != KOBOX_CORE_VMALLOC_SIZE ||
 	    profile->image_physical_base != KOBOX_CORE_PHYSICAL_BASE)
 		return EINVAL;
@@ -27,8 +28,12 @@ int kobox_posix_bootstrap_prepare(struct kobox_posix_bootstrap *bootstrap,
 						profile->ram_size);
 	if (status)
 		return status;
-	status = kobox_posix_memory_window_init_at(&bootstrap->vmemmap,
-		(void *)(uintptr_t)KOBOX_CORE_VMEMMAP_BASE, profile->vmemmap_size);
+    /* The core receives the base in its memory layout. Large arenas must
+     * not collide with the low fixed image/vmalloc address windows. */
+    status = profile->vmemmap_size <= KOBOX_CORE_VMEMMAP_SIZE ?
+        kobox_posix_memory_window_init_at(&bootstrap->vmemmap,
+            (void *)(uintptr_t)KOBOX_CORE_VMEMMAP_BASE, profile->vmemmap_size) :
+        kobox_posix_memory_window_init(&bootstrap->vmemmap, profile->vmemmap_size);
 	if (status)
 		return status;
 	status = kobox_posix_memory_window_init_at(&bootstrap->vmalloc,

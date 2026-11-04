@@ -4,6 +4,7 @@
 COMMON_SOURCES = (
     "kobox/runtime/host.c",
     "kobox/memory/early_boot.c",
+    "kobox/memory/reporting.c",
     "kobox/memory/cache_lease.c",
     "kobox/task/port.c",
     "kobox/task/user.c",

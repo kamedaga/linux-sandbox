@@ -36,6 +36,7 @@
 #include "../host/posix/core.h"
 #include "../host/posix/bootstrap.h"
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -835,7 +836,7 @@ int kobox_boot_test_run(int argc, char **argv,
 {
 	struct kobox_posix_memory_backing backing = {0};
 	struct kobox_posix_bootstrap bootstrap = {0};
-	const struct kobox_posix_boot_profile profile = {
+	struct kobox_posix_boot_profile profile = {
 		.ram_size = TEST_RAM_SIZE,
 		.vmemmap_size = TEST_VMEMMAP_SIZE,
 		.vmalloc_size = TEST_VMALLOC_SIZE,
@@ -855,9 +856,18 @@ int kobox_boot_test_run(int argc, char **argv,
 	void *address;
 	int status;
 
+    /* Test-only geometry override exercises the same supplied-base memory
+     * contract as the native launcher, without changing production policy. */
+    const char *ram_setting=getenv("KOBOX_TEST_RAM_MIB");
+    if (ram_setting) {
+        char *end;unsigned long mib=strtoul(ram_setting,&end,10);
+        CHECK(!*end && mib>=256 && mib<=ULONG_MAX/(1UL<<20));
+        profile.ram_size=mib<<20;
+        profile.vmemmap_size=profile.ram_size/4096*KOBOX_CORE_PAGE_METADATA_MAX_BYTES;
+    }
 	resource_host = resources;
 	module_host.lifecycle = resources ? resources->lifecycle : NULL;
-	CHECK(argc == 2 || (argc == 4 && !strcmp(argv[2], "--fs-port")) ||
+	CHECK(argc == 2 || (argc == 4 && (!strcmp(argv[2], "--fs-port") || !strcmp(argv[2], "--fs-record-lock"))) ||
 	      (argc == 5 && !strcmp(argv[2], "--elf-exec")) ||
 	      (argc == 7 && !strcmp(argv[2], "--modules")) ||
 	      (argc == 8 && (!strcmp(argv[2], "--resource-port") ||
@@ -925,7 +935,7 @@ int kobox_boot_test_run(int argc, char **argv,
 	address = core->lookup(core->loader, "kobox_linux_boot_memory_verify");
 	CHECK(address || (resources && resources->modules));
 	memcpy(&verify_memory, &address, sizeof(verify_memory));
-	if (argc == 4 && !strcmp(argv[2], "--fs-port")) {
+	if (argc == 4 && (!strcmp(argv[2], "--fs-port") || !strcmp(argv[2], "--fs-record-lock"))) {
 		struct stat info;
 		int fd = open(argv[3], O_RDWR | O_CLOEXEC);
 
@@ -937,7 +947,8 @@ int kobox_boot_test_run(int argc, char **argv,
 				     MAP_SHARED, fd, 0);
 		CHECK(fs_image.data != MAP_FAILED);
 		CHECK(!close(fd));
-		address = core->lookup(core->loader, "kobox_linux_fs_port_verify");
+		address = core->lookup(core->loader, !strcmp(argv[2],"--fs-record-lock") ?
+            "kobox_linux_fs_record_lock_verify" : "kobox_linux_fs_port_verify");
 		CHECK(address);
 		memcpy(&verify_fs_port, &address, sizeof(verify_fs_port));
 	}
@@ -1019,7 +1030,7 @@ int kobox_boot_test_run(int argc, char **argv,
 		}
 	}
 	if (argc == 4 && strcmp(argv[2], "--client-run") &&
-	    strcmp(argv[2], "--fs-port") &&
+	    strcmp(argv[2], "--fs-port") && strcmp(argv[2], "--fs-record-lock") &&
 	    strcmp(argv[2], "--syscall") && strcmp(argv[2], "--fd-transfer") &&
 	    strcmp(argv[2], "--fd-exit-race") && strcmp(argv[2], "--fd-inheritance") &&
 	    strcmp(argv[2], "--fork") && strcmp(argv[2], "--clone") && strcmp(argv[2], "--thread") &&
@@ -1101,7 +1112,7 @@ int kobox_boot_test_run(int argc, char **argv,
 		CHECK(address);
 		memcpy(&verify_cleanup, &address, sizeof(verify_cleanup));
 	}
-	CHECK(kobox_posix_memory_backing_init(&backing, TEST_RAM_SIZE) == 0);
+	CHECK(kobox_posix_memory_backing_init(&backing, profile.ram_size) == 0);
 	if (resources && resources->prepare_dma)
 		CHECK(!resources->prepare_dma(resources->context, backing.descriptor, backing.size));
 	CHECK(!kobox_posix_bootstrap_prepare(&bootstrap, native_core, &backing, &profile));

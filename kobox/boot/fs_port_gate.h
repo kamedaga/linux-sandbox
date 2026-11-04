@@ -25,6 +25,8 @@ struct kobox_fs_port_report {
 	uint64_t warnings;
 };
 
+int kobox_linux_fs_record_lock_verify(const struct kobox_fs_image *, struct kobox_fs_port_report *);
+
 int kobox_linux_fs_port_verify(const struct kobox_fs_image *image,
 			       struct kobox_fs_port_report *report);
 

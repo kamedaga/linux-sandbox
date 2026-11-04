@@ -48,6 +48,7 @@ struct fs_authority {
 };
 
 struct fs_client {
+	pid_t logical_pid;
 	struct kobox_linux_fs_port *port;
 	struct fs_authority __rcu *authority;
 	refcount_t references;
@@ -313,9 +314,9 @@ void kobox_linux_fs_service_destroy(struct kobox_linux_fs_service *service)
 	kfree(service);
 }
 
-int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
+static int fs_service_register_pid(struct kobox_linux_fs_service *service,
 				   u64 id, u64 credential_generation,
-				   const struct cred *cred, u64 rights)
+				   const struct cred *cred, u64 rights, pid_t pid)
 {
 	struct fs_authority *authority;
 	struct fs_client *client;
@@ -341,6 +342,8 @@ int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
 	}
 	RCU_INIT_POINTER(client->authority, authority);
 	client->port->shared = service->shared;
+	kobox_linux_fs_set_pid(client->port, pid);
+	client->logical_pid=pid;
 	refcount_set(&client->references, 1);
 	mutex_lock(&service->lock);
 	/* Reusing an ID would let a queued request from a dead client act on
@@ -354,6 +357,14 @@ int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
 	if (error)
 		fs_client_put(client);
 	return error;
+}
+
+int kobox_linux_fs_service_register(struct kobox_linux_fs_service *service,
+    u64 id,u64 generation,const struct cred *cred,u64 rights)
+{
+    /* Internal native owners/gates have no Linux userspace process identity.
+     * Ordinary client registration goes through manager-authenticated control. */
+    return fs_service_register_pid(service,id,generation,cred,rights,0);
 }
 
 int kobox_linux_fs_service_credentials(struct kobox_linux_fs_service *service,
@@ -677,6 +688,18 @@ static s64 fs_execute_locked(struct kobox_linux_fs_port *port, const struct cred
 			return -EINVAL;
 		/* F_SETLK carries absolute ranges in existing scalar fields; native
 		 * pointers and a Linux worker's files_struct never cross this boundary. */
+        if (r->flags==F_GETLK) {
+            kb2_fs_record_lock_t record;
+            if (r->mode>UINT_MAX || r->mask || r->data.length) return -EINVAL;
+            if (capacity<KB2_FILESYSTEM_RECORD_LOCK_SIZE) return -EMSGSIZE;
+            result=kobox_linux_fs_getlk(port,cred,r->handle,r->mode,
+                r->offset,(s64)r->length,&record);
+            if (!result) {
+                if (kb2_fs_record_lock_encode(data,capacity,&record)) return -EPROTO;
+                reply->data_length=KB2_FILESYSTEM_RECORD_LOCK_SIZE;
+            }
+            return result;
+        }
 		if (r->flags==F_SETLK) {
 			if (r->mode>UINT_MAX || r->mask || r->data.length) return -EINVAL;
 			return kobox_linux_fs_setlk(port,cred,r->handle,r->mode,
@@ -684,12 +707,21 @@ static s64 fs_execute_locked(struct kobox_linux_fs_port *port, const struct cred
 		}
 		return kobox_linux_fs_fcntl(port, cred, r->handle,
 					    r->flags, r->length);
+	case KB2_FILESYSTEM_OP_FLOCK:
+		if (r->flags > UINT_MAX)
+			return -EINVAL;
+		return kobox_linux_fs_flock(port, cred, r->handle, r->flags);
 	case KB2_FILESYSTEM_OP_FSYNC:
 		if (r->flags > 1)
 			return -EINVAL;
 		return kobox_linux_fs_fsync(port, cred, r->handle, r->flags);
 	case KB2_FILESYSTEM_OP_FTRUNCATE:
 		return kobox_linux_fs_truncate(port, cred, r->handle, r->offset);
+	case KB2_FILESYSTEM_OP_FALLOCATE:
+		if ((s64)r->mode < INT_MIN || (s64)r->mode > INT_MAX)
+			return -EINVAL;
+		return kobox_linux_fs_fallocate(port, cred, r->handle,
+			(int)r->mode, r->offset, (s64)r->length);
 	case KB2_FILESYSTEM_OP_MKDIRAT:
 		return kobox_linux_fs_mkdirat(port, cred, r->handle, path,
 					      r->mode, r->umask);
@@ -791,22 +823,25 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 	s64 result;
 	int error;
 	struct kobox_linux_fs_shared_guard guard;
-	bool changes_backing = (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 &&
-		((r->flags & (O_CREAT | O_TRUNC)) ||
-		 (r->flags & O_TMPFILE) == O_TMPFILE ||
-		 (!(r->flags & O_PATH) && (r->flags & O_ACCMODE) != O_RDONLY))) ||
+	bool changes_backing =
 		r->opcode == KB2_FILESYSTEM_OP_WRITE ||
 		r->opcode == KB2_FILESYSTEM_OP_PWRITE ||
-		r->opcode == KB2_FILESYSTEM_OP_FTRUNCATE;
+		r->opcode == KB2_FILESYSTEM_OP_FTRUNCATE ||
+		r->opcode == KB2_FILESYSTEM_OP_FALLOCATE;
 	bool serializes_shared = changes_backing ||
 		r->opcode == KB2_FILESYSTEM_OP_READ ||
 		r->opcode == KB2_FILESYSTEM_OP_PREAD ||
 		r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO ||
-		(r->opcode == KB2_FILESYSTEM_OP_FCNTL && r->flags!=F_SETLK) ||
+		(r->opcode == KB2_FILESYSTEM_OP_FCNTL &&
+		 (r->flags == F_SETFL || r->flags == F_ADD_SEALS)) ||
 		r->opcode == KB2_FILESYSTEM_OP_FSYNC ||
 		r->opcode == KB2_FILESYSTEM_OP_SYNC ||
 		r->opcode == KB2_FILESYSTEM_OP_SYNCFS;
-	/* Serialize page replacement, seal admission and dirty-before-writeback,
+	/* All fallocate modes take the truncate write guard: PUNCH/ZERO may
+	 * replace pinned pages and COLLAPSE/INSERT change offsets or i_size.
+	 * Even failed VFS mutations may require shared-export refresh. KEEP_SIZE
+	 * still reserves backing, so neither seal nor dirty admission may race it.
+	 * Serialize page replacement, seal admission and dirty-before-writeback,
 	 * not unrelated namespace/metadata. Ordinary buffered reads use the
 	 * shared read guard; O_DIRECT can flush cache using Linux dirty bits,
 	 * which native writes do not set, and takes the full write guard.
@@ -818,29 +853,42 @@ static s64 fs_execute(struct kobox_linux_fs_port *port, const struct cred *cred,
 	if (!serializes_shared)
 		return fs_execute_locked(port, cred, r, bytes, data, capacity, reply,
 			open_stat_allowed);
-	if ((r->opcode == KB2_FILESYSTEM_OP_READ ||
+	#ifdef KOBOX_RUNTIME_GATES
+ if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2) kobox_fs_open_stamp(0);
+#endif
+ if ((r->opcode == KB2_FILESYSTEM_OP_READ ||
 	     r->opcode == KB2_FILESYSTEM_OP_PREAD) ||
 	    (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 && !changes_backing))
 		error = kobox_linux_fs_shared_enter_read(port->shared,
 			port->nowait, r->opcode == KB2_FILESYSTEM_OP_OPENAT2 ?
 			NULL : port->pinned[0], &guard);
-	else if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2 ||
-		 r->opcode == KB2_FILESYSTEM_OP_SYNC ||
-		 r->opcode == KB2_FILESYSTEM_OP_SYNCFS)
+	else if (r->opcode == KB2_FILESYSTEM_OP_SYNC)
 		error = kobox_linux_fs_shared_enter(port->shared, port->nowait,
 			false, &guard);
+	else if (r->opcode == KB2_FILESYSTEM_OP_SYNCFS)
+		error = kobox_linux_fs_shared_enter_sb(port->shared, port->nowait,
+			port->pinned[0], &guard);
 	else
 		error = kobox_linux_fs_shared_enter_file(port->shared, port->nowait,
 			r->opcode == KB2_FILESYSTEM_OP_SHARED_FILE_VMO,
 			port->pinned[0], &guard);
 	if (error)
 		return error;
-	result = fs_execute_locked(port, cred, r, bytes, data, capacity, reply,
-		open_stat_allowed);
+#ifdef KOBOX_RUNTIME_GATES
+ if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2) kobox_fs_open_stamp(1);
+#endif
+ result = fs_execute_locked(port, cred, r, bytes, data, capacity, reply,
+  open_stat_allowed);
+#ifdef KOBOX_RUNTIME_GATES
+ if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2) kobox_fs_open_stamp(2);
+#endif
 	/* Linux owns mutation and may have changed i_size even on an error.
 	 * Refresh against its actual resulting cache, not a guessed new length.
 	 */
-	error = kobox_linux_fs_shared_leave(port->shared, changes_backing, &guard);
+ error = kobox_linux_fs_shared_leave(port->shared, changes_backing, &guard);
+#ifdef KOBOX_RUNTIME_GATES
+ if (r->opcode == KB2_FILESYSTEM_OP_OPENAT2) kobox_fs_open_stamp(3);
+#endif
 	return error ? error : result;
 }
 
@@ -873,8 +921,10 @@ static int fs_request_bind_files(struct kobox_linux_fs_request *job)
 	case KB2_FILESYSTEM_OP_GETDENTS64:
 	case KB2_FILESYSTEM_OP_STATFS:
 	case KB2_FILESYSTEM_OP_FCNTL:
+	case KB2_FILESYSTEM_OP_FLOCK:
 	case KB2_FILESYSTEM_OP_FSYNC:
 	case KB2_FILESYSTEM_OP_FTRUNCATE:
+	case KB2_FILESYSTEM_OP_FALLOCATE:
 	case KB2_FILESYSTEM_OP_READLINK_HANDLE:
 	case KB2_FILESYSTEM_OP_SYNCFS:
 	case KB2_FILESYSTEM_OP_TRANSFER_DUP:
@@ -1654,12 +1704,23 @@ static s64 fs_control_execute(struct kobox_linux_fs_request *job)
 		return fs_exec_control(job);
 	case KB2_FILESYSTEM_OP_CLIENT_REGISTER:
 	case KB2_FILESYSTEM_OP_CLIENT_CREDENTIALS:
+        /* Only the authenticated manager may supply process identity. A
+         * credentials update cannot mutate table ownership or its PID. */
+        if (r->offset < 0 || r->offset > INT_MAX) return -EINVAL;
+        if (r->opcode==KB2_FILESYSTEM_OP_CLIENT_CREDENTIALS) {
+            struct fs_client *client;
+            mutex_lock(&service->lock);
+            client=xa_load(&service->clients,r->client);
+            result=!client ? -ENOENT : client->logical_pid!=r->offset ? -EPERM : 0;
+            mutex_unlock(&service->lock);
+            if (result) return result;
+        }
 		cred = fs_credentials_decode(r, job->snapshot);
 		result = PTR_ERR_OR_ZERO(cred);
 		if (!IS_ERR(cred)) {
 			result = r->opcode == KB2_FILESYSTEM_OP_CLIENT_REGISTER ?
-				kobox_linux_fs_service_register(service, r->client,
-					r->credential_generation, cred, r->capabilities) :
+				fs_service_register_pid(service, r->client,
+					r->credential_generation, cred, r->capabilities, (pid_t)r->offset) :
 				kobox_linux_fs_service_credentials(service, r->client,
 					r->credential_generation, cred, r->capabilities);
 			put_cred(cred);

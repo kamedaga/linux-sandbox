@@ -34,6 +34,8 @@ struct kobox_linux_fs_shared_ops {
 struct kobox_linux_fs_shared;
 struct file;
 struct address_space;
+struct super_block;
+struct path;
 /* Stack-owned acquisition mode. An ordinary data guard can coexist with
  * exports; mutations and direct I/O take the write guard for matching exports. */
 enum kobox_linux_fs_shared_mode {
@@ -43,6 +45,7 @@ struct kobox_linux_fs_shared_guard {
 	enum kobox_linux_fs_shared_mode mode;
 	/* Borrowed from the admitted file until leave; NULL covers all exports. */
 	struct address_space *mapping;
+	struct super_block *superblock;
 };
 struct kobox_linux_fs_shared *kobox_linux_fs_shared_create(void);
 int kobox_linux_fs_shared_bind(struct kobox_linux_fs_shared *,
@@ -53,6 +56,10 @@ int kobox_linux_fs_shared_enter(struct kobox_linux_fs_shared *, bool nowait,
 	bool publishing, struct kobox_linux_fs_shared_guard *);
 int kobox_linux_fs_shared_enter_file(struct kobox_linux_fs_shared *, bool nowait,
 	bool publishing, struct file *, struct kobox_linux_fs_shared_guard *);
+int kobox_linux_fs_shared_enter_path(struct kobox_linux_fs_shared *, bool nowait,
+	const struct path *, struct kobox_linux_fs_shared_guard *);
+int kobox_linux_fs_shared_enter_sb(struct kobox_linux_fs_shared *, bool nowait,
+	struct file *, struct kobox_linux_fs_shared_guard *);
 int kobox_linux_fs_shared_enter_read(struct kobox_linux_fs_shared *, bool nowait,
 	struct file *, struct kobox_linux_fs_shared_guard *);
 int kobox_linux_fs_shared_leave(struct kobox_linux_fs_shared *, bool refresh,

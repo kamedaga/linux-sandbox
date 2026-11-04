@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "cache_lease.h"
+#include "reporting.h"
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/mm.h>
@@ -240,6 +241,7 @@ static int create_lease(struct page *const *pages, size_t count,
         if (!pages[i] || PageHighMem(pages[i]) || PageReserved(pages[i]) ||
             is_zone_device_page(pages[i]) ||
             (retain_page_refs && page_count(pages[i]) <= 0)) { error = -EINVAL; break; }
+        kobox_linux_resident_assert_page(pages[i]);
         p->page = pages[i]; p->pfn = page_to_pfn(pages[i]);
         error = kobox_memory_cache_inspect(p->pfn, &p->shadow_cache, &p->protection);
         if (error) break;

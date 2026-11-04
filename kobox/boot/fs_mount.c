@@ -32,13 +32,15 @@ static const struct {
 	const char *options;
 } fs_tmpfs_paths[] = {
 	{ "/tmp", NULL }, { "/run", NULL }, { "/dev/shm", NULL },
-	/* Discovery indexes and DRM nodes describe live device grants. Keeping
-	 * them on ext4 strands a dead publisher after a host stop/crash, and the
-	 * next legitimate publisher must reject those preexisting entries. Hide
-	 * the persistent backing with fresh namespaces; inputd/gpud republish the
-	 * actual devices without replacing another live owner's metadata. */
-	{ "/sys/dev/char", "mode=0755" },
-	{ "/sys/class/drm", "mode=0755" },
+	/* /sys and DRM nodes describe live device grants. Keeping any of them on
+	 * ext4 strands a dead publisher after a host stop/crash, and the next
+	 * legitimate publisher must reject those preexisting entries. As on
+	 * Linux, all of /sys is a per-boot namespace, so a publisher adding a
+	 * new index never needs an entry here; inputd/gpud republish the actual
+	 * devices without replacing another live owner's metadata. /dev keeps
+	 * the root image's static nodes, so only the published DRM directory is
+	 * fresh there. */
+	{ "/sys", "mode=0755" },
 	{ "/dev/dri", "mode=0755" },
 };
 
@@ -262,7 +264,7 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 	}
 	/* Runtime tmpfs semantics and accounting belong to upstream. The root
 	 * image only supplies the namespace directories, never copied contents. */
-	const char * const parents[] = { "/dev", "/sys", "/sys/dev", "/sys/class" };
+	const char * const parents[] = { "/dev" };
 	for (i = 0; !result && i < ARRAY_SIZE(parents); i++) {
 		result = fs_make_node(parents[i], S_IFDIR | 0755, 0);
 		if (result == -EEXIST)

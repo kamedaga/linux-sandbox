@@ -1123,6 +1123,18 @@ static int prepare_memory(const struct kobox_linux_memory_layout *layout)
 	status = memblock_add(0, layout->ram_size);
 	if (status)
 		return status;
+	if (layout->initial_resident_size) {
+		if (!PAGE_ALIGNED(layout->initial_resident_size) ||
+		    layout->initial_resident_size > layout->ram_size ||
+		    layout->kernel_image_physical_base + image_size > layout->initial_resident_size)
+			return -EINVAL;
+		/* Full PFN/zone/struct-page coverage; unpublished tail is never
+		 * available to either early metadata allocation or memblock_free_all. */
+		memblock_set_current_limit(layout->initial_resident_size);
+		status = memblock_reserve(layout->initial_resident_size,
+			layout->ram_size - layout->initial_resident_size);
+		if (status) return status;
+	}
 	status = memblock_reserve(0, PAGE_SIZE);
 	if (status)
 		return status;

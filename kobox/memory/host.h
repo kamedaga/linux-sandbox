@@ -27,6 +27,11 @@ enum kobox_linux_memory_cache {
 	KOBOX_LINUX_MEMORY_CACHE_WC = 3,
 };
 
+struct kobox_linux_memory_range {
+	uint64_t first_page;
+	uint64_t page_count;
+};
+
 struct kobox_linux_memory_host_operations {
 	size_t size;
 	uint64_t identity;
@@ -54,6 +59,19 @@ struct kobox_linux_memory_host_operations {
 			 unsigned int cache);
 	/* Acknowledges a preceding host cache transition's completed drain. */
 	int (*cache_flush)(void);
+	/* Sleepable memory workers only, with no zone/adapter mapping locks.
+	 * 0 means ALL ranges discarded/already holes. Negative native status
+	 * preserves NOT_READY/partial errors. No queued success. Resident-mode
+	 * callers retain every page until a later successful populate; legacy
+	 * reporting must never be registered for a resident arena.
+	 * <=32 sorted disjoint ranges, <=1024 arena pages in total.
+	 * Backing/operations live for the core lifetime.
+	 */
+	/* Resident admission: 0 success, -3 native ALLOC, other errors fatal.
+	 * A failed range may have resident backing but MUST NOT be published. */
+	int (*populate)(void *backing, uint64_t first_page, uint64_t page_count);
+	int (*discard)(void *backing, const struct kobox_linux_memory_range *ranges,
+		       size_t count);
 };
 
 struct kobox_linux_memory_layout {
@@ -66,6 +84,7 @@ struct kobox_linux_memory_layout {
 	void *vmalloc_window;
 	void *direct_map;
 	size_t ram_size;
+	size_t initial_resident_size; /* zero for eager; reserved tail otherwise */
 	void *vmemmap_base;
 	size_t vmemmap_size;
 	void *vmalloc_base;

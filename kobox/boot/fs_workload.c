@@ -36,6 +36,25 @@ static int fs_basic(const struct fs_test_ops *ops, void *ctx,
 	char buffer[32];
 
 	EXPECT(ops->change(ctx, FS_ROOT, FS_TEST_MKDIR, "suite", NULL, 0777), 0);
+	/* Independent opens conflict, dup aliases own the same FL_FLOCK, and a
+	 * borrowed RPC fd must not release that lock when its scope is closed. */
+	EXPECT(ops->open(ctx, FS_ROOT, "suite/flock", O_CREAT|O_EXCL|O_RDWR,
+		0600, 0, &file), 0);
+	EXPECT(ops->dup(ctx, FS_ROOT, file, &duplicate), 0);
+	EXPECT(ops->open(ctx, FS_ROOT, "suite/flock", O_RDONLY, 0, 0, &other), 0);
+	EXPECT(ops->flock(ctx, file, LOCK_EX), 0);
+	EXPECT(ops->flock(ctx, other, LOCK_EX|LOCK_NB), -EAGAIN);
+	EXPECT(ops->flock(ctx, duplicate, LOCK_SH), 0);
+	EXPECT(ops->flock(ctx, other, LOCK_SH|LOCK_NB), 0);
+	EXPECT(ops->flock(ctx, other, LOCK_UN), 0);
+	EXPECT(ops->flock(ctx, file, LOCK_EX), 0);
+	EXPECT(ops->flock(ctx, file, LOCK_SH|LOCK_EX), -EINVAL);
+	EXPECT(ops->close(ctx, FS_ROOT, file), 0);
+	EXPECT(ops->flock(ctx, other, LOCK_EX|LOCK_NB), -EAGAIN);
+	EXPECT(ops->close(ctx, FS_ROOT, duplicate), 0);
+	EXPECT(ops->flock(ctx, other, LOCK_EX|LOCK_NB), 0);
+	EXPECT(ops->close(ctx, FS_ROOT, other), 0);
+	EXPECT(ops->change(ctx, FS_ROOT, FS_TEST_UNLINK, "suite/flock", NULL, 0), 0);
 	EXPECT(ops->open(ctx, FS_ROOT, "suite/data", O_CREAT | O_EXCL | O_RDWR,
 			 0640, 0, &file), 0);
 	EXPECT(ops->io(ctx, FS_ROOT, file, "abcdef", 6, 0, 1, 0), 6);
@@ -55,6 +74,15 @@ static int fs_basic(const struct fs_test_ops *ops, void *ctx,
 	EXPECT(ops->stat(ctx, NULL, file, 0, &stat), 0);
 	EXPECT(stat.size, 12);
 	EXPECT(stat.mode & 0777, 0640);
+	EXPECT(ops->fallocate(ctx, file, 0, 0, 8192), 0);
+	EXPECT(ops->stat(ctx, NULL, file, 0, &stat), 0);
+	EXPECT(stat.size, 8192);
+	EXPECT(ops->fallocate(ctx, file, 1, 8192, 8192), 0);
+	EXPECT(ops->stat(ctx, NULL, file, 0, &stat), 0);
+	EXPECT(stat.size, 8192);
+	EXPECT(ops->fallocate(ctx, file, 0, -1, 4096), -EINVAL);
+	EXPECT(ops->fallocate(ctx, file, 0, 0, 0), -EINVAL);
+	EXPECT(ops->fallocate(ctx, file, -1, 0, 4096), -EOPNOTSUPP);
 	EXPECT(ops->truncate(ctx, duplicate, 4), 0);
 	EXPECT(ops->stat(ctx, "suite/data", 0, 0, &stat), 0);
 	EXPECT(stat.size, 4);
@@ -67,11 +95,13 @@ static int fs_basic(const struct fs_test_ops *ops, void *ctx,
 	EXPECT(ops->open(ctx, FS_ROOT, "suite/data", O_RDONLY, 0, 0, &other), 0);
 	EXPECT(ops->io(ctx, FS_ROOT, other, "x", 1, 0, 1, 0), -EBADF);
 	EXPECT(ops->truncate(ctx, other, 0), -EINVAL);
+	EXPECT(ops->fallocate(ctx, other, 0, 0, 4096), -EBADF);
 	EXPECT(ops->getdents(ctx, other, buffer, sizeof(buffer)), -ENOTDIR);
 	EXPECT(ops->close(ctx, FS_ROOT, other), 0);
 	EXPECT(ops->open(ctx, FS_ROOT, "suite/data", O_PATH, 0, 0, &other), 0);
 	EXPECT(ops->io(ctx, FS_ROOT, other, buffer, 1, 0, 0, 0), -EBADF);
 	EXPECT(ops->seek(ctx, other, 0, SEEK_CUR), -EBADF);
+	EXPECT(ops->fallocate(ctx, other, 0, 0, 4096), -EBADF);
 	EXPECT(ops->getdents(ctx, other, buffer, sizeof(buffer)), -EBADF);
 	EXPECT(ops->sync(ctx, other, 0), -EBADF);
 	EXPECT(ops->truncate(ctx, other, 0), -EBADF);

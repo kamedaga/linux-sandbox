@@ -4,6 +4,10 @@ config KOBOX_HOSTED
 	bool "kobox hosted machine ports"
 	depends on X86_64 && SMP && PCI_MSI
 	select IRQ_MSI_LIB
+	# Btrfs checksum modules register with the crypto core during module init.
+	# Keep the manager and its registration APIs in the booted core so the
+	# hosted module loader needs no recursive cryptomgr/module autoload path.
+	select CRYPTO_MANAGER2 if BTRFS_FS != n
 	help
 	  Build the upstream MSI parent-domain helpers used by kobox's
 	  host interrupt-controller port. Linux retains ownership of PCI

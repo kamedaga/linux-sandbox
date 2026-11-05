@@ -4,6 +4,7 @@
 """Generate a deterministic, modules-only Linux driver closure inventory."""
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import pathlib
@@ -214,11 +215,21 @@ def normalize_module_name(name):
     return name.replace("-", "_")
 
 
-def resolve_module_dependency(name, module_names):
-    provider = module_names.get(name)
-    if provider is None:
-        raise ClosureError(f"module dependency is unavailable: {name}")
-    return provider
+def resolve_module_dependency(name, module_names, records):
+    provider = module_names.get(normalize_module_name(name))
+    if provider is not None:
+        return provider
+    # Soft dependencies can name an algorithm alias rather than a .ko name
+    # (Btrfs requests blake2b-256). Resolve the built modules' own modinfo;
+    # never omit such a dependency or guess a provider when it is ambiguous.
+    matches = sorted(path for path, record in records.items()
+                     if any(fnmatch.fnmatchcase(name, alias)
+                            for alias in record["aliases"]))
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ClosureError(f"module dependency alias is ambiguous: {name}")
+    raise ClosureError(f"module dependency is unavailable: {name}")
 
 
 def module_path_from_order(path):
@@ -463,13 +474,13 @@ def generate_inventory(source_tree, build_dir, profile, nm="nm", modinfo="modinf
             (name, "modinfo") for name in record["modinfo_dependencies"]
         ] + [(name, "softdep-pre") for name in record["softdep_pre"]]
         for name, kind in dependencies:
-            provider = resolve_module_dependency(name, module_names)
+            provider = resolve_module_dependency(name, module_names, records)
             add_edge(edge_reasons, path, provider, kind)
             if provider not in selected:
                 selected.add(provider)
                 pending.append(provider)
         for name in record["softdep_post"]:
-            after = resolve_module_dependency(name, module_names)
+            after = resolve_module_dependency(name, module_names, records)
             ordering_reasons[(path, after)].add("softdep-post")
             if after not in selected:
                 selected.add(after)

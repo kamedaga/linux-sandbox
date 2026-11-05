@@ -70,6 +70,17 @@ class ClosureInventoryTest(unittest.TestCase):
         self.assertEqual(before, ["alpha", "beta"])
         self.assertEqual(after, ["gamma"])
 
+    def test_dependency_names_and_algorithm_aliases(self):
+        records = {"crypto/blake2b_generic.ko": {"aliases": ["blake2b-256"]}}
+        resolve = closure_inventory.resolve_module_dependency
+        self.assertEqual(resolve("blake2b-256", {}, records), "crypto/blake2b_generic.ko")
+        self.assertEqual(resolve("some-module", {"some_module": "some.ko"}, records), "some.ko")
+        records["other.ko"] = {"aliases": ["blake2b-*"]}
+        with self.assertRaisesRegex(closure_inventory.ClosureError, "ambiguous"):
+            resolve("blake2b-256", {}, records)
+        with self.assertRaisesRegex(closure_inventory.ClosureError, "unavailable"):
+            resolve("missing", {}, records)
+
     def test_profile_is_boot_rooted_and_modules_only(self):
         profile_path = SCRIPT.parent / "profiles/virtio_gpu_virgl.json"
         profile = json.loads(profile_path.read_text(encoding="utf-8"))

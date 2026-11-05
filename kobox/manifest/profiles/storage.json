@@ -4,7 +4,7 @@
   "linux_tag": "v6.18.48",
   "linux_commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52",
   "kernel_release": "6.18.48+",
-  "config_sha256": "3479b91796df07ea34b015273a50b2a53c833a98ca7bc16e5501a6c90bd83583",
+  "config_sha256": "ce2642f0411fe4046e1ddaf1700686133691b439a48d20f9a673d1b9b3216f64",
   "toolchain": {
     "compiler": "clang",
     "compiler_version": "18.1.8",
@@ -79,7 +79,9 @@
   },
   "roots": [
     "drivers/nvme/host/nvme.ko",
-    "fs/ext4/ext4.ko"
+    "fs/ext4/ext4.ko",
+    "fs/xfs/xfs.ko",
+    "fs/btrfs/btrfs.ko"
   ],
   "explicit_dependencies": [],
   "resource_slots": [
@@ -149,6 +151,14 @@
     "CONFIG_JBD2": "m",
     "CONFIG_FS_MBCACHE": "m",
     "CONFIG_CRC16": "m",
-    "CONFIG_CRC_OPTIMIZATIONS": "y"
+    "CONFIG_CRC_OPTIMIZATIONS": "y",
+    "CONFIG_XFS_FS": "m",
+    "CONFIG_XFS_POSIX_ACL": "y",
+    "CONFIG_BTRFS_FS": "m",
+    "CONFIG_BTRFS_FS_POSIX_ACL": "y",
+    "CONFIG_XFS_ONLINE_SCRUB": "n",
+    "CONFIG_CRYPTO": "y",
+    "CONFIG_CRYPTO_HASH2": "y",
+    "CONFIG_CRYPTO_MANAGER2": "y"
   }
 }

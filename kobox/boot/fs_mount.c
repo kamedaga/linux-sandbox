@@ -16,7 +16,6 @@
 #include <linux/task_work.h>
 #include <uapi/linux/mount.h>
 #include "../../fs/internal.h"
-#include "../../fs/ext4/ext4.h"
 
 #define FS_ROOT_NODE "/kobox-storage-device"
 #define FS_ROOT_PATH "/kobox-storage-root"
@@ -56,90 +55,87 @@ static bool fs_disk_allowed(struct gendisk *disk,
 	return false;
 }
 
-static int fs_probe_uuid(dev_t dev, const u8 uuid[16], u64 *diskseq)
+static bool fs_partuuid_matches(struct block_device *bdev, const u8 partuuid[16])
 {
-	struct ext4_super_block *super;
-	struct file *file;
-	loff_t offset = EXT4_MIN_BLOCK_SIZE;
-	ssize_t read;
-	int result = 0;
+	guid_t parsed;
 
-	file = bdev_file_open_by_dev(dev, BLK_OPEN_READ, NULL, NULL);
-	if (IS_ERR(file))
-		return PTR_ERR(file);
-	if (bdev_nr_bytes(file_bdev(file)) < offset + sizeof(*super))
-		goto out_file;
-	super = kmalloc(sizeof(*super), GFP_KERNEL);
-	if (!super) {
-		result = -ENOMEM;
-		goto out_file;
-	}
-	/* Use upstream's ext4 representation at its format-defined superblock
-	 * location; this is a read-only identification probe, not a second VFS. */
-	read = kernel_read(file, super, sizeof(*super), &offset);
-	if (read < 0)
-		result = read;
-	else if (read != sizeof(*super))
-		result = -EIO;
-	else if (le16_to_cpu(super->s_magic) == EXT4_SUPER_MAGIC &&
-		 !memcmp(super->s_uuid, uuid, sizeof(super->s_uuid))) {
-		*diskseq = file_bdev(file)->bd_disk->diskseq;
-		result = 1;
-	}
-	kfree(super);
-out_file:
-	fput(file);
-	return result;
+	/* The upstream GPT scanner has already validated and decoded this GUID.
+	 * guid_parse uses the same mixed-endian representation as the boot policy;
+	 * MBR IDs and whole disks must not be accepted as GPT partitions. */
+	return bdev_is_partition(bdev) && bdev->bd_meta_info &&
+		!guid_parse(bdev->bd_meta_info->uuid, &parsed) &&
+		!memcmp(&parsed, partuuid, sizeof(parsed));
 }
 
 static int fs_select_root(struct pci_dev * const *devices, size_t device_count,
-			  const u8 uuid[16], dev_t *selected)
+			  const u8 partuuid[16], struct file **selected)
 {
 	struct class_dev_iter iter;
 	struct device *dev;
-	dev_t found = 0;
+	struct block_device *found = NULL;
+	struct file *file;
 	u64 diskseq = 0;
+	sector_t start = 0, sectors = 0;
 	int result = -ENODEV;
 
+	*selected = NULL;
 	class_dev_iter_init(&iter, &block_class, NULL, NULL);
 	while ((dev = class_dev_iter_next(&iter))) {
 		struct block_device *bdev;
-		int match;
 
-		if (dev->type != &disk_type && dev->type != &part_type)
+		if (dev->type != &part_type)
 			continue;
 		bdev = dev_to_bdev(dev);
 		if (!disk_live(bdev->bd_disk) || !bdev_nr_bytes(bdev) ||
 		    (bdev->bd_disk->flags & GENHD_FL_HIDDEN) ||
-		    !fs_disk_allowed(bdev->bd_disk, devices, device_count))
-			continue;
-		match = fs_probe_uuid(bdev->bd_dev, uuid, &diskseq);
-		if (match < 0) {
-			result = match;
-			goto out;
-		}
-		if (!match)
+		    !fs_disk_allowed(bdev->bd_disk, devices, device_count) ||
+		    !fs_partuuid_matches(bdev, partuuid))
 			continue;
 		if (found) {
 			result = -ENOTUNIQ;
 			goto out;
 		}
-		found = bdev->bd_dev;
+		/* Keep the original device alive so reuse of its dev_t cannot pass
+		 * the final open. Unrelated candidates must not overwrite diskseq. */
+		get_device(dev);
+		found = bdev;
+		diskseq = bdev->bd_disk->diskseq;
+		start = get_start_sect(bdev);
+		sectors = bdev_nr_sectors(bdev);
 	}
-	if (found) {
-		u64 current_seq = 0;
-		int match = fs_probe_uuid(found, uuid, &current_seq);
-
-		if (match != 1 || current_seq != diskseq)
-			result = match < 0 ? match : -ESTALE;
-		else {
-			*selected = found;
-			result = 0;
-		}
+	if (!found)
+		goto out;
+	file = bdev_file_open_by_dev(found->bd_dev, BLK_OPEN_READ, NULL, NULL);
+	if (IS_ERR(file)) {
+		result = PTR_ERR(file);
+		goto out;
+	}
+	if (file_bdev(file) != found || !disk_live(found->bd_disk) ||
+	    (found->bd_disk->flags & GENHD_FL_HIDDEN) ||
+	    !fs_disk_allowed(found->bd_disk, devices, device_count) ||
+	    found->bd_disk->diskseq != diskseq || get_start_sect(found) != start ||
+	    bdev_nr_sectors(found) != sectors ||
+	    !fs_partuuid_matches(found, partuuid)) {
+		fput(file);
+		result = -ESTALE;
+	} else {
+		/* Hold the partition open through mount: a partition rescan must
+		 * not replace the validated mapping between selection and mount. */
+		*selected = file;
+		result = 0;
 	}
 out:
 	class_dev_iter_exit(&iter);
+	if (found)
+		put_device(&found->bd_device);
 	return result;
+}
+
+static bool fs_root_fstype_valid(const char type[8])
+{
+	return !memcmp(type, "ext4\0\0\0", 8) ||
+		!memcmp(type, "xfs\0\0\0\0", 8) ||
+		!memcmp(type, "btrfs\0\0", 8);
 }
 
 static int fs_make_node(const char *name, umode_t mode, dev_t device)
@@ -207,30 +203,36 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 	struct kobox_linux_fs_mount *mount;
 	struct fs_struct *old;
 	struct path point;
-	dev_t selected;
+	struct file *selected = NULL;
 	int result;
 	unsigned int i;
 
 	if (!out || !config || config->size != sizeof(*config) ||
 	    !config->generation || config->root_kind > KOBOX_FS_ROOT_TMPFS ||
-	    (config->root_kind == KOBOX_FS_ROOT_EXT4 ?
-	     (!devices || !device_count || !memchr_inv(config->root_uuid, 0, 16)) :
-	     (devices || device_count || memchr_inv(config->root_uuid, 0, 16))))
+	    (config->root_kind == KOBOX_FS_ROOT_DISK ?
+	     (!devices || !device_count || !memchr_inv(config->root_partuuid, 0, 16) ||
+	      !memchr_inv(config->root_uuid, 0, 16) ||
+	      !fs_root_fstype_valid(config->root_fstype)) :
+	     (devices || device_count || memchr_inv(config->root_partuuid, 0, 16) ||
+	      memchr_inv(config->root_uuid, 0, 16) ||
+	      memchr_inv(config->root_fstype, 0, sizeof(config->root_fstype)))))
 		return -EINVAL;
 	for (size_t j = 0; j < device_count; j++)
 		if (!devices[j])
 			return -EINVAL;
 	*out = NULL;
-	selected = 0;
-	result = config->root_kind == KOBOX_FS_ROOT_EXT4 ?
-		fs_select_root(devices, device_count, config->root_uuid, &selected) : 0;
+	result = config->root_kind == KOBOX_FS_ROOT_DISK ?
+		fs_select_root(devices, device_count, config->root_partuuid, &selected) : 0;
 	if (result)
 		return result;
 	mount = kzalloc(sizeof(*mount), GFP_KERNEL);
-	if (!mount)
+	if (!mount) {
+		if (selected)
+			fput(selected);
 		return -ENOMEM;
-	result = config->root_kind == KOBOX_FS_ROOT_EXT4 ?
-		fs_make_node(FS_ROOT_NODE, S_IFBLK | 0600, selected) : 0;
+	}
+	result = config->root_kind == KOBOX_FS_ROOT_DISK ?
+		fs_make_node(FS_ROOT_NODE, S_IFBLK | 0600, file_bdev(selected)->bd_dev) : 0;
 	if (!result)
 		result = fs_make_node(FS_ROOT_PATH, S_IFDIR | 0700, 0);
 	if (!result)
@@ -250,13 +252,25 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 			free_page((unsigned long)options);
 		}
 	} else
-		result = path_mount(FS_ROOT_NODE, &point, "ext4", MS_NOATIME, NULL);
+		result = path_mount(FS_ROOT_NODE, &point, config->root_fstype, MS_NOATIME, NULL);
 	path_put(&point);
+	if (selected) {
+		fput(selected);
+		selected = NULL;
+	}
 	if (result)
 		goto free_mount;
 	result = kern_path(FS_ROOT_PATH, LOOKUP_DIRECTORY, &mount->root);
 	if (result)
 		goto unmount_root;
+	/* PARTUUID selects the partition independently of its contents. FileD's
+	 * executable cache still uses the FS UUID, so reject stale boot policy
+	 * after a reformat before exposing any files under that cache identity. */
+	if (config->root_kind == KOBOX_FS_ROOT_DISK &&
+	    memcmp(mount->root.dentry->d_sb->s_uuid.b, config->root_uuid, 16)) {
+		result = -ESTALE;
+		goto put_root;
+	}
 	old = fs_enter_root(&mount->root);
 	if (IS_ERR(old)) {
 		result = PTR_ERR(old);
@@ -270,7 +284,7 @@ int kobox_linux_fs_mount_open(struct kobox_linux_fs_mount **out,
 		if (result == -EEXIST)
 			result = 0;
 	}
-	for (i = 0; !result && config->root_kind == KOBOX_FS_ROOT_EXT4 &&
+	for (i = 0; !result && config->root_kind == KOBOX_FS_ROOT_DISK &&
 	     i < ARRAY_SIZE(fs_tmpfs_paths); i++) {
 		char *options;
 
@@ -329,6 +343,8 @@ unmount_root:
 		return result;
 	}
 free_mount:
+	if (selected)
+		fput(selected);
 	kfree(mount);
 	return result;
 }

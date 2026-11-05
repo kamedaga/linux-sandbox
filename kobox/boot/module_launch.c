@@ -178,7 +178,7 @@ int kobox_linux_modules_run(const struct kobox_linux_module_launch *launch,
 	    (!KOBOX_BOOT_NET && launch->capture_network) ||
 	    (!KOBOX_BOOT_BLOCK && launch->capture_block) ||
 	    (launch->filesystem && (!KOBOX_BOOT_FS ||
-		(launch->filesystem->root_kind == KOBOX_FS_ROOT_EXT4 && !launch->pci_device_count) ||
+		(launch->filesystem->root_kind == KOBOX_FS_ROOT_DISK && !launch->pci_device_count) ||
 		(launch->filesystem->root_kind == KOBOX_FS_ROOT_TMPFS && launch->pci_device_count) ||
 		launch->capture_block || launch->capture_input || launch->capture_network)))
 		return -EINVAL;

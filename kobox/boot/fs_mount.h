@@ -13,14 +13,16 @@ struct kobox_linux_fs_mount;
 struct kobox_linux_fs_service;
 struct pci_dev;
 
-/* Process-local immutable launch policy. UUID probing may read only block
- * devices under the granted PCI ancestry; no candidate is mounted to inspect
- * it. One namespace owns the selected root and its tmpfs submounts. */
-enum { KOBOX_FS_ROOT_EXT4 = 0, KOBOX_FS_ROOT_TMPFS = 1 };
+/* Process-local immutable launch policy. PARTUUID selects only partitions
+ * under the granted PCI ancestry, using Linux's parsed partition metadata.
+ * One namespace owns the selected root and its tmpfs submounts. */
+enum { KOBOX_FS_ROOT_DISK = 0, KOBOX_FS_ROOT_TMPFS = 1 };
 struct kobox_linux_fs_mount_config {
 	size_t size;
 	uint64_t generation;
-	uint8_t root_uuid[16];
+	uint8_t root_partuuid[16]; /* GPT on-disk GUID byte order. */
+	uint8_t root_uuid[16]; /* Mounted filesystem/cache identity, not a selector. */
+	char root_fstype[8];
 	uint32_t root_kind;
 };
 

@@ -200,8 +200,17 @@ int kobox_linux_drm_service_open(struct kobox_linux_drm_service *service,
 		return result;
 	if (service->stopping || service->report.close_error)
 		return -ESHUTDOWN;
-	if (service->report.active == service->limit || service->sequence == U64_MAX)
-		return -EMFILE;
+	if (service->report.active == service->limit || service->sequence == U64_MAX) {
+        static unsigned int emfile_seen;
+        if (emfile_seen < 4) {
+            ++emfile_seen;
+            kobox_linux_boot_diagnostic(
+                "EMFILE kobox drm-open used=%u limit=%u sequence=%llu pid=%d\n",
+                service->report.active, service->limit,
+                (unsigned long long)service->sequence, task_pid_nr(current));
+        }
+        return -EMFILE;
+    }
 	for (index = 0; index < service->limit; index++) {
 		if (!service->entries[index].cookie) {
 			entry = &service->entries[index];
